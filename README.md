@@ -38,4 +38,4 @@ restart. Your files stay as they are.
 
 ## Licence
 
-GPL-3.0-or-later — see `LICENSE`. © XQ (www.xq.com.br)
+GPL-3.0-or-later — see `LICENSE`. © Orlando Souza · XQ (www.xq.com.br)
