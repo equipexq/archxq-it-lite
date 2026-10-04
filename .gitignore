@@ -4,3 +4,4 @@ build_lite.ps1
 dist/
 __pycache__/
 *.pyc
+catalog/

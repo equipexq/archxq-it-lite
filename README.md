@@ -19,7 +19,7 @@ and every element is drawn with real sizes, on real levels.
 **ArchXQ IT Pro** adds beams, slabs, footings, doors and windows, roofs,
 rooms, drawings and sheets, sections, PDF and DXF export, and walls from a
 DXF plan — plus updates for every new IngeTrazo version.
-→ https://www.xq.com.br/archxq-it
+→ **Get Pro:** https://www.xq.com.br/archxq-it
 
 A file made with the Pro opens in the Lite with everything visible and
 kept: the Lite never removes what it cannot edit.
