@@ -100,6 +100,17 @@ class SideStrip(QFrame):
                 lambda _=False, n=m.label: self.owner.on_method(n))
             self.group.addButton(b)
             self.box.addWidget(b)
+        # the last item: the tool's guide (his idea, 2026-10-04) — always
+        # the same place, so the hand finds it without looking
+        h = QPushButton("Help")
+        h.setFlat(True)
+        h.setProperty("axq", "item")
+        h.setIcon(icons.icon("help"))
+        h.setIconSize(QSize(22, 22))
+        h.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        h.setToolTip(f"{el.label} — how it works (the guide)")
+        h.clicked.connect(lambda _=False, k=el.key: self._guide(k))
+        self.box.addWidget(h)
         self.adjustSize()
         # measured again once the new buttons are styled: measured now, it
         # kept the title's size alone — the menu squashed (his screen,
@@ -113,6 +124,10 @@ class SideStrip(QFrame):
             self.resize(self.sizeHint())
         except RuntimeError:            # gone meanwhile (reload)
             pass
+
+    def _guide(self, key: str) -> None:
+        from .guide import open_guide
+        open_guide(key, self.window())
 
 
 # ---- Left, on top: the plan view switch --------------------------------------------

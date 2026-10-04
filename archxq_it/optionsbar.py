@@ -97,7 +97,27 @@ class OptionsBar(QFrame):
             else:
                 field = self._editor(o)
             self._items.append(self._block(o["label"], field))
+        self._items.append(self._block("", self._guide_button(title)))
         self.fit()
+
+    def _guide_button(self, title: str):
+        """The tool's guide, at the end of the bar (where programs keep
+        their help: out of the way of the fields)."""
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QPushButton
+        from . import icons
+        b = QPushButton()
+        b.setProperty("axq", "chip")
+        b.setFocusPolicy(Qt.NoFocus)
+        b.setIcon(icons.icon("help"))
+        b.setIconSize(QSize(20, 20))
+        b.setToolTip(f"{title} — how it works (the guide)")
+
+        def go() -> None:
+            from .guide import open_guide
+            open_guide(getattr(self.owner, "element", None), self.window())
+        b.clicked.connect(go)
+        return b
 
     def _popup(self, o: dict):
         """One button with the choice made; the others in a menu that

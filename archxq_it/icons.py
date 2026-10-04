@@ -388,7 +388,21 @@ def _foot_strips(p) -> None:
     p.drawLine(QPointF(4, 58), QPointF(60, 58))
 
 
-_CUSTOM = {"survey": _survey, "add_point": _add_point, "fit": _fit,
+def _help(p) -> None:
+    """A ring with a question mark — the tool's guide."""
+    from PySide6.QtGui import QFont
+    p.setPen(_pen(ACCENT, 4))
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(QPointF(32, 32), 24, 24)
+    f = QFont()
+    f.setBold(True)
+    f.setPixelSize(34)
+    p.setFont(f)
+    p.setPen(INK)
+    p.drawText(QRectF(8, 8, 48, 48), Qt.AlignCenter, "?")
+
+
+_CUSTOM = {"help": _help, "survey": _survey, "add_point": _add_point, "fit": _fit,
            "excavate": _excavate, "eye": _eye, "eye_off": _eye_off,
            "edit": _edit, "ramp": _ramp,
            "col_single": _col_single, "col_row": _col_row,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-__version__ = "0.9.1-lite"
+__version__ = "0.9.2-lite"
 
 _instance = None
 
@@ -37,7 +37,7 @@ def reload(window) -> None:
                   "structure", "spaces",
                   "phases", "style", "survey",
                   "icons",
-                  "help", "dialogs", "surveydlg", "plottools", "plotedit",
+                  "help", "guide", "about", "dialogs", "surveydlg", "plottools", "plotedit",
                   "walltools", "structtools", "openingtools", "docs",
                   "doctools", "docsdxf", "importdxf",
                   "demo",

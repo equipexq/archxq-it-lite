@@ -107,8 +107,9 @@ class Hub(QFrame):
         web.setObjectName("axq_swap")
         web.setIcon(icons.icon("web"))
         web.setIconSize(QSize(18, 18))
-        web.setToolTip(f"ArchXQ on the web — {SITE}")
-        web.clicked.connect(lambda: self._open_site())
+        web.setToolTip("About ArchXQ IT — version, site, manual, support")
+        # «About» (his idea, 2026-10-04): the site is one of its links
+        web.clicked.connect(lambda: self._about(web))
         env.addWidget(web)
         # the plan grid's pull, on / off (his ask, 2026-10-02)
         from . import prefs
@@ -143,6 +144,10 @@ class Hub(QFrame):
         self._close_timer = QTimer(self)
         self._close_timer.setSingleShot(True)
         self._close_timer.timeout.connect(self._maybe_close)
+
+    def _about(self, button) -> None:
+        from .about import show_about
+        show_about(self.owner, button)
 
     @staticmethod
     def _open_site() -> None:

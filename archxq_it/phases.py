@@ -63,8 +63,9 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
     _e("plot", "Draw plot", (("Rectangle", "rectangle"),
                              ("Rectangle from centre", "rectangle_center"),
                              ("Rotated rectangle", "rotated_rect"),
-                             ("Point by point", "geopath"),
-                             ("From survey points", "survey")),
+                             ("Point by point", "geopath")),
+       # («From survey points» comes back once it is made: a survey mixes
+       # boundary and inner points — which ones close the plot is his call)
        Prop("Ground level", L, 0.0)),
     _e("plot_edit", "Edit plot", (("Move points", "move"),
                                   ("Add point", "add_point"),
