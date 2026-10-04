@@ -1,0 +1,6 @@
+# internal — not published
+PLANO_LITE.md
+build_lite.ps1
+dist/
+__pycache__/
+*.pyc
