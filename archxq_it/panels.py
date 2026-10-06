@@ -130,6 +130,62 @@ class SideStrip(QFrame):
         open_guide(key, self.window())
 
 
+# ---- Left, under the methods: the «Building elements» -------------------------------
+#: (key, label, icon, tip) — a section of its own, apart from the phases
+#: (his call, 2026-10-05, mockup C): ramps and stairs first, a low wall,
+#: roof types… later. Only what is built shows (no placeholders).
+BUILDING_ELEMENTS = [
+    ("ramp", "Ramp", "ramp", "A ramp from a level (or the ground) to another "
+                             "— set it up, then click where it starts"),
+    ("stair", "Stair", "stair", "A stair from a level (or the ground) to "
+                                "another — its steps by Blondel's rule"),
+]
+
+
+class ElementsBox(QFrame):
+    """«Building elements»: tools that stand apart from the phases menus —
+    each opens its own window, then draws in plan on its level."""
+
+    def __init__(self, owner) -> None:
+        super().__init__()
+        self.owner = owner
+        self.setObjectName("axq_strip")
+        self.setStyleSheet(CSS)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 6)
+        lay.setSpacing(1)
+        title = QLabel("Building elements")
+        title.setObjectName("axq_title")
+        lay.addWidget(title)
+        for key, label, ico, tip in BUILDING_ELEMENTS:
+            b = QPushButton(label)
+            b.setFlat(True)
+            b.setProperty("axq", "item")
+            i = icons.icon(ico)
+            if not i.isNull():
+                b.setIcon(i)
+                b.setIconSize(QSize(22, 22))
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, k=key: owner.start_element(k))
+            lay.addWidget(b)
+        # the guide, last — as in the methods above
+        h = QPushButton("Help")
+        h.setFlat(True)
+        h.setProperty("axq", "item")
+        h.setIcon(icons.icon("help"))
+        h.setIconSize(QSize(22, 22))
+        h.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        h.setToolTip("Building elements — how they work (the guide)")
+        h.clicked.connect(self._guide)
+        lay.addWidget(h)
+        self.adjustSize()
+
+    def _guide(self) -> None:
+        from .guide import open_guide
+        open_guide(BUILDING_ELEMENTS[0][0], self.window())
+
+
 # ---- Left, on top: the plan view switch --------------------------------------------
 class PlanSwitch(QPushButton):
     """PLAN VIEW — a piece of its own, right under the ⏻ ArchXQ switch and

@@ -28,7 +28,7 @@ kept: the Lite never removes what it cannot edit.
 
 1. Download the zip and unzip it: you get a folder `archxq_it`. That whole
    folder is the extension — do not take the files out of it.
-2. In IngeTrazo: **Extensions ▸ Open add-ons folder**, and copy the
+2. In IngeTrazo: **Extensions ▸ Open plugins folder**, and copy the
    `archxq_it` folder there.
 3. Close and open IngeTrazo again. Turn ArchXQ on with the **⏻ ArchXQ**
    switch at the top left of the 3D view.

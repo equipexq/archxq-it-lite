@@ -25,7 +25,7 @@ from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer
 from . import compat, edition, model
 from .hub import Hub
 from .levelstrip import LevelStrip
-from .panels import PropsPanel, SideStrip, ViewBar
+from .panels import ElementsBox, PropsPanel, SideStrip, ViewBar
 from .phases import ELEMENTS, PHASES, is_pro, next_open, order, reachable
 from .style import BAR_CSS
 
@@ -154,7 +154,7 @@ STRUCT_ACTIONS = {("column", "corners"), ("beam", "walls"),
                   ("slab", "walls"), ("footing", "pads"),
                   ("footing", "strips"), ("roof", "walls")}
 LEVELS_KEY = Qt.Key_N               # shows / hides the levels strip
-TERRAIN_ROW = "terrain"             # the levels strip's last row
+TERRAIN_ROW = "terrain"             # the levels strip's row at the ground
 
 
 class _Watch(QObject):
@@ -361,6 +361,14 @@ class ArchXQ:
         self.strip = SideStrip(self)
         self.strip_bar = compat.place(self.viewport, self.strip, placement,
                                       "left", BAR_CSS, new_line=False)
+        # under the methods, a section of its own: the «Building elements»
+        # (ramps first — his call, 2026-10-05)
+        self.elbox = ElementsBox(self)
+        self.elbox_bar = compat.place(self.viewport, self.elbox, placement,
+                                      "left", BAR_CSS, new_line=False)
+        from . import ramps, stairs
+        self.bramp_opts = dict(ramps.DEFAULT)    # the last ramp set up
+        self.bstair_opts = dict(stairs.DEFAULT)  # …and stair
         self.viewbar = ViewBar(self)
         self.view_bar = compat.place(self.viewport, self.viewbar, placement,
                                      "bottom", BAR_CSS)
@@ -491,6 +499,7 @@ class ArchXQ:
         else:
             self._show_piece(self.plan_btn, self.plan_bar, False)
             self._show_piece(self.strip, self.strip_bar, False)
+            self._show_piece(self.elbox, self.elbox_bar, False)
             self._show_piece(self.viewbar, self.view_bar, False)
             self._show_piece(self.levels, self.levels_bar, False)
             self.hide_options()
@@ -606,6 +615,9 @@ class ArchXQ:
             return
         elif self.element == "survey" and name == SURVEY_TABLE:
             self.edit_survey()
+        elif self.element == "wall_edit" and name == "Move points":
+            self.start_wall_edit_tool()      # (before the plot's Move points)
+            return
         elif name in EDIT_POINTS and self.element == "excavation_edit":
             self.start_dig_edit_tool(name)
             return
@@ -711,6 +723,9 @@ class ArchXQ:
             self._preview_plot(None)
         if not ok:
             return
+        if getattr(dlg, "action", "apply") == "delete":
+            QTimer.singleShot(0, self.delete_plot)      # it asks first
+            return
         corners, heights, closing = dlg.result_data()
         # read again: what changed while the window was open (its «Show on
         # the model» boxes write at once) must not be put back
@@ -720,6 +735,13 @@ class ArchXQ:
                            heights, closing, doc["plot"]["breaks"])
         compat.flash(self.viewport, "Plot updated — Ctrl+Z undoes it", 5000)
         self.refresh()
+        self._again(dlg, self.edit_plot_table)
+
+    def _again(self, dlg, reopen) -> None:
+        """«Apply» (not OK) was pressed: the window comes back, in its place,
+        with the values just applied (dialogs.ok_apply)."""
+        if getattr(dlg, "again", False):
+            QTimer.singleShot(0, reopen)
 
     # ---- Terrain: setbacks ------------------------------------------------------------
     def start_setback_tool(self) -> None:
@@ -801,10 +823,12 @@ class ArchXQ:
         plot = self.doc()["plot"]
         if points == (plot.get("survey") or []) and \
                 abs(step - plot.get("contour", 0.5)) < 1e-6:
+            self._again(dlg, self.edit_survey)
             return                                   # nothing changed
         self.set_survey(points, step)
         compat.flash(self.viewport, f"Survey points: {len(points)} — the "
                      "ground follows them · Ctrl+Z undoes it", 5000)
+        self._again(dlg, self.edit_survey)
 
     def _preview_survey(self, preview) -> None:
         """(points, active row) drawn while the Survey window is open."""
@@ -1036,13 +1060,47 @@ class ArchXQ:
             QTimer.singleShot(0, self._refill_options)
         self.viewport.update()
 
+    def _refuse(self, noun: str, why: str, corners=None) -> None:
+        """A drawing that can't be made: said in a window, with why and by
+        how much — a line in the status bar went unseen and the tool
+        looked broken (his ask, 2026-10-05)."""
+        from PySide6.QtWidgets import QMessageBox
+        from . import plotgeo
+        info = ""
+        plot = (self.doc().get("plot") or {}).get("corners")
+        if corners and plot:
+            out = [p for p in corners if not plotgeo._inside(p, plot)]
+            if out:
+                far = max(out, key=lambda p: min(
+                    plotgeo._dist_to_segment(p, a, b)
+                    for a, b in plotgeo._edges(plot)))
+                d = min(plotgeo._dist_to_segment(far, a, b)
+                        for a, b in plotgeo._edges(plot))
+                cx = sum(q[0] for q in plot) / len(plot)
+                cy = sum(q[1] for q in plot) / len(plot)
+                dx, dy = far[0] - cx, far[1] - cy
+                side = (("right" if dx > 0 else "left") if abs(dx) >= abs(dy)
+                        else ("top" if dy > 0 else "bottom"))
+                info = (f"It passes the plot's edge by {d:,.2f} m — on the "
+                        f"{side} side (in plan).\n\n")
+        box = QMessageBox(self.window)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(f"{noun.capitalize()} not made")
+        box.setText(f"{why}.")
+        box.setInformativeText(
+            info + f"Check the sizes against the plot: draw the {noun} "
+            "smaller, start it further in — or, if the plot itself is "
+            "wrong, fix it in «Edit plot».")
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec()
+
     def _ramp_done(self, corners, bottoms) -> None:
         from . import terrain
         doc = self.doc()
+        corners = terrain.snug(doc, corners)     # drawn onto the boundary
         why = terrain.why_not_dig(doc, corners)
         if why:
-            compat.flash(self.viewport, why.replace("excavation", "ramp")
-                         + " — draw it again", 6000)
+            self._refuse("ramp", why.replace("excavation", "ramp"), corners)
             return
         if not self._ok_with_setbacks(doc, corners):
             return
@@ -1097,12 +1155,13 @@ class ArchXQ:
     def _dig_done(self, corners) -> None:
         from . import plotgeo, terrain
         doc = self.doc()
+        corners = terrain.snug(doc, corners)     # drawn onto the boundary
         why = terrain.why_not_dig(doc, corners)
-        if why:
-            compat.flash(self.viewport, f"{why} — draw it again", 6000)
-            return                           # the tool stays out: try again
         kind = getattr(self, "creating", "cut")
         noun = "fill" if kind == "fill" else "excavation"
+        if why:
+            self._refuse(noun, why.replace("excavation", noun), corners)
+            return                           # the tool stays out: try again
         dig = model.new_dig(doc["digs"], plotgeo.clean(corners),
                             self._dig_bottom(),
                             base="Fill" if kind == "fill" else "Excavation",
@@ -1111,9 +1170,9 @@ class ArchXQ:
         trial = dict(doc, digs=doc["digs"] + [dig])
         if dig["id"] not in {d["id"] for d in terrain.opened(trial)}:
             # its slopes reach past the plot
-            compat.flash(self.viewport, f"With those slopes the {noun} "
-                         "reaches past the plot — draw it smaller, or "
-                         "steeper edges", 7000)
+            self._refuse(noun, f"With those slopes the {noun} reaches past "
+                         "the plot (make its edges steeper, or draw it "
+                         "smaller)", terrain.top_of(dig, trial))
             return
         # the setbacks are judged where it opens in the ground (slopes too);
         # grading the ground (a fill) is allowed in them — no warning
@@ -1165,6 +1224,8 @@ class ArchXQ:
         self._commit_terrain(doc)
         compat.flash(self.viewport, msg, 5000)
         self.refresh()
+        if action != "delete":
+            self._again(dlg, lambda: self.edit_dig(dig_id))
 
     def _preview_dig(self, preview) -> None:
         """(corners, ground heights, active corner) while the Excavation
@@ -1325,8 +1386,23 @@ class ArchXQ:
         self._plot_cancelled()
 
     def _commit_terrain(self, doc: dict) -> dict:
-        return compat.commit_terrain(self.viewport, self.app.key, doc,
-                                     PLOT_Z, PLOT_COLOR)
+        """The terrain rebuilt and stored — one Ctrl+Z. When an excavation
+        changes the slabs that follow it (autoslabs), the building is made
+        again in the same step."""
+        from . import autoslabs
+        before = doc.get("structure") or []
+        doc = autoslabs.sync(doc, model.elevations)
+        building = None
+        if (doc.get("structure") or []) != before:
+            doc = self._with_built(doc)
+            building = lambda d: compat.building_swap(       # noqa: E731
+                self.viewport, d, model.elevations, compat.level_layer)
+        out = compat.commit_terrain(self.viewport, self.app.key, doc,
+                                    PLOT_Z, PLOT_COLOR, building=building)
+        if building is not None:
+            self._apply_parts()
+            self._outline_soon()
+        return out
 
     # ---- The options bar (creation tools) ---------------------------------------------
     def show_options(self, tool_cls, title: str, build, on_change) -> None:
@@ -1962,6 +2038,7 @@ class ArchXQ:
         compat.flash(self.viewport, f"Rooms of «{lv['name']}» named"
                      + (f" · {copied} on other levels" if copied else "")
                      + " — Ctrl+Z undoes it", 6000)
+        self._again(dlg, self.edit_rooms)
 
     def _draw_room_labels(self, viewport, painter) -> None:
         """In the plan: each room's name and area at its middle."""
@@ -2270,6 +2347,7 @@ class ArchXQ:
             self.delete_opening(op_id)
         else:
             self.apply_opening(new)
+            self._again(dlg, lambda: self.edit_opening(op_id))
 
     def apply_opening(self, new: dict) -> None:
         from . import structure as S
@@ -2615,6 +2693,10 @@ class ArchXQ:
             ca, cb = a["corners"], b["corners"]
             return len(ca) == len(cb) and all(
                 any(_m.dist(p, q) < 0.02 for q in cb) for p in ca)
+        if a["type"] in ("ramp", "stair"):       # the same one, on top
+            return _m.dist((a["x"], a["y"]), (b["x"], b["y"])) < 0.02 and \
+                abs((float(a.get("angle", 0)) - float(b.get("angle", 0))
+                     + 180) % 360 - 180) < 0.5
         return False
 
     def struct_action(self, element: str, shape: str) -> None:
@@ -2738,13 +2820,30 @@ class ArchXQ:
         from . import structure as S
         from . import walls as W
         have = compat.built_ids(self.viewport)
-        if not have:
-            return doc                  # nothing built yet: keep it all
+        built = doc.get("built")
+        if built is None:               # an older file: the old rule
+            if not have:
+                return doc              # nothing built yet: keep it all
+            gone = lambda r, why: r["id"] not in have and not why(r)
+        else:
+            # built once and its object gone = deleted — even when EVERY
+            # one was deleted (his screen, 2026-10-05: walls deleted came
+            # back when basements were added: no object left = «nothing
+            # built yet» = keep it all). Never built: kept, it waits.
+            built = set(built)
+            gone = lambda r, why: r["id"] in built and r["id"] not in have \
+                and not why(r)
         doc = dict(doc)
-        doc["walls"] = [w for w in doc["walls"]
-                        if w["id"] in have or W.why_not(w)]
-        doc["structure"] = [e for e in doc.get("structure") or []
-                            if e["id"] in have or S.why_not(e)]
+        doc["walls"] = [w for w in doc["walls"] if not gone(w, W.why_not)]
+        from . import autoslabs
+        st = doc.get("structure") or []
+        # an automatic slab deleted stays away (else the next rebuild made
+        # it again)
+        off = {autoslabs.key_of(e) for e in st
+               if autoslabs.key_of(e) and gone(e, S.why_not)}
+        if off:
+            doc["auto_off"] = sorted(set(doc.get("auto_off") or []) | off)
+        doc["structure"] = [e for e in st if not gone(e, S.why_not)]
         # an opening goes with its wall; a door / window deleted with the
         # host's tools goes too (a void has no object of its own)
         walls = {w["id"]: w for w in doc["walls"]}
@@ -2766,9 +2865,27 @@ class ArchXQ:
         return [w for w in self._live(doc)["walls"]
                 if w["level"] == level_id]
 
+    @staticmethod
+    def _with_built(doc: dict) -> dict:
+        """What is built now joins «built»: deleted later with the host's
+        tools, it stays deleted (see _live)."""
+        from . import structure as S
+        from . import walls as W
+        made = {w["id"] for w in doc.get("walls") or [] if not W.why_not(w)}
+        made |= {e["id"] for e in doc.get("structure") or []
+                 if not S.why_not(e)}
+        made |= {o["id"] for o in doc.get("openings") or []}
+        keep = {r["id"] for r in (doc.get("walls") or [])
+                + (doc.get("structure") or []) + (doc.get("openings") or [])}
+        return dict(doc, built=sorted((set(doc.get("built") or []) | made)
+                                      & keep))
+
     def _commit_all(self, doc: dict) -> None:
         """THE way the building is stored: every wall and structural
-        element rebuilt from ``doc`` — one Ctrl+Z."""
+        element rebuilt from ``doc`` — one Ctrl+Z. The excavations' slabs
+        are made / followed first (autoslabs)."""
+        from . import autoslabs
+        doc = self._with_built(autoslabs.sync(doc, model.elevations))
         compat.commit_build(self.viewport, self.app.key, doc,
                             model.elevations, compat.level_layer)
         self._apply_parts()              # «Show», and what hides in walls
@@ -2833,12 +2950,31 @@ class ArchXQ:
         compat.back_to_select(self.viewport)
         self.refresh()                       # the shape's icon goes dark
 
+    def start_wall_edit_tool(self) -> None:
+        """Walls › Edit walls › Move points: a straight wall's ends on the
+        current level (walledit) — the walls meeting there follow."""
+        from .walledit import WallEditTool, _straight
+        _i, lv, z0 = self._work_level()
+        if not any(_straight(w) for w in self._live_walls(self.doc(),
+                                                          lv["id"])):
+            compat.flash(self.viewport, f"No straight walls on «{lv['name']}»"
+                         " to edit", 4000)
+            return
+        tool = WallEditTool(
+            lambda: self._live_walls(self.doc(), lv["id"]),
+            lambda walls: self._commit_level_walls(lv["id"], walls),
+            self._wall_cancelled, z0)
+        tool.level_id = lv["id"]
+        self.method = "Move points"
+        self._activate(tool)
+        self.strip.fill(self.element, self.method)
+
     # ---- Structure: each element's own window ---------------------------------------
     @staticmethod
     def element_of(group) -> str | None:
         """The structural element (its id) a group stands for, or None."""
         if compat.kind_of(group) not in ("column", "beam", "slab",
-                                         "footing", "roof"):
+                                         "footing", "roof", "ramp", "stair"):
             return None
         rec = (getattr(group, "ext", None) or {}).get(compat.EXT_KEY) or {}
         return rec.get("id")
@@ -2855,14 +2991,23 @@ class ArchXQ:
         if lv is None:
             return
         self.hub.close_sub()
+        if el["type"] == "ramp":             # its own window (ramps.py)
+            self.edit_ramp(el)
+            return
+        if el["type"] == "stair":            # its own window (stairs.py)
+            self.edit_stair(el)
+            return
         dlg = ElementDialog(el, lv, self.window)
         if not dlg.exec():
             return
         action, new = dlg.result_data()
         if action == "delete":
             self.delete_element(el_id)
+        elif action == "hide":
+            self.hide_element(el_id, el["name"])
         else:
             self.apply_element(new)
+            self._again(dlg, lambda: self.edit_element(el_id))
 
     def apply_element(self, new: dict) -> None:
         from . import structure as S
@@ -2882,14 +3027,197 @@ class ArchXQ:
                      "undoes it", 5000)
 
     def delete_element(self, el_id: str) -> None:
+        from . import autoslabs
         doc = self._live(self.doc())
         el = next((e for e in doc["structure"] if e["id"] == el_id), None)
         if el is None:
             return
         doc["structure"] = [e for e in doc["structure"] if e["id"] != el_id]
+        k = autoslabs.key_of(el)
+        if k:                                # automatic: it stays away
+            doc["auto_off"] = sorted(set(doc.get("auto_off") or []) | {k})
         self._commit_all(doc)
         compat.flash(self.viewport, f"«{el['name']}» deleted — Ctrl+Z "
                      "brings it back", 5000)
+
+    # ---- Building elements: a section apart from the phases (ramps.py) -------------
+    def start_element(self, key: str) -> None:
+        """A «Building elements» button (the section under the methods)."""
+        if key == "ramp":
+            self.start_ramp()
+        elif key == "stair":
+            self.start_stair()
+
+    def _ramp_defaults(self, doc: dict, opts=None, kind="ramp") -> dict:
+        """The last ramp (stair) set up — or, the first time, from the level
+        worked on down to the one under it."""
+        rec = dict(self.bramp_opts if opts is None else opts, type=kind)
+        from . import ramps as R
+        ids = [lv["id"] for lv in doc["levels"]]
+        if R.from_level(rec) not in ids:
+            # bottom up, as a stair is thought of (his call, 2026-10-05):
+            # from the level under the one worked on up to it (the lowest
+            # level: from it up to the next one), clicked at its bottom
+            i, lv, _z = self._work_level()
+            levels = doc["levels"]
+            lo, hi = (i - 1, i) if i > 0 else (i, i + 1)
+            if hi >= len(levels):
+                lo, hi = i, None
+            rec["from"] = rec["level"] = levels[lo]["id"]
+            rec["start"] = "level"
+            rec["to"] = levels[hi]["id"] if hi is not None else "z"
+        to = rec.get("to")
+        if to not in ids + ["z"] and not (isinstance(to, str) and to.startswith(
+                R.TOP) and to[len(R.TOP):] in ids):
+            rec["to"] = "z"
+        return rec
+
+    def start_ramp(self) -> None:
+        """Ramp: its window first (from / to, width, slope…), then the plan
+        of its «From» level — click where it starts, click the way it
+        goes. The tool stays out for the next one (Esc = done)."""
+        if self._pro_only("ramp"):
+            return
+        from . import ramps as R
+        doc = self.doc()
+        self.hub.close_sub()
+        dlg = R.RampDialog(self._ramp_defaults(doc), doc, model.elevations,
+                           edit=False, parent=self.window)
+        if not dlg.exec():
+            return
+        _a, rec = dlg.result_data()
+        self.bramp_opts = {k: rec[k] for k in ("start", "from", "level", "to",
+                                               "to_z",
+                                               "w", "slope", "fix", "L", "t",
+                                               "shape", "turn", "landing",
+                                               "anchor")}
+        self.set_floor(rec["level"], quiet=True)     # drawn on its level
+        _i, lv, z0 = self._work_level()
+
+        def length_at(p):
+            zs, ze = R.heights(dict(rec, x=p[0], y=p[1]), doc,
+                               model.elevations)
+            return R.length_of(rec, zs, ze), zs, ze
+        tool = R.RampTool(rec, length_at, self._ramp_placed,
+                          self._wall_cancelled, z0)
+        tool.level_id = lv["id"]
+        self._activate(tool)
+        compat.flash(self.viewport, f"Ramp from «{lv['name']}» — click where "
+                     "it starts", 4000)
+
+    def _ramp_placed(self, rec: dict) -> None:
+        rec = {k: v for k, v in rec.items() if k not in ("id", "name")}
+        self._struct_done([rec])
+
+    def edit_ramp(self, el: dict) -> None:
+        """A ramp's own window: from / to, sizes, where it is; delete."""
+        from . import ramps as R
+        dlg = R.RampDialog(el, self.doc(), model.elevations, edit=True,
+                           parent=self.window)
+        if not dlg.exec():
+            return
+        action, new = dlg.result_data()
+        if action == "delete":
+            self.delete_element(el["id"])
+            return
+        if action == "hide":
+            self.hide_element(el["id"], el["name"])
+            return
+        if action.startswith("repeat_"):
+            self.repeat_element(new, action == "repeat_up")
+            return
+        self.apply_element(new)
+        self._again(dlg, lambda: self.edit_element(el["id"]))
+
+    def start_stair(self) -> None:
+        """Stair: its window first (from / to, width, riser, tread,
+        shape), then the plan of its «From» level — as a ramp."""
+        if self._pro_only("stair"):
+            return
+        from . import ramps as R
+        from . import stairs as ST
+        doc = self.doc()
+        self.hub.close_sub()
+        dlg = ST.StairDialog(self._ramp_defaults(doc, self.bstair_opts,
+                                                 "stair"),
+                             doc, model.elevations, edit=False,
+                             parent=self.window)
+        if not dlg.exec():
+            return
+        _a, rec = dlg.result_data()
+        self.bstair_opts = {k: rec[k] for k in (
+            "start", "from", "level", "to", "to_z", "w", "riser", "tread",
+            "fix_tread", "t", "shape", "turn", "landing", "anchor")}
+        self.set_floor(rec["level"], quiet=True)
+        _i, lv, z0 = self._work_level()
+
+        def heights_at(p):
+            return R.heights(dict(rec, x=p[0], y=p[1]), doc,
+                             model.elevations)
+        tool = ST.StairTool(rec, heights_at, self._ramp_placed,
+                            self._wall_cancelled, z0)
+        tool.level_id = lv["id"]
+        self._activate(tool)
+        compat.flash(self.viewport, f"Stair from «{lv['name']}» — click "
+                     "where it starts", 4000)
+
+    def edit_stair(self, el: dict) -> None:
+        from . import stairs as ST
+        dlg = ST.StairDialog(el, self.doc(), model.elevations, edit=True,
+                             parent=self.window)
+        if not dlg.exec():
+            return
+        action, new = dlg.result_data()
+        if action == "delete":
+            self.delete_element(el["id"])
+            return
+        if action == "hide":
+            self.hide_element(el["id"], el["name"])
+            return
+        if action.startswith("repeat_"):
+            self.repeat_element(new, action == "repeat_up")
+            return
+        self.apply_element(new)
+        self._again(dlg, lambda: self.edit_element(el["id"]))
+
+    def repeat_element(self, el: dict, up: bool) -> None:
+        """The same ramp / stair, in the same place, ONE LEVEL up (or down)
+        — both its ends move a level, its way (going up or down) kept:
+        stacked flights. Its changes in the window come along. When it
+        can't, a window says why (a status line went unseen)."""
+        from PySide6.QtWidgets import QMessageBox
+        from . import ramps as R
+        doc = self._live(self.doc())
+        noun = el["type"].capitalize()
+
+        def say(text: str) -> None:
+            QMessageBox.information(self.window, f"Repeat the {noun.lower()}",
+                                    text)
+        zs_of = R.level_z(doc, model.elevations)
+        order = [lid for _z, lid in sorted((z, lid)
+                                           for lid, z in zs_of.items())]
+        # past the highest level's floor: its top (a stair up inside it)
+        order.append(R.TOP + order[-1])
+        if el.get("start") == "terrain" or el.get("to") not in order:
+            say(f"Repeat works between levels — this {noun.lower()} starts "
+                "on the terrain or ends at an elevation.")
+            return
+        k = 1 if up else -1
+        a, b = order.index(R.from_level(el)) + k, order.index(el["to"]) + k
+        if not (0 <= a < len(order) and 0 <= b < len(order)):
+            names = {lv["id"]: lv["name"] for lv in doc["levels"]}
+            edge = names[order[-2] if up else order[0]]
+            say(f"There is no level {'above' if up else 'below'} to repeat "
+                f"it on — «{edge}» is the {'top' if up else 'lowest'} one"
+                + (" and it already reaches its top" if up else "")
+                + ". Add a level first (Project › Levels).")
+            return
+        rec = {k_: v for k_, v in el.items() if k_ not in ("id", "name")}
+        rec.update({"from": order[a], "to": order[b], "start": "level"})
+        rec["level"] = R.owner(rec, doc, model.elevations)
+        self.set_floor(rec["level"], quiet=True)
+        if not self._struct_done([rec]):
+            say(f"There is already a {noun.lower()} like it there.")
 
     # ---- Walls: their own window ----------------------------------------------------
     @staticmethod
@@ -2919,8 +3247,11 @@ class ArchXQ:
         action, new = dlg.result_data()
         if action == "delete":
             self.delete_wall(wall_id)
+        elif action == "hide":
+            self.hide_element(wall_id, wall["name"])
         else:
             self.apply_wall(new)
+            self._again(dlg, lambda: self.edit_wall(wall_id))
 
     def _commit_level_walls(self, level_id: str, mine: list[dict]) -> None:
         """Store this level's walls as ``mine`` and rebuild the building
@@ -2977,6 +3308,7 @@ class ArchXQ:
             self.set_setbacks(front, custom, dist, role)
             compat.flash(self.viewport, "Setbacks updated — Ctrl+Z undoes "
                          "it", 4000)
+            self._again(dlg, self.edit_setbacks)
 
     def _preview_setbacks(self, preview) -> None:
         """(plot, active side) drawn while the Setbacks window is open."""
@@ -3206,6 +3538,25 @@ class ArchXQ:
         compat.back_to_select(self.viewport)
         self.refresh()
 
+    # ---- Guide lines (the hub's Guides menu) -----------------------------------------
+    def guide_action(self, key: str) -> None:
+        """IngeTrazo's own construction guides, from inside ArchXQ
+        (guidetools): a guide line, delete one, delete all."""
+        from . import guidetools as GT
+        self.hub.close_sub()
+        if key == "tape":
+            GT.tape(self.viewport)
+        elif key == "erase":
+            if not GT.guides(self.viewport):
+                compat.flash(self.viewport, "No guide lines to delete", 3000)
+                return
+            self._activate(GT.GuideEraseTool(self._plot_cancelled))
+        elif key == "all":
+            n = GT.delete(self.viewport, GT.guides(self.viewport))
+            compat.flash(self.viewport, f"{n} guide line{'s' if n != 1 else ''}"
+                         " deleted — Ctrl+Z brings them back" if n else
+                         "No guide lines to delete", 4000)
+
     def _enter(self, phase: str) -> None:
         self.current = phase
         self.element = PHASES[phase].elements[0]
@@ -3294,6 +3645,7 @@ class ArchXQ:
             compat.flash(self.viewport, f"Project «{project['name']}» "
                          "started — next: draw the plot")
         self.refresh()
+        self._again(dlg, lambda: self.edit_project(tab))
 
     def _change_levels(self, fn) -> None:
         doc = self.doc()
@@ -3321,7 +3673,9 @@ class ArchXQ:
         return compat.level_layer(lv["name"])
 
     def _fill_levels(self, doc: dict) -> None:
-        """Top → bottom as a section reads, the Terrain at the foot."""
+        """Top → bottom as a section reads, the Terrain at the ground —
+        under the ground floor, over the basements (his eye, 2026-10-05:
+        basements listed over the Terrain read as above the ground)."""
         levels = doc["levels"]
         names = [compat.level_layer(r["name"]) for r in levels]
         compat.ensure_layers(self.viewport, names + [compat.TERRAIN_LAYER])
@@ -3339,12 +3693,23 @@ class ArchXQ:
                  "current": i == self.floor and not self.terrain_current,
                  "visible": compat.layer_visible(self.viewport, names[i])}
                 for i, r in reversed(list(enumerate(levels)))]
-        rows.append({"key": TERRAIN_ROW, "name": "Terrain",
+        rows.insert(self._terrain_at(rows),
+                    {"key": TERRAIN_ROW, "name": "Terrain",
                      "kind": "terrain", "elev": None,
                      "current": self.terrain_current,
                      "visible": compat.layer_visible(self.viewport,
                                                      compat.TERRAIN_LAYER)})
         self.levels.fill(rows)
+
+    @staticmethod
+    def _terrain_at(rows: list[dict]) -> int:
+        """Where the Terrain row goes in a top → bottom list of levels:
+        right under the ground floor (the basements below it); at the end
+        when there is no ground floor."""
+        for k, r in enumerate(rows):
+            if r.get("kind") == "ground":
+                return k + 1
+        return len(rows)
         self._show_piece(self.levels, self.levels_bar, self.levels_open)
         QTimer.singleShot(0, self.levels.fit)    # once the rows are styled
 
@@ -3366,6 +3731,8 @@ class ArchXQ:
             name = f"«{levels[i]['name']}»"
         self.levels.mark_current(key)
         self._outline_soon()
+        if self.plan_on:
+            self._apply_parts()          # the plan cut at the new level
         if self.options_for is not None:
             self._refill_options()           # «Level height» of this level
         # drawing walls / structure: carry on drawing on the new level
@@ -3463,6 +3830,7 @@ class ArchXQ:
                          "it back", 4000)
         else:
             self._save_levels(doc, levels, current=key)
+            self._again(dlg, lambda: self.edit_level(key))
 
     # ---- Outliner (side tray, above the properties) ---------------------------------
     def _outline_soon(self, *_a) -> None:
@@ -3485,7 +3853,8 @@ class ArchXQ:
             return "Fills", g.name or "Fill"
         if kind == "wall":
             return "Walls", g.name or "Wall"
-        if kind in ("column", "beam", "slab", "footing", "roof"):
+        if kind in ("column", "beam", "slab", "footing", "roof", "ramp",
+                    "stair"):
             return kind.capitalize() + "s", g.name or kind.capitalize()
         if kind == "opening":
             ok = compat._rec(g).get("okind", "door")
@@ -3531,7 +3900,7 @@ class ArchXQ:
                     "±0.00" if abs(z) < 0.005 else f"{z:+.2f}"),
                 "visible": compat.layer_visible(vp, layer),
                 "current": i == self.floor and not self.terrain_current,
-                "children": kids,
+                "children": kids, "lvkind": lv["kind"],
                 "tip": "Click: work on this level · double-click: edit it"})
         tlayer = compat.TERRAIN_LAYER
         tkids = items(by_layer.get(tlayer, []), "terrain")
@@ -3553,11 +3922,16 @@ class ArchXQ:
                     "visible": doc["view"].get("folds", True),
                     "tip": "Where the sloped ground folds · double-click: "
                            "draw / remove"})
-        nodes.append({"key": "terrain", "label": "Terrain", "kind": "terrain",
-                      "visible": compat.layer_visible(vp, tlayer),
-                      "current": self.terrain_current,
-                      "tip": "Click: work on the Terrain",
-                      "children": tkids})
+        # at the ground, as in the levels strip: under the ground floor,
+        # over the basements
+        at = next((k + 1 for k, n in enumerate(nodes)
+                   if n.get("lvkind") == "ground"), len(nodes))
+        nodes.insert(at, {"key": "terrain", "label": "Terrain",
+                          "kind": "terrain",
+                          "visible": compat.layer_visible(vp, tlayer),
+                          "current": self.terrain_current,
+                          "tip": "Click: work on the Terrain",
+                          "children": tkids})
         mine = {compat.level_layer(r["name"]) for r in doc["levels"]} | {tlayer}
         others = [g for g in vp.scene.groups
                   if getattr(g, "layer", None) not in mine]
@@ -3683,8 +4057,18 @@ class ArchXQ:
         else:
             groups = self._groups_under(key)
             if groups:
-                compat.set_hidden(self.viewport, groups,
-                                  any(not g.hidden for g in groups))
+                hide = any(not g.hidden for g in groups)
+                # ArchXQ's own elements by their id (rebuilt groups keep
+                # it); anything else as it is
+                ids = {compat._rec(g).get("id") for g in groups
+                       if compat.kind_of(g)} - {None}
+                if ids:
+                    cur = self._hidden_ids()
+                    compat.set_hidden_ids(self.viewport, self.app.key,
+                                          (cur | ids) if hide else cur - ids)
+                compat.set_hidden(self.viewport, groups, hide)
+                if ids:
+                    self._apply_parts()
         self._sync_outliner(force=True)
 
     def outliner_select(self, keys) -> None:
@@ -3748,7 +4132,8 @@ class ArchXQ:
     # ---- View bar ----------------------------------------------------------------
     #: the view bar's «Show» chips → the kinds of groups they show / hide
     SHOW_KINDS = {"terrain": ("plot", "dig", "fill"),
-                  "structure": ("column", "beam", "slab", "footing"),
+                  "structure": ("column", "beam", "slab", "footing", "ramp",
+                                "stair"),
                   "walls": ("wall",),
                   "openings": ("opening",),
                   "roof": ("roof",)}
@@ -3774,6 +4159,8 @@ class ArchXQ:
         structure INSIDE the walls while the walls are shown (its lines
         showed through them; it shows when the walls are hidden)."""
         walls_on = "walls" not in self.hidden_parts
+        above = self._levels_above() if self.plan_on else set()
+        mine_off = self._hidden_ids()     # hidden one by one (by its id)
         hide, show = [], []
         for g in self.viewport.scene.groups:
             k = compat.kind_of(g)
@@ -3787,13 +4174,53 @@ class ArchXQ:
                 # before their buttons could show — 2026-10-03)
                 want = bool(part in self.hidden_parts or (
                     part == "structure" and walls_on
-                    and compat._rec(g).get("inwall")))
+                    and compat._rec(g).get("inwall"))
+                    # the plan cuts the building at the level worked on:
+                    # what stands above it is not seen (his call,
+                    # 2026-10-05 — a Level 1 slab hid a basement stair)
+                    or compat._rec(g).get("level") in above
+                    # its window's «Hide» / the outliner's eye: it holds
+                    # through every rebuild
+                    or compat._rec(g).get("id") in mine_off)
                 if bool(g.hidden) != want:
                     (hide if want else show).append(g)
         if hide:
             compat.set_hidden(self.viewport, hide, True)
         if show:
             compat.set_hidden(self.viewport, show, False)
+
+    def _hidden_ids(self) -> set:
+        try:
+            return set(self.doc().get("hidden_ids") or [])
+        except Exception:  # noqa: BLE001 — nothing hidden
+            return set()
+
+    def set_elements_hidden(self, ids, hidden: bool) -> None:
+        """Hide / show ArchXQ elements by id — a view change (no undo),
+        kept through rebuilds and in the file."""
+        cur = self._hidden_ids()
+        cur = (cur | set(ids)) if hidden else (cur - set(ids))
+        compat.set_hidden_ids(self.viewport, self.app.key, cur)
+        self._apply_parts()
+        self._sync_outliner(force=True)
+
+    def hide_element(self, el_id: str, name: str = "") -> None:
+        """A window's «Hide»: it goes out of sight — its eye in the
+        outliner brings it back."""
+        self.set_elements_hidden({el_id}, True)
+        compat.flash(self.viewport, f"«{name or 'It'}» hidden — its eye in "
+                     "the outliner shows it again", 6000)
+
+    def _levels_above(self) -> set:
+        """The levels over the one worked on (on the Terrain: over the
+        ground floor) — what the plan does not show."""
+        try:
+            levels = self.doc()["levels"]
+            i = self._ground_index({"levels": levels}) \
+                if self.terrain_current else self.floor
+        except Exception:  # noqa: BLE001 — nothing hidden
+            return set()
+        return {lv["id"] for k, lv in enumerate(levels) if k > i}
 
     def on_view_kind(self, kind: str) -> None:
         # the view bar's 3D / Plan are the plan view switch (one truth)
@@ -3857,6 +4284,7 @@ class ArchXQ:
         from . import prefs
         if prefs.get("plan_hidden_line"):
             compat.plan_style(self.viewport, True)   # a view change only
+        self._apply_parts()              # the levels above: not in the plan
         self._sync_plan()
         if not quiet:
             compat.flash(self.viewport, "Plan view — locked to the top: pan "
@@ -3878,6 +4306,7 @@ class ArchXQ:
         else:
             compat.standard_view(self.viewport, "iso")
             compat.set_perspective(self.viewport, True)
+        self._apply_parts()              # the whole building again
         self._sync_plan()
 
     def _watch_plan(self, viewport) -> None:
@@ -3902,6 +4331,7 @@ class ArchXQ:
         compat.plan_style(self.viewport, False)
         self._plan_back = None
         compat.set_perspective(self.viewport, True)
+        self._apply_parts()              # the whole building again
         self._sync_plan()
 
     def _sync_plan(self) -> None:
@@ -3995,6 +4425,7 @@ class ArchXQ:
         has_methods = self.strip.fill(self.element, self.method)
         self._show_piece(self.plan_btn, self.plan_bar, True)
         self._show_piece(self.strip, self.strip_bar, has_methods)
+        self._show_piece(self.elbox, self.elbox_bar, True)
         self._show_piece(self.viewbar, self.view_bar, True)
         self._sync_plan()
         self.props.show_for(self.current, self.element,
@@ -4036,6 +4467,43 @@ class ArchXQ:
                 draw(viewport, painter)
             except Exception:  # noqa: BLE001 — never break the host's paint
                 pass
+
+    GUIDE_INK = "#2f6fbf"          # the guide lines over the plan
+
+    def _draw_plan_guides(self, viewport, painter) -> None:
+        """In the plan: IngeTrazo's guide lines drawn ON TOP (his screen,
+        2026-10-05: made, but not seen). The host draws them in the scene,
+        and in the plan's hidden-line style the plot's surface — at the
+        very height they lie on — covers them; perspective got away with
+        it. The snap is the host's either way: this is only their ink."""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QPen
+        gs = list(getattr(viewport.scene, "guides", None) or [])
+        if not gs:
+            return
+        painter.save()
+        painter.setRenderHint(painter.RenderHint.Antialiasing)
+        pen = QPen(QColor(self.GUIDE_INK), 1.4, Qt.DashLine)
+        painter.setPen(pen)
+        for g in gs:
+            try:
+                if getattr(g, "is_line", True):
+                    seg = viewport._guide_snap_segment(g)
+                    if not seg:
+                        continue
+                    a = viewport._world_to_pixel(seg[0])
+                    b = viewport._world_to_pixel(seg[1])
+                    if a and b:
+                        painter.drawLine(QPointF(*a), QPointF(*b))
+                else:                              # a guide point: a cross
+                    p = viewport._world_to_pixel(g.a)
+                    if p:
+                        x, y = p
+                        painter.drawLine(QPointF(x - 6, y), QPointF(x + 6, y))
+                        painter.drawLine(QPointF(x, y - 6), QPointF(x, y + 6))
+            except Exception:  # noqa: BLE001 — never break the host's paint
+                continue
+        painter.restore()
 
     GRID_STEPS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0)
 
@@ -4238,6 +4706,7 @@ class ArchXQ:
             self._draw_underlay(viewport, painter)
         if self.plan_on:
             self._draw_plan_grid(viewport, painter)
+            self._draw_plan_guides(viewport, painter)
         if self.plan_on and not self.terrain_current:
             self._draw_hidden_columns(viewport, painter)
             self._draw_opening_symbols(viewport, painter)
@@ -4301,12 +4770,20 @@ class ArchXQ:
         self.strip.layout().activate()       # its new buttons, measured
         self.strip.resize(self.strip.sizeHint())
         self.strip.move(MARGIN, top_row + self.plan_btn.height() + MARGIN)
+        # the «Building elements» under the methods (under the plan switch
+        # when no methods show), a gap between: another section
+        self.elbox.adjustSize()
+        below = (self.strip.y() + self.strip.height()) \
+            if self.strip.isVisible() \
+            else top_row + self.plan_btn.height()
+        self.elbox.move(MARGIN, below + 2 * MARGIN)
         self.viewbar.adjustSize()
         self.viewbar.move(max(MARGIN, (vp.width() - self.viewbar.width()) // 2),
                           vp.height() - self.viewbar.height() - MARGIN)
         # options: under the phases row, beside the left column
         left = max(self.plan_btn.width() if self.plan_btn.isVisible() else 0,
-                   self.strip.width() if self.strip.isVisible() else 0)
+                   self.strip.width() if self.strip.isVisible() else 0,
+                   self.elbox.width() if self.elbox.isVisible() else 0)
         x = MARGIN + (left + MARGIN if left else 0)
         self.optbar.max_width = vp.width() - x - MARGIN   # rows past this
         self.optbar.fit()
@@ -4353,6 +4830,7 @@ class ArchXQ:
         for widget, bar in ((self.hub, self.hub.bar),
                             (self.plan_btn, self.plan_bar),
                             (self.strip, self.strip_bar),
+                            (self.elbox, self.elbox_bar),
                             (self.viewbar, self.view_bar),
                             (self.levels, self.levels_bar),
                             (self.optbar, self.opt_bar)):

@@ -54,7 +54,7 @@ GUIDES: dict[str, dict] = {
         "steps": [
             ("Rectangle", "Click one corner, move, click the opposite "
              "corner — or type the two sides (e.g. <code>24;36</code>) "
-             "and Enter."),
+             "and Enter (see <b>Typing the sizes</b> above)."),
             ("Rectangle from centre", "Click the centre, then a corner. "
              "Handy when you know where the middle of the plot is."),
             ("Rotated rectangle", "Click the first corner, the second "
@@ -189,19 +189,42 @@ GUIDES: dict[str, dict] = {
             "level</b>'s floor (it follows the level), <b>at an "
             "elevation</b>, or <b>per corner</b> — each corner its own "
             "bottom: a sloped pit or a ramp.",
+            "For basements, <b>add the basement levels first</b> (Project › "
+            "Levels › Add basement): «Under ‹level›» lists only the levels "
+            "that exist. Then pick «Under Basement 2» — the field <b>below "
+            "its floor</b> appears (slab + base under the floor, usually "
+            "0.30) — and the pit follows if a basement's height changes.",
+            "On a <b>sloped plot</b> prefer «Under ‹level›»: «Depth below "
+            "ground» measures from the lowest ground around the pit, not "
+            "from the building's ±0.00.",
+            "The <b>slabs</b> of the basements it holds (and of the ground "
+            "floor over them) appear by themselves and follow the pit's "
+            "outline — delete one you do not want.",
             "<b>Wall</b> of each side: 90° = vertical (a retaining wall); "
             "less = a <b>slope</b> opening outward (45° is a usual batter).",
             "Overlapping excavations <b>merge</b>, each part dug to the "
             "deepest.",
             "Double-click an excavation (or its row in the outliner) to "
             "open its window: corners, depths, walls.",
+            "<b>Exactly placed</b>: the <b>Guides</b> icon on the top bar "
+            "(two crossed dashed lines) ▸ <b>Guide line</b> (or <b>T</b>): "
+            "click a side of the plot, move inward and type the distance + "
+            "Enter. Two guides (a front and a side) cross where the "
+            "excavation's corner goes: its corners snap to the guides and "
+            "to their crossing. The same menu deletes <b>a guide</b> (click "
+            "it) or <b>all</b> of them.",
         ],
         "mistakes": [
             "A corner's bottom <b>above</b> the ground: it is held at the "
             "ground, with a warning (it is a fill's job to raise ground).",
             "Drawing it outside the plot: it is kept but not dug.",
+            "The right size in the wrong place: set guides from the plot's "
+            "sides first (Tape Measure, <b>T</b>) and start on their "
+            "crossing.",
         ],
-        "keys": [("Ctrl+Z", "undo every change")],
+        "keys": [("T", "a guide line at a typed distance (Guides ▸ Guide "
+                       "line)"),
+                 ("Ctrl+Z", "undo every change")],
     },
     "fill": {
         "what": "Earth brought in: the ground raised to a <b>platform</b> — "
@@ -367,7 +390,15 @@ GUIDES.update({
              "for a stair, a lift, a void."),
         ],
         "tips": ["<b>Top</b>: 0 = the floor itself; a small negative value "
-                 "sinks it (a bathroom, a terrace)."],
+                 "sinks it (a bathroom, a terrace).",
+                 "<b>Automatic slabs</b>: an excavation makes the slabs of "
+                 "the basements it holds and of the ground floor over them, "
+                 "following its outline (its window says «Automatic»). "
+                 "Delete one you do not want: it stays away — Ctrl+Z brings "
+                 "it back. A slab you draw over it on that level takes its "
+                 "place.",
+                 "Ramps and stairs open their way through the slabs by "
+                 "themselves."],
         "keys": [("Ctrl+Z", "undo")],
     },
     "footing": {
@@ -410,6 +441,8 @@ GUIDES.update({
             "<b>Height</b>: the level's (it follows the level) or "
             "<b>Custom</b> (a low wall, a parapet).",
             "A partition is simply a thinner wall.",
+            "To move a wall's end afterwards: <b>Edit walls › Move points</b>"
+            ", or <b>Start / End</b> in its window (double-click it).",
         ],
         "mistakes": [
             "Walls on the wrong side of the line: press <b>Tab</b> while "
@@ -422,6 +455,29 @@ GUIDES.update({
                  ("Backspace", "take the last point back"),
                  ("Esc", "drop what is drawn (again: the tool ends)"),
                  ("Ctrl+Z", "undo")],
+    },
+    "wall_edit": {
+        "what": "Change where a straight wall starts or ends, with the "
+                "mouse. The walls that end at the same corner <b>follow</b>, "
+                "so a corner stays a corner — the joins are made again by "
+                "themselves.",
+        "steps": [
+            ("Move points", "The walls' ends show as dots. Click one: it "
+             "follows the cursor (it snaps to edges, guides and their "
+             "crossings). Click where it goes — or type a distance + Enter. "
+             "<b>X</b> / <b>Y</b> keep it on an axis."),
+        ],
+        "tips": [
+            "Exact numbers instead: double-click the wall — its window has "
+            "<b>Start</b> and <b>End</b> (X, Y) and <b>Length</b>, kept in "
+            "step; <b>Apply</b> shows it without closing.",
+            "Curved and round walls: change them in their window.",
+            "Doors and windows keep their distance from the wall's start.",
+        ],
+        "keys": [("X / Y", "keep the move on the red / green axis"),
+                 ("number + Enter", "move it that far, toward the cursor"),
+                 ("Esc", "put it back (again: the tool ends)"),
+                 ("Ctrl+Z", "undo the move")],
     },
     "wall_import": {
         "what": "Raise the walls of an existing plan. <b>Load</b> a DXF "
@@ -555,6 +611,166 @@ GUIDES.update({
 })
 
 
+# ---- Building elements (a section of their own, under the methods) ----------
+GUIDES["ramp"] = {
+    "what": "A <b>ramp</b> is a sloped concrete slab from a level — or from "
+            "the ground — down (or up) to another level or an elevation. Its "
+            "<b>length follows from the drop and the slope</b>: you never "
+            "work it out.",
+    "steps": [
+        ("Its window", "Click <b>Ramp</b> under «Building elements». Choose "
+         "its <b>Top level</b> (a level, or <b>the terrain</b>: the ground's "
+         "height at its top) over its <b>Bottom level</b> (a level or an "
+         "elevation), and <b>Starts at</b> — where your click is: its bottom "
+         "(going up) or its top (going down — a ramp from the street). Then "
+         "the <b>width</b>, the <b>slope</b> and the <b>thickness</b>. The "
+         "side view shows it live. For a special case, type the "
+         "<b>Length</b> instead: the slope then follows from it."),
+        ("Its shape", "<b>Straight</b>; <b>L</b>: two runs and a level "
+         "landing, the second run turned 90°; <b>U</b>: the second run comes "
+         "back beside the first, the landing across both. <b>Turn</b>: the "
+         "side it turns to; <b>Landing</b>: its length. The length (or "
+         "slope) is the two runs together — the landing apart; the drop is "
+         "split evenly between them."),
+        ("Where it starts", "OK opens the plan. Click its <b>first edge</b> "
+         "(bottom or top, as «Starts at» says)."),
+        ("The way it goes", "Move the mouse: the ramp turns with it, at its "
+         "length. Click to build it. The tool stays out for the next one; "
+         "<b>Esc</b> ends."),
+        ("Change it", "A <b>double-click</b> on a ramp opens its window: "
+         "top / bottom, sizes, where it starts and its direction, Hide, "
+         "Delete."),
+        ("Insert at / stacked", "<b>Insert at</b>: the click on its first "
+         "edge's left corner, middle or right corner. <b>Repeat above ▲ / "
+         "below ▼</b> (its window): the same ramp, in the same place, one "
+         "level up / down — a garage's ramps stacked."),
+    ],
+    "typing": [
+        ("Its direction", "after the first click, type the angle in degrees "
+                          "+ Enter (<code>0</code> = along the red axis, "
+                          "<code>90</code> = along the green)"),
+    ],
+    "tips": [
+        "Slopes: about <b>20 %</b> for cars (with gentler ends in real "
+        "projects), <b>8 %</b> for people (accessibility).",
+        "Add the levels first (Project › Levels): the ramp runs between "
+        "them.",
+        "Into an excavation from the street: <b>Top</b> = the terrain (or "
+        "Level 1), <b>Bottom</b> = the basement, <b>Starts at</b> = its top.",
+        "A ramp or stair belongs to its <b>bottom level</b> — the storey "
+        "whose space it takes (the outliner lists it there).",
+        "The <b>slab</b> it goes through (the floor it leaves, and any in "
+        "between) gets its <b>hole by itself</b>, 1 cm round the ramp. Move "
+        "the ramp and the hole follows; delete it and the slab closes.",
+    ],
+    "keys": [("Tab", "an L / U turns the other way (while placing it)"),
+             ("Backspace", "start again (after the first click)"),
+             ("Esc", "drop it / end the tool"), ("Ctrl+Z", "undo")],
+}
+
+
+GUIDES["stair"] = {
+    "what": "A <b>stair</b> from a level — or from the ground — to another "
+            "level or an elevation. Its <b>steps are worked out</b>: the "
+            "count of risers from the highest riser you allow, the tread "
+            "from <b>Blondel's rule</b> (2 risers + 1 tread = 63 cm).",
+    "steps": [
+        ("Its window", "Click <b>Stair</b> under «Building elements». "
+         "Choose its <b>Top level</b> over its <b>Bottom level</b>, "
+         "<b>Starts at</b> (the bottom step — usual — or the top), the "
+         "<b>width</b> and the <b>riser "
+         "(max)</b> — 18 cm is usual. The line under it says what you get: "
+         "«17 risers × 17.6 cm · tread 27.7 cm · 2h+p = 63.0 cm · run "
+         "4.43 m». The side view draws the steps."),
+        ("The tread", "<b>Blondel</b> on: worked out (kept between 25 and "
+         "32 cm). Type a tread and it stays (Blondel off)."),
+        ("Its shape", "<b>Straight</b>; <b>L</b>: two flights and a landing, "
+         "turned 90°; <b>U</b>: the second flight back beside the first. "
+         "The risers are split between the two flights."),
+        ("Where it starts", "OK opens the plan: click its first step's edge "
+         "(bottom or top, as «Starts at» says), then the way it goes — the "
+         "treads are drawn as you turn it."),
+        ("Insert at", "Where your click sits on its first step's edge, "
+         "walking it: the <b>left corner</b>, the <b>middle</b> or the "
+         "<b>right corner</b> — a corner puts it straight into a stair "
+         "shaft's corner."),
+        ("Change it", "A <b>double-click</b> on a stair opens its window "
+         "again."),
+        ("Stacked flights", "In a stair's window, <b>Repeat above ▲</b> / "
+         "<b>Repeat below ▼</b> make the same stair, in the same place, one "
+         "level up / down — a fire stair is one click per floor."),
+    ],
+    "typing": [
+        ("Its direction", "after the first click, type the angle in degrees "
+                          "+ Enter"),
+    ],
+    "tips": [
+        "Going down from a floor: its first step starts at the edge of the "
+        "hole in the slab — the slab gets that hole by itself.",
+        "A comfortable stair: risers 16–18 cm, treads 27–30 cm.",
+        "No level over the highest one yet? <b>To</b> = «Top of ‹level›» "
+        "(its floor + its height): the stair goes up inside it.",
+    ],
+    "keys": [("Tab", "an L / U turns the other way (while placing it)"),
+             ("Backspace", "start again (after the first click)"),
+             ("Esc", "drop it / end the tool"), ("Ctrl+Z", "undo")],
+}
+
+
+# ---- typed sizes (his ask, 2026-10-05: «used a lot, and easy to forget») ----
+# checked against the tools' on_value and the host's _parse_value_buffer
+_T_RECT = ("Rectangle", "click the first corner, move toward where it "
+           "grows, type <code>40;30</code> + Enter — along the red axis ; "
+           "along the green")
+_T_CENTRE = ("Rectangle from centre", "click the centre, type "
+             "<code>40;30</code> + Enter — the whole width ; depth")
+_T_ROT = ("Rotated rectangle", "click the first corner, aim, type the first "
+          "side + Enter; then type the other side + Enter")
+_T_POINTS = ("Point by point", "after each corner, aim and type the next "
+             "side's length + Enter")
+_T_CIRCLE = ("Circle", "click the centre, type the radius + Enter")
+_T_MOVE = ("Move points", "click the corner, aim, type how far + Enter "
+           "(X / Y keep it on an axis)")
+_T_GUIDE = ("Guide line (T)", "click an edge, move off it, type the "
+            "distance + Enter")
+GUIDES["plot"]["typing"] = [_T_RECT, _T_CENTRE, _T_ROT, _T_POINTS]
+GUIDES["plot_edit"]["typing"] = [_T_MOVE]
+GUIDES["excavation"]["typing"] = [
+    _T_RECT, _T_CENTRE, _T_ROT, _T_POINTS, _T_CIRCLE,
+    ("Ramp", "click where it starts, aim downhill, type its length + Enter "
+             "(or let the slope give it)"), _T_GUIDE,
+    ("Its depth", "not typed while drawing: <b>Bottom</b> in the options "
+                  "bar, before you start")]
+GUIDES["fill"]["typing"] = [_T_RECT, _T_CENTRE, _T_ROT, _T_POINTS, _T_CIRCLE,
+                            ("Its top", "<b>Top</b> in the options bar, "
+                                        "before you start")]
+GUIDES["excavation_edit"]["typing"] = [_T_MOVE]
+GUIDES["wall"]["typing"] = [
+    ("Point by point", "after each point, aim and type the wall's length + "
+                       "Enter; <b>C</b> closes the room"),
+    _T_RECT, _T_CENTRE, _T_ROT,
+    ("Curved, 3 points", "click the start, aim, type the length start → end "
+                         "+ Enter, then click the bulge"),
+    ("Curved from centre", "centre, start, then type the angle in degrees + "
+                           "Enter (<code>90</code>)"),
+    ("Circle", "click the centre, type the radius + Enter"),
+    ("Thickness, height", "in the options bar, before you start")]
+GUIDES["wall_edit"]["typing"] = [_T_MOVE]
+GUIDES["column"]["typing"] = [
+    ("Draw", "click a corner, type <code>0,30;0,50</code> + Enter — its "
+             "width ; depth"),
+    ("Row", "click the first one, aim, type the row's length + Enter — the "
+            "count in the options bar"),
+    ("Grid", "click the first one, type <code>20;15</code> + Enter — the "
+             "grid's width ; depth"),
+    ("Single", "its size in the options bar, then a click")]
+GUIDES["beam"]["typing"] = [
+    ("Point by point", "after each point, aim and type the beam's length + "
+                       "Enter")]
+GUIDES["slab"]["typing"] = [_T_RECT, _T_CENTRE, _T_ROT, _T_POINTS]
+GUIDES["roof"]["typing"] = [_T_RECT, _T_CENTRE, _T_ROT, _T_POINTS]
+
+
 # ---- the window -------------------------------------------------------------
 _CSS = (
     "QDialog { background: #1d2025; }"
@@ -576,17 +792,28 @@ _PAGE_CSS = (
     "a { color: #8fd3ff; }")
 
 
+#: the «Building elements» — a section of their own, apart from the phases
+BUILDING = {"ramp": "Ramp", "stair": "Stair"}
+
+
 def _elements_of(element: str) -> tuple[str, list[str]]:
     """The phase holding ``element`` and its elements (in phase order)."""
+    if element in BUILDING:
+        return "Building elements", list(BUILDING)
     for ph in PHASES.values():
         if element in ph.elements:
             return ph.label, list(ph.elements)
     return "", [element]
 
 
+def _label(key: str) -> str:
+    el = ELEMENTS.get(key)
+    return el.label if el else BUILDING.get(key, key)
+
+
 def page_html(key: str) -> str:
     el = ELEMENTS.get(key)
-    label = el.label if el else key
+    label = _label(key)
     phase, _ = _elements_of(key)
     g = GUIDES.get(key)
     if g is None:                       # no guide yet: the short help + ways
@@ -609,6 +836,24 @@ def page_html(key: str) -> str:
         out.append(f"<div style='margin: 8px 0 4px 0'><img src='{url}' "
                    "width='560' height='280'></div>")
     out.append(f"<p>{g['what']}</p>")
+    if g.get("typing"):           # typed sizes: easy to forget — in front
+        out.append("<table width='100%' cellpadding='10' style='margin:10px 0;"
+                   "background:#2b2418;border-left:4px solid #e8742c'><tr><td>"
+                   "<span style='color:#ffb26b;font-weight:bold;font-size:15px'>"
+                   "&#9000;&nbsp; Typing the sizes</span><table "
+                   "cellpadding='3' style='margin-top:6px'>")
+        for what, how in g["typing"]:
+            out.append(f"<tr><td class='k'>{html.escape(what)}</td>"
+                       f"<td>{how}</td></tr>")
+        out.append("</table><p style='color:#c9b79a;margin:6px 0 0 0'>"
+                   "Type without clicking — the numbers show in IngeTrazo's "
+                   "measurements box (bottom right), Enter applies. Two "
+                   "numbers: always separate them with <b>;</b> — then a "
+                   "decimal comma is never taken for a separator. Decimals "
+                   "with a comma or a point (<code>40,5;30</code>). Units "
+                   "work too: "
+                   "<code>350cm</code>, <code>4000mm</code>.</p></td></tr>"
+                   "</table>")
     if g.get("steps"):
         out.append("<h2>Step by step</h2><table>")
         for name, how in g["steps"]:
@@ -651,8 +896,7 @@ class GuideWindow(QDialog):
         right.addWidget(self.text)
         lay.addLayout(right, 1)
         for k in keys:
-            el = ELEMENTS.get(k)
-            it = QListWidgetItem(el.label if el else k)
+            it = QListWidgetItem(_label(k))
             it.setData(Qt.UserRole, k)
             self.list.addItem(it)
         self.list.currentItemChanged.connect(

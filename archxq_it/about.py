@@ -38,9 +38,14 @@ def _links() -> list[tuple[str, str, str]]:
         out.append(("Source code", GITHUB, "GitHub — free, GPL-3.0"))
     else:
         out.append(("Updates", UPDATES, "your Gumroad library"))
+    # the support form arrives with the product and the version filled in
+    # (the site's inbox shows which product a request is about)
+    from urllib.parse import quote
+    ed = "Lite" if edition.lite() else "Pro"
+    support = f"{SUPPORT}?product=archxq-it&version={quote(ed + ' ' + _version())}"
     out += [("Manual", "guide", "the Help of every tool"),
             ("Videos", VIDEOS, "tutorials on YouTube"),
-            ("Report a problem", SUPPORT, "xq.com.br/support")]
+            ("Report a problem", support, "xq.com.br/support")]
     return out
 
 

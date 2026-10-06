@@ -132,6 +132,17 @@ def _ramp(p) -> None:
     p.drawLine(QPointF(40, 46), QPointF(36, 41))
 
 
+def _stair(p) -> None:
+    """A flight of steps going up, its floor line under it."""
+    p.setPen(_pen())
+    p.drawLine(QPointF(4, 54), QPointF(60, 54))
+    p.setPen(_pen(ACCENT, 4.5))
+    pts = [(8, 54), (8, 44), (20, 44), (20, 34), (32, 34), (32, 24),
+           (44, 24), (44, 14), (56, 14)]
+    for a, b in zip(pts, pts[1:]):
+        p.drawLine(QPointF(*a), QPointF(*b))
+
+
 def _sq(p, x, y, s=10.0, color=ACCENT) -> None:
     """A column's section: a filled square centred on (x, y)."""
     p.setPen(Qt.NoPen)
@@ -402,9 +413,17 @@ def _help(p) -> None:
     p.drawText(QRectF(8, 8, 48, 48), Qt.AlignCenter, "?")
 
 
-_CUSTOM = {"help": _help, "survey": _survey, "add_point": _add_point, "fit": _fit,
+def _guides(p) -> None:
+    """Two dashed guide lines crossing, the crossing marked."""
+    p.setPen(_pen(INK, 3.5, dash=True))
+    p.drawLine(QPointF(6, 22), QPointF(58, 22))
+    p.drawLine(QPointF(40, 6), QPointF(40, 58))
+    _dot(p, 40, 22, 6.0)
+
+
+_CUSTOM = {"help": _help, "guides": _guides, "survey": _survey, "add_point": _add_point, "fit": _fit,
            "excavate": _excavate, "eye": _eye, "eye_off": _eye_off,
-           "edit": _edit, "ramp": _ramp,
+           "edit": _edit, "ramp": _ramp, "stair": _stair,
            "col_single": _col_single, "col_row": _col_row,
            "col_grid": _col_grid, "col_corners": _col_corners,
            "beam_walls": _beam_walls, "slab_walls": _slab_walls,

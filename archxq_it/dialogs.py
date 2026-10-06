@@ -88,6 +88,52 @@ def _show_row(view, items) -> QWidget | None:
     return box
 
 
+#: windows put back where they were when «Apply» opens them again
+_REOPEN: dict[str, object] = {}
+
+
+def ok_apply(dlg: QDialog, bb: QDialogButtonBox, ok: str = "OK") -> None:
+    """«OK» applies and closes; «Apply» applies and keeps the window — it
+    is opened again at once, in the same place, with the new values (his
+    ask, 2026-10-05: «Apply» used to close it, so every change meant
+    opening it again). Apply presses OK itself, so whatever OK runs (a
+    window's own checks) runs for both. The caller sees ``dlg.again`` and
+    opens it again."""
+    from PySide6.QtCore import QTimer
+    okb = bb.button(QDialogButtonBox.Ok)
+    okb.setText(ok)
+    b = bb.addButton("Apply", QDialogButtonBox.ApplyRole)
+    b.setToolTip("Apply the changes and keep this window open")
+    dlg.again = False
+
+    def go() -> None:
+        dlg.again = True
+        _REOPEN[type(dlg).__name__] = dlg.geometry()
+        okb.click()
+        if dlg.isVisible():              # a check said no: nothing applied
+            dlg.again = False
+            _REOPEN.pop(type(dlg).__name__, None)
+    b.clicked.connect(go)
+    geo = _REOPEN.pop(type(dlg).__name__, None)
+    if geo is not None:                  # once shown (its own sizing first)
+        QTimer.singleShot(0, lambda: dlg.isVisible() and dlg.setGeometry(geo))
+
+
+def hide_button(dlg: QDialog) -> QPushButton:
+    """«Hide»: the element out of sight (its changes in the window kept),
+    a view change — its eye in the outliner shows it again (his ask,
+    2026-10-05). The window closes with action "hide"."""
+    b = QPushButton("Hide")
+    b.setToolTip("Hide it (a view change, not an undo step) — its eye in "
+                 "the outliner shows it again")
+
+    def go() -> None:
+        dlg.action = "hide"
+        dlg.accept()
+    b.clicked.connect(go)
+    return b
+
+
 def _metres(value: float, lo: float, hi: float, step: float = 0.05):
     w = QDoubleSpinBox()
     w.setDecimals(2)
@@ -150,8 +196,11 @@ class ProjectDialog(QDialog):
         lay.addWidget(self.tabs, 1)
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText(
-            "Start project" if self.is_new else "Apply")
+        if self.is_new:
+            bb.button(QDialogButtonBox.Ok).setText("Start project")
+            self.again = False
+        else:
+            ok_apply(self, bb)
         bb.accepted.connect(self._accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -594,9 +643,15 @@ class PlotDialog(QDialog):
         lay.addWidget(self.status)
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
+        # where the hand looks for it (his ask, 2026-10-05) — ui asks first
+        self.action = "apply"
+        dele = bb.addButton("Delete plot", QDialogButtonBox.ResetRole)
+        dele.setToolTip("Delete the plot (and its excavations and fills) — "
+                        "it asks first; Ctrl+Z brings it back")
+        dele.clicked.connect(self._delete)
         lay.addWidget(bb)
         self.gap = 0.0
         self._fill()
@@ -709,6 +764,11 @@ class PlotDialog(QDialog):
     def result_data(self):
         return self.pts, self.heights, self.closing
 
+    def _delete(self) -> None:
+        """Closes with «delete»: ui asks, then takes the plot away."""
+        self.action = "delete"
+        self.accept()
+
 
 class LevelDialog(QDialog):
     """One level's own window: its name and height (elevation worked out),
@@ -781,7 +841,7 @@ class LevelDialog(QDialog):
         lay.addLayout(acts)
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(lambda: self._done("apply"))
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -886,12 +946,28 @@ class WallDialog(QDialog):
         self.f_base.setToolTip("Up or down from the level's floor")
         form.addRow("Base offset", self.f_base)
         self.length0 = W.drawn(wall).L if kind != "circle" else 0.0
+        self.f_ends = None
         if kind == "line":
             self.f_len = _metres(self.length0, 0.05, 1000.0)
             self.f_len.setToolTip("Stretched or shortened from its end "
                                   "point (the start stays)")
-            self.f_len.valueChanged.connect(self._refresh)
+            self.f_len.valueChanged.connect(self._on_length)
             form.addRow("Length", self.f_len)
+            # where it starts and ends, typed (a customer's ask, 2026-10-05:
+            # «I can only change its properties, not where it starts or
+            # ends») — kept in step with Length
+            self.f_ends = {}
+            for end, label in (("a", "Start"), ("b", "End")):
+                row = QWidget()
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(0, 0, 0, 0)
+                for k, axis in enumerate(("X", "Y")):
+                    s = _metres(float(wall[end][k]), -100000.0, 100000.0, 0.05)
+                    s.valueChanged.connect(self._on_ends)
+                    rl.addWidget(QLabel(axis))
+                    rl.addWidget(s, 1)
+                    self.f_ends[(end, k)] = s
+                form.addRow(label, row)
         else:
             self.f_len = None
             form.addRow("Length" if kind == "arc" else "Radius",
@@ -907,12 +983,13 @@ class WallDialog(QDialog):
 
         acts = QHBoxLayout()
         acts.addStretch()
+        acts.addWidget(hide_button(self))
         b_del = QPushButton("Delete wall")
         b_del.clicked.connect(self._delete)
         acts.addWidget(b_del)
         lay.addLayout(acts)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -921,6 +998,33 @@ class WallDialog(QDialog):
     def _height(self) -> float:
         return self.f_h.value() if self.f_hmode.currentIndex() == 1 \
             else float(self.level["height"])
+
+    def _end_pt(self, end: str) -> list[float]:
+        return [self.f_ends[(end, 0)].value(), self.f_ends[(end, 1)].value()]
+
+    def _on_ends(self, *_a) -> None:
+        """Start / End typed: the Length follows."""
+        import math
+        L = math.dist(self._end_pt("a"), self._end_pt("b"))
+        self.f_len.blockSignals(True)
+        self.f_len.setValue(max(L, 0.05))
+        self.f_len.blockSignals(False)
+        self._refresh()
+
+    def _on_length(self, *_a) -> None:
+        """Length typed: the End moves along the wall (the Start stays)."""
+        import math
+        if self.f_ends:
+            a, b = self._end_pt("a"), self._end_pt("b")
+            L0 = math.dist(a, b)
+            if L0 > 1e-9:
+                k = self.f_len.value() / L0
+                for i in (0, 1):
+                    s = self.f_ends[("b", i)]
+                    s.blockSignals(True)
+                    s.setValue(a[i] + (b[i] - a[i]) * k)
+                    s.blockSignals(False)
+        self._refresh()
 
     def _refresh(self) -> None:
         import math
@@ -954,7 +1058,14 @@ class WallDialog(QDialog):
         w["height"] = "level" if self.f_hmode.currentIndex() == 0 \
             else round(self.f_h.value(), 3)
         w["base"] = round(self.f_base.value(), 3)
-        if self.f_len is not None and \
+        if self.f_ends:              # Start / End (Length is kept in step)
+            # a coordinate counts as changed only if it differs from what
+            # the field SHOWED (2 decimals): opening and pressing OK must
+            # never move a wall by the rounding
+            for end in ("a", "b"):
+                w[end] = [round(v, 4) if abs(v - round(o, 2)) > 1e-4 else o
+                          for v, o in zip(self._end_pt(end), self.wall[end])]
+        elif self.f_len is not None and \
                 abs(self.f_len.value() - self.length0) > 1e-4:
             a, b = w["a"], w["b"]
             k = self.f_len.value() / max(self.length0, 1e-9)
@@ -1038,6 +1149,14 @@ class ElementDialog(QDialog):
             area = abs(S._area(el["corners"])) - sum(
                 abs(S._area(h)) for h in el.get("holes") or [])
             form.addRow("Area", QLabel(f"{area:.2f} m²"))
+            auto = (el.get("auto") or {}).get("dig")
+            if auto:                    # made by ArchXQ (autoslabs)
+                note = QLabel("Automatic — it follows its excavation's "
+                              "outline. Delete it and it stays away (Ctrl+Z "
+                              "brings it back).")
+                note.setWordWrap(True)
+                note.setEnabled(False)
+                form.addRow("Made", note)
             n = len(el.get("holes") or [])
             self.f_clear = None
             if n:
@@ -1075,12 +1194,13 @@ class ElementDialog(QDialog):
 
         acts = QHBoxLayout()
         acts.addStretch()
+        acts.addWidget(hide_button(self))
         b_del = QPushButton(f"Delete {label.lower()}")
         b_del.clicked.connect(self._delete)
         acts.addWidget(b_del)
         lay.addLayout(acts)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -1160,7 +1280,7 @@ class RoomsDialog(QDialog):
                                "(if it has none of its own yet)")
         lay.addWidget(self.f_same)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -1228,7 +1348,7 @@ class OpeningDialog(QDialog):
         acts.addWidget(b_del)
         lay.addLayout(acts)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -1368,7 +1488,7 @@ class SetbacksDialog(QDialog):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -1610,7 +1730,7 @@ class DigDialog(QDialog):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         dele = bb.addButton(f"Delete {self.noun}", QDialogButtonBox.ResetRole)

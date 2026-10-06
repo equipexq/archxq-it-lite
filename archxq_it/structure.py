@@ -36,9 +36,10 @@ SHRINK = 0.001          # m off every face of columns and beams
 #: hidden structure 2 cm slimmer is never seen
 FIT_SHRINK = 0.01
 ROUND_SEGS = 24         # a round column's sides
-TYPES = ("column", "beam", "slab", "footing", "roof")
+TYPES = ("column", "beam", "slab", "footing", "roof", "ramp", "stair")
 LABEL = {"column": "Column", "beam": "Beam", "slab": "Slab",
-         "footing": "Footing", "wall": "Wall", "roof": "Roof"}
+         "footing": "Footing", "wall": "Wall", "roof": "Roof",
+         "ramp": "Ramp", "stair": "Stair"}
 
 
 # ---- levels ------------------------------------------------------------------------
@@ -165,6 +166,12 @@ def why_not(e: dict) -> str | None:
             if e.get("kind") in ("gable", "hip") and not \
                     5.0 <= float(e["slope"]) <= 75.0:
                 return "A pitched roof needs a slope of 5° to 75°"
+        elif t == "ramp":                  # a «Building element» (ramps.py)
+            from .ramps import why_not as ramp_why
+            return ramp_why(e)
+        elif t == "stair":                 # a «Building element» (stairs.py)
+            from .stairs import why_not as stair_why
+            return stair_why(e)
         else:
             return "Unknown element"
     except (KeyError, TypeError, ValueError):
@@ -724,6 +731,20 @@ def build(doc: dict, elevations) -> list[dict]:
     walls = doc.get("walls") or []
     struct = doc.get("structure") or []
     openings = doc.get("openings") or []
+    # the ramps open their way through the slabs they cross — the hole is
+    # not stored: it follows the ramp, and goes with it (ramps.py)
+    ramp_cuts: dict = {}
+    for r in struct:
+        if r.get("type") in ("ramp", "stair") and why_not(r) is None:
+            from . import ramps as R
+            if r["type"] == "ramp":
+                zs, ze = R.heights(r, doc, elevations)
+                polys = R.footprints(r, zs, ze, R.length_of(r, zs, ze))
+            else:
+                from . import stairs as ST
+                polys = ST.footprints(r, doc, elevations)
+            for lid in R.through_levels(r, doc, elevations):
+                ramp_cuts.setdefault(lid, []).extend(polys)
     for lid, li in info.items():
         z0, under = li["z0"], li["under"]
         # walls — cut by their openings
@@ -784,7 +805,15 @@ def build(doc: dict, elevations) -> list[dict]:
                      # openings wound the other way round
                      "holes": [list(reversed(_ccw([tuple(p) for p in h])))
                                for h in s.get("holes") or []]}
-            out.append(_el(s, lid, W.solid(piece, top - float(s["t"]), top)))
+            parts = [piece]
+            if ramp_cuts.get(lid):
+                from . import ramps as R
+                cut = R.cut_slab(piece["outer"], piece["holes"],
+                                 ramp_cuts[lid])
+                if cut is not None:
+                    parts = cut
+            out.append(_el(s, lid, [f for pc in parts for f in W.solid(
+                pc, top - float(s["t"]), top)]))
         # footings: under the slab of their level
         ftop = z0 - li["slab"]
         pads = [e for e in els if e["type"] == "footing"
@@ -807,6 +836,18 @@ def build(doc: dict, elevations) -> list[dict]:
         wall_t = max((float(w["t"]) for w in mine), default=0.20)
         for r in (e for e in els if e["type"] == "roof"):
             out.append(_el(r, lid, roof_faces(r, under, wall_t)))
+        # ramps: from this level (or the ground) to another (ramps.py)
+        rmps = [e for e in els if e["type"] == "ramp"]
+        if rmps:
+            from . import ramps as R
+            for r in rmps:
+                out.append(_el(r, lid, R.faces(r, doc, elevations)))
+        # stairs: the same, with steps (stairs.py)
+        sts = [e for e in els if e["type"] == "stair"]
+        if sts:
+            from . import stairs as ST
+            for r in sts:
+                out.append(_el(r, lid, ST.faces(r, doc, elevations)))
     return [e for e in out if e["faces"]]
 
 

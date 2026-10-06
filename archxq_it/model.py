@@ -68,6 +68,17 @@ DEFAULT_DOC = {
     # "layers": [names], "segs": [[x0, y0, x1, y1, layer]…], "layer":
     # the one walls are made from ("" = all)} — importdxf.py
     "underlays": {},
+    # ids of walls / structure / openings built at least once (ui._commit_all)
+    # — one built and now without its object was DELETED with the host's
+    # tools and must not come back (even when every one was deleted). None
+    # = an older file: ui._live falls back to its old rule.
+    "built": None,
+    # the automatic slabs deleted («dig:<dig id>:<level id>», autoslabs.py):
+    # they stay away
+    "auto_off": [],
+    # the elements hidden (their window's «Hide», the outliner's eye) —
+    # view state, written without an undo step (compat.set_hidden_ids)
+    "hidden_ids": [],
     "plot": None,       # {"corners": [[x, y], ...], "uid": str, "thickness",
                         #  "heights": [z per corner], "closing": side index,
                         #  "breaks": [[i, j], ...] fold lines,
@@ -157,6 +168,16 @@ def load(raw) -> dict:
     doc["rooms"] = _rooms(raw.get("rooms"), {r["id"] for r in doc["levels"]})
     doc["underlays"] = _underlays(raw.get("underlays"),
                                   {r["id"] for r in doc["levels"]})
+    if isinstance(raw.get("built"), list):
+        ids = {r["id"] for r in doc["walls"] + doc["structure"]
+               + doc["openings"]}
+        doc["built"] = sorted({str(x) for x in raw["built"]} & ids)
+    _settle_owners(doc)
+    if isinstance(raw.get("hidden_ids"), list):
+        doc["hidden_ids"] = sorted({str(x) for x in raw["hidden_ids"]})
+    if isinstance(raw.get("auto_off"), list):
+        doc["auto_off"] = sorted({str(x) for x in raw["auto_off"]
+                                  if str(x).startswith("dig:")})
     if isinstance(raw.get("view"), dict):
         for k in doc["view"]:
             if k in raw["view"]:
@@ -285,8 +306,45 @@ def _walls(raw, level_ids: set) -> list[dict]:
     return out
 
 
+def _top_of_level(end, level_ids) -> bool:
+    """«top:<id>» — a ramp / stair ending at the top of a level (ramps)."""
+    return isinstance(end, str) and end.startswith("top:") \
+        and end[4:] in level_ids
+
+
+def _settle_owners(doc: dict) -> None:
+    """A ramp / stair belongs to the LOWER of its two levels — the storey
+    it takes, drawn up or down (as ramps.owner; kept here so the model
+    needs no Qt). Files from before 2026-10-05 had it on the start level."""
+    levels = doc.get("levels") or []
+    if not levels:
+        return
+    ground = doc["project"]["ground_level"] if has_project(doc) else 0.0
+    elev = elevations(levels, ground)
+    z = {lv["id"]: elev[i] for i, lv in enumerate(levels)}
+    gid = next((lv["id"] for lv in levels if lv["kind"] == "ground"), None)
+    height = {lv["id"]: float(lv["height"]) for lv in levels}
+
+    def at(end):                      # (its level, its elevation) or None
+        if end in z:
+            return end, z[end]
+        if isinstance(end, str) and end.startswith("top:") and end[4:] in z:
+            return end[4:], z[end[4:]] + height[end[4:]]
+        return None
+    for e in doc.get("structure") or []:
+        if e.get("type") not in ("ramp", "stair"):
+            continue
+        a = at(gid if e.get("start") == "terrain" and gid else e.get("from"))
+        b = at(e.get("to"))
+        if a and b:
+            e["level"] = a[0] if a[1] <= b[1] else b[0]
+        elif a:
+            e["level"] = a[0]
+
+
 _ST_LABEL = {"column": "Column", "beam": "Beam", "slab": "Slab",
-             "footing": "Footing", "roof": "Roof"}
+             "footing": "Footing", "roof": "Roof", "ramp": "Ramp",
+             "stair": "Stair"}
 
 
 def _pt(p) -> list[float]:
@@ -406,6 +464,10 @@ def _structure(raw, level_ids: set) -> list[dict]:
                 rec["holes"] = [[_pt(p) for p in h]
                                 for h in e.get("holes") or []
                                 if isinstance(h, list) and len(h) >= 3]
+                # an automatic slab: the excavation it follows (autoslabs)
+                a = e.get("auto")
+                if isinstance(a, dict) and a.get("dig"):
+                    rec["auto"] = {"dig": str(a["dig"])}
             elif t == "roof":
                 cs = [_pt(p) for p in e["corners"]]
                 if len(cs) < 3:
@@ -425,6 +487,59 @@ def _structure(raw, level_ids: set) -> list[dict]:
                            parapet=min(max(float(e.get("parapet", 0.0)),
                                            0.0), 3.0),
                            pt=min(max(float(e.get("pt", 0.15)), 0.05), 1.0))
+            elif t == "ramp":               # a «Building element» (ramps.py)
+                rec.update(start="terrain" if e.get("start") == "terrain"
+                           else "level",
+                           to=str(e.get("to") or "z"),
+                           to_z=min(max(float(e.get("to_z", -3.0)), -100.0),
+                                    100.0),
+                           x=float(e["x"]), y=float(e["y"]),
+                           angle=float(e.get("angle", 0.0)),
+                           w=min(max(float(e.get("w", 3.0)), 0.5), 30.0),
+                           slope=min(max(float(e.get("slope", 20.0)), 1.0),
+                                     50.0),
+                           # the length given instead (special cases)
+                           fix="length" if e.get("fix") == "length"
+                           else "slope",
+                           L=min(max(float(e.get("L", 15.0)), 0.5), 500.0),
+                           t=min(max(float(e.get("t", 0.15)), 0.05), 1.0),
+                           shape=e.get("shape") if e.get("shape") in (
+                               "L", "U") else "straight",
+                           turn="left" if e.get("turn") == "left"
+                           else "right",
+                           landing=min(max(float(e.get("landing", 3.0)),
+                                           0.5), 50.0),
+                           anchor=e.get("anchor") if e.get("anchor") in (
+                               "left", "right") else "centre")
+                if rec["to"] != "z" and rec["to"] not in level_ids \
+                        and not _top_of_level(rec["to"], level_ids):
+                    rec["to"] = "z"         # its level is gone: an elevation
+            elif t == "stair":              # a «Building element» (stairs.py)
+                rec.update(start="terrain" if e.get("start") == "terrain"
+                           else "level",
+                           to=str(e.get("to") or "z"),
+                           to_z=min(max(float(e.get("to_z", -3.0)), -100.0),
+                                    100.0),
+                           x=float(e["x"]), y=float(e["y"]),
+                           angle=float(e.get("angle", 0.0)),
+                           w=min(max(float(e.get("w", 1.2)), 0.6), 10.0),
+                           riser=min(max(float(e.get("riser", 0.18)), 0.10),
+                                     0.25),
+                           tread=min(max(float(e.get("tread", 0.28)), 0.15),
+                                     0.60),
+                           fix_tread=bool(e.get("fix_tread", False)),
+                           t=min(max(float(e.get("t", 0.15)), 0.05), 1.0),
+                           shape=e.get("shape") if e.get("shape") in (
+                               "L", "U") else "straight",
+                           turn="left" if e.get("turn") == "left"
+                           else "right",
+                           landing=min(max(float(e.get("landing", 1.2)),
+                                           0.6), 20.0),
+                           anchor=e.get("anchor") if e.get("anchor") in (
+                               "left", "right") else "centre")
+                if rec["to"] != "z" and rec["to"] not in level_ids \
+                        and not _top_of_level(rec["to"], level_ids):
+                    rec["to"] = "z"
             else:                                   # footing
                 kind = "strip" if e.get("kind") == "strip" else "pad"
                 rec.update(kind=kind, w=min(max(float(e["w"]), 0.1), 10.0),
@@ -440,6 +555,12 @@ def _structure(raw, level_ids: set) -> list[dict]:
             continue
         if t in ("column", "beam"):
             rec["fit"] = bool(e.get("fit", False))   # hidden in a wall
+        if t in ("ramp", "stair"):
+            # the level it starts on («level» = the one it belongs to — the
+            # lower; older records had them as one)
+            f = str(e.get("from") or e["level"])
+            rec["from"] = f if (f in level_ids or _top_of_level(
+                f, level_ids)) else rec["level"]
         eid = str(e.get("id") or "") or uuid.uuid4().hex[:8]
         while eid in ids:
             eid = uuid.uuid4().hex[:8]

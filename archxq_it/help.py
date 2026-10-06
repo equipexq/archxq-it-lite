@@ -49,13 +49,42 @@ HELP: dict[str, tuple[str, str]] = {
         "A slab's <b>top</b> is its level's floor (or the offset you give "
         "it); its <b>thickness</b> goes down. The walls, columns and beams "
         "of the level below stop at its underside.<br><br><b>Inside the "
-        "walls</b> makes it in one click, to the walls' outer faces."),
+        "walls</b> makes it in one click, to the walls' outer faces."
+        "<br><br>An <b>excavation</b> makes its own slabs: on every basement "
+        "it holds and on the ground floor over them, following its outline. "
+        "Delete one you do not want — it stays away."),
     "footing": (
         "Footing",
         "Footings hang under their level's slab: a <b>pad</b> under each "
         "column (never narrower than the column + 0.20), a <b>strip</b> "
         "under each wall. <b>Depth</b> goes down from the slab's "
         "underside."),
+    "ramp": (
+        "Ramp",
+        "A sloped slab between two levels — or the ground and a level. Set "
+        "its <b>Top</b> and <b>Bottom</b> level, where your click is "
+        "(<b>Starts at</b>: its bottom, or its top — a ramp from the "
+        "street), the <b>width</b> and the "
+        "<b>slope</b> (20 % for cars, 8 % for people): the length "
+        "follows (or type the <b>length</b>: the slope follows). "
+        "<b>Straight</b>, <b>L</b> (a 90° turn) or <b>U</b> (back beside "
+        "itself), with a level <b>landing</b> between the two runs. Then "
+        "click where it starts and the way it "
+        "goes; <b>Tab</b> turns an L / U the other way.<br><br>The slab it "
+        "goes through gets its hole by itself. A double-click on a ramp "
+        "opens this window again."),
+    "stair": (
+        "Stair",
+        "A stair between two levels, defined from the bottom up. Set its "
+        "<b>Top</b> and <b>Bottom</b> level, where your click is "
+        "(<b>Starts at</b>: the bottom step, usually), the <b>width</b> and "
+        "the highest "
+        "<b>riser</b>: the count of risers follows, and the <b>tread</b> "
+        "comes from Blondel's rule (2 risers + 1 tread = 63 cm) — or type "
+        "it. <b>Straight</b>, <b>L</b> or <b>U</b>, with a landing; then "
+        "click where it starts and the way it goes (<b>Tab</b> turns an L / "
+        "U the other way).<br><br>The slab it goes through gets its hole by "
+        "itself."),
     "sheets": (
         "Drawings & sheets",
         "One click makes the building's drawings on IngeTrazo's own "

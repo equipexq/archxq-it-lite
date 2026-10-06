@@ -111,6 +111,34 @@ class Hub(QFrame):
         # «About» (his idea, 2026-10-04): the site is one of its links
         web.clicked.connect(lambda: self._about(web))
         env.addWidget(web)
+        # guide lines — IngeTrazo's own, from inside ArchXQ (his ask,
+        # 2026-10-05): make one, delete one, delete all; a menu on hover
+        gd = QToolButton()
+        gd.setObjectName("axq_swap")
+        gd.setIcon(icons.icon("guides"))
+        gd.setIconSize(QSize(18, 18))
+        gd.setToolTip("Guide lines — to place things at exact distances")
+        gmenu = QMenu(gd)
+        gmenu.setObjectName("axq_menu")
+        gmenu.setStyleSheet(CSS)
+        gmenu.addAction("Guide line  (T)").triggered.connect(
+            lambda: owner.guide_action("tape"))
+        a_one = gmenu.addAction("Delete a guide")
+        a_one.triggered.connect(lambda: owner.guide_action("erase"))
+        gmenu.addSeparator()
+        a_all = gmenu.addAction("Delete all guides")
+        a_all.triggered.connect(lambda: owner.guide_action("all"))
+
+        def _count() -> None:              # how many there are, when it opens
+            from .guidetools import guides
+            n = len(guides(owner.viewport))
+            a_all.setText(f"Delete all guides  ({n})")
+            a_one.setEnabled(n > 0)
+            a_all.setEnabled(n > 0)
+        gmenu.aboutToShow.connect(_count)
+        hover_menu(gd, gmenu)
+        self._guide_menu = gmenu
+        env.addWidget(gd)
         # the plan grid's pull, on / off (his ask, 2026-10-02)
         from . import prefs
         snap = QToolButton()
@@ -189,8 +217,11 @@ class Hub(QFrame):
             b.setProperty("state", state)
             b.setProperty("phase", key)
             b.setEnabled(state != "locked")
-            b.setToolTip(PHASES[key].hint if state != "locked"
-                         else "Locked — finish the phases before it")
+            # no tooltip on an open phase: it popped up over its own
+            # submenu and stood in the way of the clicks (his screen,
+            # 2026-10-05) — the submenu says what the phase holds
+            if state == "locked":
+                b.setToolTip("Locked — finish the phases before it")
             b.clicked.connect(lambda _=False, k=key: self.owner.go(k))
             b.installEventFilter(self)
             self.phases.addWidget(b)

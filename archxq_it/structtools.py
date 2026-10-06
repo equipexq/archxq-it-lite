@@ -91,7 +91,7 @@ class ColumnDrawTool(plottools.PlotRectTool):
     def _pick(self, ctx) -> list[float]:
         p = super()._pick(ctx)
         self.guides = []
-        if getattr(self, "_aligned", None):
+        if getattr(self, "_aligned", None) or self._guide_hit:
             return p
         dx, dy, self.guides = face_pull(self.viewport, self.z, p, [p[0]],
                                         [p[1]], self.face_x, self.face_y)
@@ -198,7 +198,7 @@ class ColumnTool(_PlotTool):
     def _pick(self, ctx) -> list[float]:
         p = super()._pick(ctx)
         self.guides = []
-        if self.viewport is None:
+        if self.viewport is None or self._guide_hit:
             return p
         here = compat.to_pixel(self.viewport, p[0], p[1], self.z)
         if not here:

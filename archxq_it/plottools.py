@@ -30,6 +30,43 @@ SNAP_PX, EDGE_SNAP_PX = 4.0, 4.0
 DIAG_COLOR = "#c43bd6"   # magenta: the diagonal, beside the host's red/green
 ACCENT = "#e8742c"
 ACTIVE = "#2f7df6"       # the plot table's current row, on the model
+# the guide lines pull harder than the rest (his ask, 2026-10-05: «too
+# subtle, it takes skill to land on it») — the 4 px above are too little
+# for a guide; their crossings most of all, the corner one digs to
+GUIDE_CROSS_PX = 16.0
+GUIDE_LINE_PX = 8.0
+GUIDE_MARK = "#0a84ff"   # the plan's guide blue, louder
+#: the host's own snaps that stay first (a guide only marks them)
+HARD_SNAPS = frozenset({"endpoint", "intersection", "midpoint", "center",
+                        "close", "origin", "component_origin",
+                        "arc_midpoint"})
+
+
+def _guide_lines(viewport) -> tuple[list, list]:
+    """The model's guides in plan: lines (x, y, dx, dy — unit) and guide
+    points (x, y). A guide standing upright has no line in plan."""
+    lines, points = [], []
+    for g in getattr(getattr(viewport, "scene", None), "guides", None) or []:
+        p = getattr(g, "point", None)
+        if p is None:
+            continue
+        if not getattr(g, "is_line", False):
+            points.append((p.x(), p.y()))
+            continue
+        d = g.direction
+        L = math.hypot(d.x(), d.y())
+        if L < 0.2:
+            continue
+        lines.append((p.x(), p.y(), d.x() / L, d.y() / L))
+    return lines, points
+
+
+def _cross(l1, l2):
+    det = l1[2] * l2[3] - l1[3] * l2[2]
+    if abs(det) < 1e-6:
+        return None
+    t = ((l2[0] - l1[0]) * l2[3] - (l2[1] - l1[1]) * l2[2]) / det
+    return (l1[0] + l1[2] * t, l1[1] + l1[3] * t)
 
 
 def _m(v: float) -> str:
@@ -137,6 +174,10 @@ class _PlotTool(Tool):
         a = self._anchor()
         snap = getattr(ctx, "snap", None)
         self._snap = snap                # its alignment guide gets drawn
+        g = self._guide_pull(ctx, p, snap)
+        if g is not None:
+            self._aligned = []
+            return g
         on_axis = bool(getattr(snap, "axis", None))
         p = self._align(p, snap)
         if self._aligned:
@@ -159,6 +200,58 @@ class _PlotTool(Tool):
                 self.diag = k
                 return [round(a[0] + ux * t, 4), round(a[1] + uy * t, 4)]
         return p
+
+    _guide_hit = None        # "cross" | "line": the cursor is on the guides
+
+    def _guide_pull(self, ctx, p, snap):
+        """The guides' own pull: a crossing of two (or a guide point)
+        within GUIDE_CROSS_PX, else a guide line within GUIDE_LINE_PX.
+        Under one of the host's real snaps (an end…) it only marks it."""
+        self._guide_hit = None
+        vp = self.viewport
+        if vp is None:
+            return None
+        lines, points = _guide_lines(vp)
+        if not lines and not points:
+            return None
+        scr = getattr(ctx, "screen", None)
+        here = (scr.x(), scr.y()) if scr is not None \
+            else compat.to_pixel(vp, p[0], p[1], self.z)
+        if not here:
+            return None
+
+        def near(q, reach, best):
+            px = compat.to_pixel(vp, q[0], q[1], self.z)
+            if px:
+                d = math.dist(here, px)
+                if d <= reach and (best is None or d < best[0]):
+                    return (d, q)
+            return best
+        best, hit = None, "cross"
+        for i in range(len(lines)):
+            for j in range(i + 1, len(lines)):
+                q = _cross(lines[i], lines[j])
+                if q is not None:
+                    best = near(q, GUIDE_CROSS_PX, best)
+        for q in points:
+            best = near(q, GUIDE_CROSS_PX, best)
+        if best is None:
+            hit = "line"
+            for ox, oy, dx, dy in lines:
+                t = (p[0] - ox) * dx + (p[1] - oy) * dy
+                best = near((ox + dx * t, oy + dy * t), GUIDE_LINE_PX, best)
+        if best is None:
+            return None
+        q = [round(best[1][0], 4), round(best[1][1], 4)]
+        if getattr(snap, "kind", "") in HARD_SNAPS:
+            here_p = compat.to_pixel(vp, p[0], p[1], self.z)
+            there = compat.to_pixel(vp, q[0], q[1], self.z)
+            if not here_p or not there or math.dist(here_p, there) > 2.0:
+                return None                  # the host's snap is elsewhere
+            self._guide_hit = hit
+            return None                      # the same spot: keep the host's
+        self._guide_hit = hit
+        return q
 
     def _on_grid(self, p, snap):
         """The plan grid's pull (the hub's grid button): the point on the
@@ -295,6 +388,16 @@ class _PlotTool(Tool):
             painter.drawLine(QPointF(c.x() + 4, c.y()), QPointF(c.x() + 11, c.y()))
             painter.drawLine(QPointF(c.x(), c.y() - 11), QPointF(c.x(), c.y() - 4))
             painter.drawLine(QPointF(c.x(), c.y() + 4), QPointF(c.x(), c.y() + 11))
+            if self._guide_hit:              # on the guides: say it loud
+                ink = QColor(GUIDE_MARK)
+                painter.setPen(QPen(ink, 2.6))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(c, 13.0, 13.0)
+                if self._guide_hit == "cross":
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(ink)
+                    painter.drawEllipse(c, 5.0, 5.0)
+                painter.setBrush(Qt.NoBrush)
         # live measurements
         font = QFont(painter.font())
         font.setPointSize(9)
@@ -765,11 +868,20 @@ class PlotRectTool(_PlotTool):
 
     def _reset(self) -> None:
         self.first: list[float] | None = None
+        self.pending = None     # a size typed before the first corner
         self.diag = None
         self._sync()
 
     def _anchor(self):
         return self.first
+
+    def _sized(self, p) -> list[float]:
+        """The opposite corner at the typed size, toward ``p``'s quadrant."""
+        a, b = self._loc(self.first), self._loc(p)
+        sx = 1 if b[0] >= a[0] else -1
+        sy = 1 if b[1] >= a[1] else -1
+        return self._wld([a[0] + sx * self.pending[0],
+                          a[1] + sy * self.pending[1]])
 
     def _labels(self):
         if self.first is None or self.hover is None:
@@ -794,13 +906,21 @@ class PlotRectTool(_PlotTool):
             self._sync()
             self._show_hint()
             return
-        self._finish(self._rect(self.first, p))
+        self._finish(self._rect(self.first, self._sized(p) if self.pending
+                                else p))
 
     def on_value(self, viewport, value) -> bool:
-        if self.first is None or not isinstance(value, tuple) \
-                or len(value) < 2:
+        if not isinstance(value, tuple) or len(value) < 2:
             return False
         w, h = abs(value[0]), abs(value[1])
+        if self.first is None:
+            # typed before the first corner (his case, 2026-10-05): kept —
+            # the click places it, the side the cursor goes to it grows
+            self.pending = (w, h)
+            compat.flash(viewport, f"{w:.2f} × {h:.2f} m kept — click the "
+                         "first corner, then click the side it grows to", 8000)
+            viewport.update()
+            return True
         # lay it toward the quadrant the cursor is in (in the tool's frame)
         a = self._loc(self.first)
         hx = self._loc(self.hover) if self.hover else [a[0] + 1, a[1] + 1]
@@ -813,19 +933,27 @@ class PlotRectTool(_PlotTool):
     def rubber_band_lines(self):
         if self.first is None or self.hover is None:
             return []
-        c = [self._P(p) for p in self._rect(self.first, self.hover)]
+        h = self._sized(self.hover) if self.pending else self.hover
+        c = [self._P(p) for p in self._rect(self.first, h)]
         return [(c[i], c[(i + 1) % 4]) for i in range(4)]
 
     def value_label(self):
         if self.first is None or self.hover is None:
             return None              # the host reads "" as a label
-        a, b = self._loc(self.first), self._loc(self.hover)
+        a = self._loc(self.first)
+        b = self._loc(self._sized(self.hover) if self.pending
+                      else self.hover)
         w = abs(b[0] - a[0])
         h = abs(b[1] - a[1])
         # the host reads a tuple: (text, …) — a bare str shows its 1st char
         return (f"{w:.2f} × {h:.2f} m   ({w * h:.1f} m²)", None)
 
     def status_clause(self) -> str:
+        if self.pending:
+            return (f"{self.noun} {self.pending[0]:.2f} × "
+                    f"{self.pending[1]:.2f} m: click "
+                    + ("the first corner" if self.first is None else
+                       "the side it grows to") + "  ·  Esc = cancel")
         return (f"{self.noun}: click the first corner" if self.first is None
                 else f"{self.noun}: click the opposite corner, or type "
                 "width;depth "
@@ -989,6 +1117,7 @@ class PlotCentreRectTool(_PlotTool):
 
     def _reset(self) -> None:
         self.centre: list[float] | None = None
+        self.pending = None     # a size typed before the centre
         self.diag = None
         self._sync()
 
@@ -1017,6 +1146,10 @@ class PlotCentreRectTool(_PlotTool):
 
     def on_click(self, ctx) -> None:
         p = self._pick(ctx)
+        if self.centre is None and self.pending:
+            self.centre = p                  # the size was typed first
+            self._place(*self.pending)
+            return
         if self.centre is None:
             self.centre = p
             self._sync()
@@ -1025,14 +1158,24 @@ class PlotCentreRectTool(_PlotTool):
         self._finish(self._corners(self.centre, p))
 
     def on_value(self, viewport, value) -> bool:
-        if self.centre is None or not isinstance(value, tuple) \
-                or len(value) < 2:
+        if not isinstance(value, tuple) or len(value) < 2:
             return False
+        if self.centre is None:
+            # typed before the centre: kept — the click places it
+            self.pending = (abs(value[0]), abs(value[1]))
+            compat.flash(viewport, f"{self.pending[0]:.2f} × "
+                         f"{self.pending[1]:.2f} m kept — click its centre",
+                         8000)
+            viewport.update()
+            return True
+        self._place(abs(value[0]), abs(value[1]))
+        return True
+
+    def _place(self, width: float, depth: float) -> None:
         c = self._loc(self.centre)
-        w, d = abs(value[0]) / 2, abs(value[1]) / 2
+        w, d = width / 2, depth / 2
         self._finish([self._wld(q) for q in plotgeo.rectangle(
             [c[0] - w, c[1] - d], [c[0] + w, c[1] + d])])
-        return True
 
     def rubber_band_lines(self):
         if self.centre is None or self.hover is None:
@@ -1049,6 +1192,10 @@ class PlotCentreRectTool(_PlotTool):
         return (f"{w:.2f} × {d:.2f} m   ({w * d:.1f} m²)", None)
 
     def status_clause(self) -> str:
+        if self.pending and self.centre is None:
+            return (f"{self.noun} {self.pending[0]:.2f} × "
+                    f"{self.pending[1]:.2f} m: click its centre  ·  "
+                    "Esc = cancel")
         return (f"{self.noun}: click the centre" if self.centre is None else
                 f"{self.noun}: click a corner, or type width;depth + Enter  ·  "
                 "Esc = cancel")

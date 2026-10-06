@@ -217,6 +217,47 @@ def why_not_dig(doc: dict, corners, ignore: str | None = None) -> str | None:
     return None
 
 
+def snug(doc: dict, corners, gap: float = 0.02, reach: float = 0.05):
+    """An outline drawn onto the plot's sides (snapped to its corner, its
+    side, a guide on it — a basement dug to the boundary, his case
+    2026-10-05) has its corners nudged ``gap`` inside, the rim the ground
+    keeps (``plotgeo.within``). Corners more than ``reach`` outside are
+    left: that one is a real mistake, and is said."""
+    plot = doc.get("plot")
+    if not plot or len(corners) < 3:
+        return corners
+    outer = plot["corners"]
+    if plotgeo.within(corners, outer):
+        return corners
+    n = len(outer)
+    area2 = sum(outer[i][0] * outer[(i + 1) % n][1]
+                - outer[(i + 1) % n][0] * outer[i][1] for i in range(n))
+    sign = 1.0 if area2 > 0 else -1.0                # inside = the left
+    out = []
+    for p in corners:
+        q = [float(p[0]), float(p[1])]
+        for _ in range(3):                           # a corner: two sides
+            moved = False
+            for i in range(n):
+                a, b = outer[i], outer[(i + 1) % n]
+                ex, ey = b[0] - a[0], b[1] - a[1]
+                L = math.hypot(ex, ey)
+                if L < 1e-9:
+                    continue
+                t = ((q[0] - a[0]) * ex + (q[1] - a[1]) * ey) / (L * L)
+                if t < -reach / L or t > 1 + reach / L:
+                    continue
+                d = sign * (ex * (q[1] - a[1]) - ey * (q[0] - a[0])) / L
+                if -reach <= d < gap - 1e-6:
+                    nx, ny = -sign * ey / L, sign * ex / L
+                    q = [q[0] + nx * (gap - d), q[1] + ny * (gap - d)]
+                    moved = True
+            if not moved:
+                break
+        out.append([round(q[0], 4), round(q[1], 4)])
+    return out if plotgeo.within(out, outer) else corners
+
+
 def top_of(dig: dict, doc: dict):
     """The outline at the ground (its slopes' reach), else its own."""
     return outline(dig, doc) or dig["corners"]

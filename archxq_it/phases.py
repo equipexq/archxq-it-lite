@@ -115,6 +115,9 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
     # thinner wall; walls join by themselves.
     _e("wall", "Wall", (),
        Prop("Material", C, "Brick", MATERIALS)),
+    # a straight wall's ends with the mouse — the walls ending at the same
+    # corner follow (a customer's ask, 2026-10-05)
+    _e("wall_edit", "Edit walls", (("Move points", "move"),)),
     _e("wall_import", "Walls from DXF", ()),
     # -- Openings
     # -- Openings: placed on a wall; sizes in the options bar
@@ -146,7 +149,7 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
           ("column", "beam", "slab", "footing")),
     Phase("walls", "Walls",
           "Walls of the current floor, by axis, thickness and height.",
-          ("wall", "wall_import")),
+          ("wall", "wall_edit", "wall_import")),
     Phase("openings", "Openings",
           "Doors and windows placed on the walls.",
           ("door", "window", "void")),
@@ -166,6 +169,8 @@ PRO_ELEMENTS = frozenset({
     "door", "window", "void",
     "roof",
     "rooms", "sheets", "section", "export",
+    # the «Building elements» (his call, 2026-10-05: Pro)
+    "ramp", "stair",
 })
 
 

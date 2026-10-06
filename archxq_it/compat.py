@@ -151,6 +151,20 @@ def set_view_flag(viewport, key: str, name: str, on) -> None:
     viewport.update()
 
 
+def set_hidden_ids(viewport, key: str, ids) -> None:
+    """The ArchXQ elements hidden (by their ids — the groups are made anew
+    at every rebuild): kept in the document's data, written straight in
+    like a layer's eye, never an undo step."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["hidden_ids"] = sorted({str(i) for i in ids if i})
+    data[key] = doc
+    bump = getattr(viewport.scene, "bump_view", None)
+    if callable(bump):
+        bump()
+    viewport.update()
+
+
 def show_folds(viewport, group, corners, breaks, on: bool) -> None:
     """Fold lines drawn or not on the plot's surface, without rebuilding
     it: their edges hard (drawn) or soft (not)."""
@@ -611,10 +625,11 @@ def terrain_groups(viewport) -> list:
 
 
 def commit_terrain(viewport, key: str, doc: dict, z0: float,
-                   color) -> dict:
+                   color, building=None) -> dict:
     """Rebuild the whole terrain from ``doc`` (its plot and excavations)
     and store ``doc`` — ONE undo step. Returns the stored doc (with the
-    new groups' uids)."""
+    new groups' uids). ``building(doc)`` → a ``building_swap`` command,
+    run in the same step (slabs that follow an excavation)."""
     from core.history import Command, CompoundCommand, SetPluginDataCommand
     from . import terrain
 
@@ -651,6 +666,7 @@ def commit_terrain(viewport, key: str, doc: dict, z0: float,
                 if g in scene.groups:
                     scene.groups.remove(g)
             scene.groups.extend(new)
+            _unselect(scene, old)
 
         def undo(self, scene) -> None:
             for g in new:
@@ -661,9 +677,13 @@ def commit_terrain(viewport, key: str, doc: dict, z0: float,
                     scene.groups.insert(min(self._at.get(id(g),
                                                          len(scene.groups)),
                                             len(scene.groups)), g)
+            _unselect(scene, new)
 
+    cmds = [_SwapTerrain()]
+    if building is not None:
+        cmds.append(building(doc))
     viewport.history.execute(CompoundCommand(
-        [_SwapTerrain(), SetPluginDataCommand(key, doc)]))
+        cmds + [SetPluginDataCommand(key, doc)]))
     viewport.update()
     # one that was built and now can't be (the ground rose under a fill by
     # the border, the plot shrank…): say so — it is kept, not lost
@@ -760,7 +780,7 @@ WALL_COLOR = (0.88, 0.86, 0.82)     # a plain wall: warm light grey
 
 #: what the building is made of — every one rebuilt together
 BUILT_KINDS = ("wall", "column", "beam", "slab", "footing", "opening",
-               "roof")
+               "roof", "ramp", "stair")
 KIND_COLOR = {
     "roof": (0.66, 0.36, 0.27),        # tiles (each face has its own)
     "opening": (0.94, 0.94, 0.92),     # frames (each face has its own)
@@ -769,6 +789,8 @@ KIND_COLOR = {
     "beam": (0.66, 0.67, 0.69),
     "slab": (0.76, 0.77, 0.78),
     "footing": (0.58, 0.58, 0.57),
+    "ramp": (0.74, 0.74, 0.73),        # concrete, as the slabs (ramps.py)
+    "stair": (0.76, 0.76, 0.75),       # concrete (stairs.py)
 }
 
 
@@ -817,6 +839,14 @@ def outer_loop(pieces) -> list | None:
     return Polygon(coords).simplify(1e-4).exterior.coords[:-1]
 
 
+def _unselect(scene, groups) -> None:
+    """Groups taken out of the scene leave the selection too — else their
+    outline stayed drawn until the next click (his screen, 2026-10-05)."""
+    sel = getattr(scene, "selection", None)
+    if isinstance(sel, set):
+        sel.difference_update(groups)
+
+
 def commit_build(viewport, key: str, doc: dict, elevations,
                  level_layer_of) -> dict:
     """Rebuild EVERY wall and structural element of the building from
@@ -824,8 +854,20 @@ def commit_build(viewport, key: str, doc: dict, elevations,
     under it; a wall's ends depend on its neighbours: the whole building
     is made again together.) One group per element, on its level's layer,
     tagged with its kind."""
+    from core.history import CompoundCommand, SetPluginDataCommand
+    viewport.history.execute(CompoundCommand(
+        [building_swap(viewport, doc, elevations, level_layer_of),
+         SetPluginDataCommand(key, doc)]))
+    viewport.update()
+    return doc
+
+
+def building_swap(viewport, doc: dict, elevations, level_layer_of):
+    """The command that puts the building rebuilt from ``doc`` in place of
+    the one in the scene (not executed: ``commit_build`` runs it — and the
+    terrain's commit, when the slabs follow an excavation)."""
     from core.group import Group
-    from core.history import Command, CompoundCommand, SetPluginDataCommand
+    from core.history import Command
     from core.mesh import Mesh
     from PySide6.QtGui import QVector3D
 
@@ -872,6 +914,7 @@ def commit_build(viewport, key: str, doc: dict, elevations,
                 if g in scene.groups:
                     scene.groups.remove(g)
             scene.groups.extend(new)
+            _unselect(scene, old)
 
         def undo(self, scene) -> None:
             for g in new:
@@ -882,11 +925,9 @@ def commit_build(viewport, key: str, doc: dict, elevations,
                     scene.groups.insert(min(self._at.get(id(g),
                                                          len(scene.groups)),
                                             len(scene.groups)), g)
+            _unselect(scene, new)
 
-    viewport.history.execute(CompoundCommand(
-        [_SwapWalls(), SetPluginDataCommand(key, doc)]))
-    viewport.update()
-    return doc
+    return _SwapWalls()
 
 
 # ---- Camera / view ---------------------------------------------------------------

@@ -123,7 +123,8 @@ class SurveyDialog(QDialog):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        from .dialogs import ok_apply
+        ok_apply(self, bb)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
