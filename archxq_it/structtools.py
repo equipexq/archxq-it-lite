@@ -105,6 +105,21 @@ class ColumnDrawTool(plottools.PlotRectTool):
 FACE_PX = 10           # how near (on screen) a face is pulled flush
 
 
+def _foot(p, a, b, margin: float = 0.0):
+    """The foot of ``p`` on the segment a-b (None: beyond its ends by more
+    than ``margin`` m — a foot just past an end is pulled back onto it)."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-12:
+        return None
+    t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2
+    m = margin / math.sqrt(L2)
+    if t < -m or t > 1.0 + m:
+        return None
+    t = min(max(t, 0.0), 1.0)
+    return [a[0] + dx * t, a[1] + dy * t]
+
+
 def face_pull(viewport, z, p, ex, ey, fx, fy):
     """(dx, dy, guides): the shift that lays one of the edges at x ``ex``
     (y ``ey``) flush with a line at x ``fx`` (y ``fy``), when one is
@@ -194,12 +209,101 @@ class ColumnTool(_PlotTool):
     face_x: list = []
     face_y: list = []
     guides: list = []
+    #: the excavations' outlines on this level (ui sets it): a ROW clicked
+    #: along a pit's side — its corners, its edge — stands INSIDE it, the
+    #: columns' faces flush with the side and the end ones in the corners
+    #: (his ask, 2026-10-06: the column turns only after the first click,
+    #: so its faces could not be laid flush by hand)
+    pits: list = []
+    PIT_PX = 12
+
+    def _metres(self, px: float, p) -> float:
+        a = compat.to_pixel(self.viewport, p[0], p[1], self.z)
+        b = compat.to_pixel(self.viewport, p[0] + 1.0, p[1], self.z)
+        if not a or not b:
+            return 0.0
+        return px / max(math.dist(a, b), 1e-6)
+
+    def _pit_snap(self, p):
+        """A row's click pulled onto a pit's corner, else onto its side."""
+        tol = self._metres(self.PIT_PX, p)
+        best = None
+        for poly in self.pits:
+            for q in poly:
+                d = math.dist(p, q)
+                if d <= tol and (best is None or d < best[0]):
+                    best = (d, [q[0], q[1]])
+        if best is not None:
+            return [round(best[1][0], 4), round(best[1][1], 4)]
+        for poly in self.pits:
+            n = len(poly)
+            for i in range(n):
+                q = _foot(p, poly[i], poly[(i + 1) % n])
+                if q is None:
+                    continue
+                d = math.dist(p, q)
+                if d <= tol and (best is None or d < best[0]):
+                    best = (d, q)
+        if best is not None:
+            return [round(best[1][0], 4), round(best[1][1], 4)]
+        return None
+
+    def _pit_inset(self, a, b, o):
+        """(a, b) moved inside the pit whose side both lie on: the row's
+        line half a column in from the side, its ends half a column in from
+        the corners clicked. Not on one side of a pit: as clicked."""
+        from . import plotgeo
+        L = math.dist(a, b)
+        if L < 1e-6:
+            return a, b
+        u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+        along = float(o["w"])
+        across = along if o.get("section") == "round" else float(o["d"])
+        if abs((float(o.get("angle", 0)) % 180) - 90) < 1e-6:
+            along, across = across, along         # turned square to the row
+        # a click within a column's depth of the side counts as ON it (his
+        # left side, 2026-10-06: both clicks ~17 cm in, the row came out
+        # skewed by 0.04° and off the face) — laid back onto the side
+        tol = across + 0.05
+        for poly in self.pits:
+            n = len(poly)
+            for i in range(n):
+                p, q = poly[i], poly[(i + 1) % n]
+                fa, fb = _foot(a, p, q, tol), _foot(b, p, q, tol)
+                if fa is None or fb is None or math.dist(a, fa) > tol \
+                        or math.dist(b, fb) > tol or math.dist(fa, fb) < 1e-6:
+                    continue
+                # onto the side, and onto its corner when that near
+                a = next((list(c) for c in (p, q) if math.dist(fa, c) <= tol),
+                         fa)
+                b = next((list(c) for c in (p, q) if math.dist(fb, c) <= tol),
+                         fb)
+                L = math.dist(a, b)
+                u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+                nx, ny = -u[1], u[0]
+                m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                if not plotgeo.inside_polygon(
+                        (m[0] + nx * 0.01, m[1] + ny * 0.01), poly):
+                    nx, ny = -nx, -ny
+                h = across / 2
+                ka = along / 2 if any(math.dist(a, c) < 0.02 for c in poly) \
+                    else 0.0
+                kb = along / 2 if any(math.dist(b, c) < 0.02 for c in poly) \
+                    else 0.0
+                return ([a[0] + nx * h + u[0] * ka, a[1] + ny * h + u[1] * ka],
+                        [b[0] + nx * h - u[0] * kb, b[1] + ny * h - u[1] * kb])
+        return a, b
 
     def _pick(self, ctx) -> list[float]:
         p = super()._pick(ctx)
         self.guides = []
         if self.viewport is None or self._guide_hit:
             return p
+        if self.mode == "row" and self.pits:
+            q = self._pit_snap(p)
+            if q is not None:
+                self._aligned = []
+                return q
         here = compat.to_pixel(self.viewport, p[0], p[1], self.z)
         if not here:
             return p
@@ -247,11 +351,12 @@ class ColumnTool(_PlotTool):
         if self.mode == "single" or self.a is None:
             return [self._col(b)]
         if self.mode == "row":
-            ang = math.degrees(math.atan2(b[1] - self.a[1], b[0] - self.a[0]))
-            return [self._col([self.a[0] + (b[0] - self.a[0]) * t,
-                               self.a[1] + (b[1] - self.a[1]) * t],
+            a, b = self._pit_inset(self.a, b, o)    # (squared to the side)
+            ang = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+            return [self._col([a[0] + (b[0] - a[0]) * t,
+                               a[1] + (b[1] - a[1]) * t],
                               o["angle"] + ang)
-                    for t in row_stations(math.dist(self.a, b), o)]
+                    for t in row_stations(math.dist(a, b), o)]
         nx, ny = max(1, int(o["nx"])), max(1, int(o["ny"]))
         xs = [self.a[0] + (b[0] - self.a[0]) * (k / (nx - 1) if nx > 1 else 0)
               for k in range(nx)]
@@ -363,6 +468,34 @@ class BeamTool(WallChainTool):
     name = "ArchXQ beam"
     axq_element = "beam"
     noun = "Beam"
+    #: the centres of the columns it may rest on — this level's and the
+    #: ones below reaching up to it (ui sets it): the cursor is pulled onto
+    #: them, the host's snap only catches their corners and faces (his
+    #: ask, 2026-10-06: beams go column to column)
+    magnets: list = []
+    MAGNET_PX = 14
+
+    def _align_sources(self):
+        return super()._align_sources() + [list(p) for p in self.magnets]
+
+    def _pick(self, ctx) -> list[float]:
+        p = super()._pick(ctx)
+        if self.viewport is None or not self.magnets:
+            return p
+        here = compat.to_pixel(self.viewport, p[0], p[1], self.z)
+        if not here:
+            return p
+        best = None
+        for q in self.magnets:
+            px = compat.to_pixel(self.viewport, q[0], q[1], self.z)
+            if px:
+                d = math.dist(here, px)
+                if d <= self.MAGNET_PX and (best is None or d < best[0]):
+                    best = (d, q)
+        if best is None:
+            return p
+        self._aligned = []
+        return [round(best[1][0], 4), round(best[1][1], 4)]
 
     def line_records(self, pts, closed):
         recs = super().line_records(pts, closed)

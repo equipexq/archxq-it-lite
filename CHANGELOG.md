@@ -1,5 +1,23 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.9.4
+
+- **Materials** — every element's window has a **Material** tab: IngeTrazo's
+  colours (RAL), or a solid colour of your own; parts where it makes sense
+  (the plot's top / sides, an excavation's floor / walls). «Use for all»
+  gives it to every element of the kind. (Textures are in ArchXQ IT Pro.)
+- **Show** in each level's window (✎): its slabs, columns & beams,
+  footings, walls, openings, ramps & stairs on / off — that level only.
+  The level's eye turns dim while something is hidden.
+- **Ghost** on each level's row: that level in light blue in the plan of
+  the one you work on — to line things up with it.
+- **Columns along an excavation**: a row clicked along a dig's side lines
+  up inside it, faces flush, the end ones in the corners — and turns with
+  the row. On the lowest level, a column reaches the dig's floor by itself.
+- The excavation's floor no longer flickers with what stands on it.
+- The levels strip no longer shrinks after a click on an eye; ArchXQ's tab
+  in the side tray comes back if IngeTrazo closed it.
+
 ## 0.9.3
 
 - **Guide lines** from inside ArchXQ (the guides icon on the top bar): make

@@ -40,15 +40,17 @@ HELP: dict[str, tuple[str, str]] = {
         "click."),
     "beam": (
         "Beam",
-        "A beam hangs under the <b>slab above</b>: its top at the slab's "
-        "underside, its <b>height</b> downwards. Beams join one another "
+        "A beam's <b>height includes the slab above</b>: its top is flush "
+        "with the slab's top, the rest hangs under it (a 20×60 beam under a "
+        "20 cm slab shows 40 cm below it). Beams join one another "
         "like walls (corners, T, crossings).<br><br>A beam over a wall of "
         "the same width hides inside it; a wider one shows."),
     "slab": (
         "Slab",
         "A slab's <b>top</b> is its level's floor (or the offset you give "
-        "it); its <b>thickness</b> goes down. The walls, columns and beams "
-        "of the level below stop at its underside.<br><br><b>Inside the "
+        "it); its <b>thickness</b> goes down. The walls and columns of the "
+        "level below stop at its underside; the beams go up into it, flush "
+        "with its top.<br><br><b>Inside the "
         "walls</b> makes it in one click, to the walls' outer faces."
         "<br><br>An <b>excavation</b> makes its own slabs: on every basement "
         "it holds and on the ground floor over them, following its outline. "
@@ -56,9 +58,10 @@ HELP: dict[str, tuple[str, str]] = {
     "footing": (
         "Footing",
         "Footings hang under their level's slab: a <b>pad</b> under each "
-        "column (never narrower than the column + 0.20), a <b>strip</b> "
-        "under each wall. <b>Depth</b> goes down from the slab's "
-        "underside."),
+        "column (square, never narrower than the column + 0.20), a "
+        "<b>strip</b> under each wall or along each <b>row of columns</b>. "
+        "<b>Depth</b> = how thick, going down from the slab's underside; in "
+        "an excavation deeper than the floor, from its floor."),
     "ramp": (
         "Ramp",
         "A sloped slab between two levels — or the ground and a level. Set "
@@ -307,6 +310,15 @@ HELP: dict[str, tuple[str, str]] = {
         "default names (Level 2, Basement 1…) renumber themselves.<br>"
         "<b>Delete level</b>: only an empty level, and never the ground "
         "floor. Ctrl+Z brings a deleted level back.<br><br>"
+        "<b>Show</b>: this level's slabs, columns &amp; beams, footings, "
+        "walls, openings, ramps &amp; stairs — untick one and it hides at "
+        "once, on this level only (the other levels keep theirs). It stays "
+        "in the file; the level's eye turns dim with an open pupil while "
+        "something is hidden.<br><br>"
+        "<b>Ghost</b> (the two-floors icon on each level's row in the "
+        "levels strip): that level drawn in light blue in the plan of the "
+        "one you work on — to line walls and columns up with it. Turn on as "
+        "many as you like; only seen, never picked.<br><br>"
         "Open this window with the ✎ on the level's row in the levels "
         "strip (N), or double-click the row."),
     "level_height": (

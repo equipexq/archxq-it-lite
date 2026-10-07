@@ -5,8 +5,9 @@ level by level. ``build(doc, union)`` gives every element of the
 building (walls too) with its faces, at its true heights:
 
 - a level's SLAB has its top at the level's floor (+ its offset); the
-  walls, columns and beams of the level BELOW stop at its underside —
-  nothing passes through a slab;
+  walls and columns of the level BELOW stop at its underside; a BEAM's
+  height includes the slab: its top is flush with the slab's top, the rest
+  hangs under it (how a 20×60 beam is specified);
 - COLUMNS and BEAMS are 1 mm smaller on every face: inside a wall of the
   same width they hide (no two faces in one plane, nothing flickers);
   wider, they read as pilasters / downstand beams;
@@ -64,6 +65,30 @@ def levels_info(doc: dict, elevations) -> dict:
                          "under": top - (slab_t.get(above, 0.0) if above
                                          else 0.0)}
     return out
+
+
+def ground_under(doc: dict, info: dict, lid: str, p) -> float | None:
+    """The excavation's floor under a point of level ``lid``, when it lies
+    BELOW that level's floor and no other floor comes between — the
+    lowest basement sitting in a pit 30 cm deeper than its floor. Its
+    columns and footings reach down to that ground instead of hanging in
+    the air (his ask, 2026-10-06: «Base −0.30, Height 6.30» by hand was
+    confusing). None = nothing to reach for."""
+    from . import plotgeo
+    from . import terrain as T
+    z0 = info[lid]["z0"]
+    low = None
+    for d in doc.get("digs") or []:
+        if T.is_fill(d) or not plotgeo.inside_polygon(p, d["corners"]):
+            continue
+        z = T.bottom_at(d, doc, p)
+        low = z if low is None else min(low, z)
+    if low is None or low >= z0 - 1e-4:
+        return None
+    if any(low - 1e-4 <= v["z0"] < z0 - 1e-4 for k, v in info.items()
+           if k != lid):
+        return None                    # a floor in between holds it
+    return low
 
 
 # ---- plans ---------------------------------------------------------------------------
@@ -362,6 +387,181 @@ def strips_under(walls: list[dict]) -> list[dict]:
             m = s.at(0.5)
             rec["m"] = [round(m[0], 4), round(m[1], 4)]
         out.append(rec)
+    return out
+
+
+def footing_plans(struct: list[dict], lid: str) -> list[tuple]:
+    """[(id, [loop…])] — the footings of level ``lid`` in plan, as built
+    (pads square, strips joined like walls): what the plan draws dashed,
+    hidden under the floor."""
+    els = [e for e in struct if e["level"] == lid and e["type"] == "footing"
+           and why_not(e) is None]
+    out = [(f["id"], [pad_outline(f)]) for f in els if f.get("kind") == "pad"]
+    strips = [e for e in els if e.get("kind") == "strip"]
+    plans = W.plan([as_wall(e, shrink=0.0) for e in strips])
+    for f in strips:
+        out.append((f["id"], [pc["outer"] for pc in plans.get(f["id"], ())]))
+    return out
+
+
+def level_plan_loops(doc: dict, lid: str) -> list:
+    """Every outline of level ``lid`` in plan — walls (joined), columns,
+    beams, slabs, footings: what the GHOST of a level draws under the one
+    worked on (Revit's underlay, ArchiCAD's ghost story)."""
+    struct = doc.get("structure") or []
+    loops = []
+    walls = [w for w in doc.get("walls") or [] if w["level"] == lid]
+    for pieces in W.plan(walls).values():
+        for pc in pieces:
+            loops.append(pc["outer"])
+            loops += list(pc.get("holes") or [])
+    els = [e for e in struct if e["level"] == lid and why_not(e) is None]
+    loops += [column_outline(c, 0.0) for c in els if c["type"] == "column"]
+    beams = [e for e in els if e["type"] == "beam"]
+    for pieces in W.plan([as_wall(e, shrink=0.0) for e in beams]).values():
+        loops += [pc["outer"] for pc in pieces]
+    for s in (e for e in els if e["type"] == "slab"):
+        loops.append([tuple(p) for p in s["corners"]])
+        loops += [[tuple(p) for p in h] for h in s.get("holes") or []]
+    for _fid, ls in footing_plans(struct, lid):
+        loops += ls
+    return loops
+
+
+def push_inside(outline, pits, along=None) -> tuple:
+    """(dx, dy) that brings a footing crossing an excavation's side back
+    inside it, its face flush with the side — a boundary (eccentric)
+    footing: on site it cannot reach past the retaining face (his call,
+    2026-10-06). Only the pit its middle stands in; ``along`` (a unit
+    vector) = only the sides parallel to it (a strip moves across)."""
+    from . import plotgeo
+    n = len(outline)
+    c = (sum(p[0] for p in outline) / n, sum(p[1] for p in outline) / n)
+    dx = dy = 0.0
+    for poly in pits:
+        if not plotgeo.inside_polygon(c, poly):
+            continue
+        area = sum(poly[i][0] * poly[(i + 1) % len(poly)][1]
+                   - poly[(i + 1) % len(poly)][0] * poly[i][1]
+                   for i in range(len(poly)))
+        sgn = 1.0 if area > 0 else -1.0          # counter-clockwise: +
+        for i in range(len(poly)):
+            p, q = poly[i], poly[(i + 1) % len(poly)]
+            L = math.dist(p, q)
+            if L < 1e-9:
+                continue
+            u = ((q[0] - p[0]) / L, (q[1] - p[1]) / L)
+            if along is not None and abs(u[0] * along[1]
+                                         - u[1] * along[0]) > 0.02:
+                continue
+            nout = (u[1] * sgn, -u[0] * sgn)
+            ss = [(o[0] - p[0]) * u[0] + (o[1] - p[1]) * u[1] for o in outline]
+            if max(ss) <= 0 or min(ss) >= L:      # beside this side, not on it
+                continue
+            over = max((o[0] - p[0]) * nout[0] + (o[1] - p[1]) * nout[1]
+                       for o in outline)
+            if over > 1e-4:
+                dx -= nout[0] * over
+                dy -= nout[1] * over
+        break
+    return dx, dy
+
+
+ROW_GAP = 8.5           # m — columns further apart are not one row
+
+
+def strips_under_columns(cols: list[dict], width: float,
+                         pits=()) -> list[dict]:
+    """Strip footings under the ROWS of columns (his ask, 2026-10-06: the
+    columns along an excavation share one continuous footing, which the
+    retaining wall later stands on too). A row = 2+ columns on one line
+    (within half a strip — a corner column a few cm off still counts),
+    none more than ROW_GAP from the next. Each strip runs end column to
+    end column, half its width past them; an end near another row's line
+    stops ON it, so the strips meet in clean corners. [{"a", "b", "w"}]"""
+    pts = [column_centre(c) for c in cols]
+    if len(pts) < 2:
+        return []
+    dirs = set()
+    for c in cols:
+        a = float(c.get("angle", 0.0)) % 180.0
+        for d in (a, (a + 90.0) % 180.0):
+            dirs.add(round(d * 2) / 2 % 180.0)        # to ½°
+    tol = width / 2
+    lines = []          # (u, n, t, s0, s1, w)
+    for d in sorted(dirs):
+        r = math.radians(d)
+        u, n = (math.cos(r), math.sin(r)), (-math.sin(r), math.cos(r))
+        st = sorted(((p[0] * n[0] + p[1] * n[1], p[0] * u[0] + p[1] * u[1], k)
+                     for k, p in enumerate(pts)))
+        groups, cur = [], [st[0]]
+        for e in st[1:]:
+            if e[0] - cur[-1][0] <= tol:
+                cur.append(e)
+            else:
+                groups.append(cur)
+                cur = [e]
+        groups.append(cur)
+        for g in groups:
+            g = sorted(g, key=lambda e: e[1])
+            runs, run = [], [g[0]]
+            for e in g[1:]:
+                if e[1] - run[-1][1] <= ROW_GAP:
+                    run.append(e)
+                else:
+                    runs.append(run)
+                    run = [e]
+            runs.append(run)
+            for run in runs:
+                if len(run) < 2:
+                    continue
+                ts = sorted(e[0] for e in run)
+                t = ts[len(ts) // 2]                  # the row's own line
+                w = max([width] + [min(float(cols[e[2]]["w"]),
+                                       float(cols[e[2]]["d"])) + 0.20
+                                   for e in run])
+                if pits:          # along a pit's side: flush inside it
+                    s0, s1 = run[0][1], run[-1][1]
+                    rect = [(n[0] * tt + u[0] * ss, n[1] * tt + u[1] * ss)
+                            for tt, ss in ((t - w / 2, s0), (t + w / 2, s0),
+                                           (t + w / 2, s1), (t - w / 2, s1))]
+                    sx, sy = push_inside(rect, pits, along=u)
+                    t += sx * n[0] + sy * n[1]
+                lines.append([u, n, t, run[0][1], run[-1][1], w])
+    # the same row found from two directions (a square grid): once
+    seen, uniq = set(), []
+    for ln in lines:
+        key = (round(ln[1][0], 3), round(ln[1][1], 3), round(ln[2], 2),
+               round(ln[3], 2), round(ln[4], 2))
+        if key not in seen:
+            seen.add(key)
+            uniq.append(ln)
+    out = []
+    for i, (u, n, t, s0, s1, w) in enumerate(uniq):
+        ends = []
+        for s, sign in ((s0, -1.0), (s1, 1.0)):
+            p = (n[0] * t + u[0] * s, n[1] * t + u[1] * s)
+            best = None
+            for j, (u2, n2, t2, a2, b2, w2) in enumerate(uniq):
+                den = u[0] * n2[0] + u[1] * n2[1]
+                if j == i or abs(den) < 0.2:          # parallel: no corner
+                    continue
+                k = (t2 - (p[0] * n2[0] + p[1] * n2[1])) / den
+                x = (p[0] + u[0] * k, p[1] + u[1] * k)
+                s2 = x[0] * u2[0] + x[1] * u2[1]
+                if abs(k) <= ROW_GAP and a2 - w2 <= s2 <= b2 + w2 \
+                        and (best is None or abs(k) < abs(best[0])):
+                    best = (k, x)
+            if best is not None:                      # meets that row
+                ends.append(best[1])
+            else:                                     # half a strip past
+                ends.append((p[0] + u[0] * sign * w / 2,
+                             p[1] + u[1] * sign * w / 2))
+        a, b = ends
+        if math.dist(a, b) > 0.05:
+            out.append({"a": [round(a[0], 4), round(a[1], 4)],
+                        "b": [round(b[0], 4), round(b[1], 4)],
+                        "w": round(w, 3)})
     return out
 
 
@@ -784,6 +984,10 @@ def build(doc: dict, elevations) -> list[dict]:
             sh = FIT_SHRINK if c.get("fit") else SHRINK
             piece = {"outer": _ccw(column_outline(c, sh)), "holes": []}
             bot = z0 + float(c.get("base", 0.0)) + SHRINK   # its base
+            if float(c.get("base", 0.0)) <= 0:    # (a raised base: his)
+                g = ground_under(doc, info, lid, column_centre(c))
+                if g is not None:
+                    bot = min(bot, g + SHRINK)  # down to the pit's floor
             if top - bot < 0.05:
                 continue
             out.append(dict(_el(c, lid, W.solid(piece, bot, top)),
@@ -793,7 +997,10 @@ def build(doc: dict, elevations) -> list[dict]:
         bplans = W.plan([as_wall(e, shrink=FIT_SHRINK if e.get("fit")
                                  else SHRINK) for e in beams])
         for e in beams:
-            top = under - SHRINK
+            # its height INCLUDES the slab over it: its top flush with the
+            # slab's top, 1 mm down, hidden in it (a customer's catch,
+            # 2026-10-06 — it hung whole under the slab: 60 + 20 read 80)
+            top = z0 + li["height"] - SHRINK
             bot = top - float(e["h"]) + 2 * SHRINK
             out.append(dict(_el(e, lid, [f for pc in bplans.get(e["id"], ())
                                          for f in W.solid(pc, bot, top)]),
@@ -818,20 +1025,29 @@ def build(doc: dict, elevations) -> list[dict]:
         ftop = z0 - li["slab"]
         pads = [e for e in els if e["type"] == "footing"
                 and e.get("kind") == "pad"]
+        def foot_top(p):
+            """In a pit deeper than the floor: its top on the pit's floor
+            (which is DRAWN 1 cm lower — terrain.PIT_DRAW_DROP — so the two
+            never share a plane)."""
+            g = ground_under(doc, info, lid, p)
+            return ftop if g is None else min(ftop, g)
+
         for f in pads:
             piece = {"outer": _ccw(pad_outline(f)), "holes": []}
-            out.append(_el(f, lid, W.solid(piece, ftop - float(f["d"]),
-                                           ftop)))
+            t = foot_top((float(f["x"]), float(f["y"])))
+            out.append(_el(f, lid, W.solid(piece, t - float(f["d"]), t)))
         strips = [e for e in els if e["type"] == "footing"
                   and e.get("kind") == "strip"]
         splans = W.plan([as_wall(e, shrink=0.0) for e in strips])
         for f in strips:
             # 1 mm under the pads' top: where a strip runs into a pad the
             # two tops would share one plane (and flicker)
+            a, b = f["a"], f["b"]
+            t = foot_top(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
             out.append(_el(f, lid, [pc_f for pc in splans.get(f["id"], ())
                                     for pc_f in W.solid(
-                                        pc, ftop - float(f["d"]),
-                                        ftop - SHRINK)]))
+                                        pc, t - float(f["d"]),
+                                        t - SHRINK)]))
         # roofs: on the top of the level's walls
         wall_t = max((float(w["t"]) for w in mine), default=0.20)
         for r in (e for e in els if e["type"] == "roof"):

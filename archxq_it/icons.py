@@ -108,6 +108,17 @@ def _eye_off(p) -> None:
     p.drawLine(QPointF(12, 52), QPointF(52, 12))
 
 
+def _eye_part(p) -> None:
+    """Partly shown (some parts of the level switched off): the eye dim,
+    its pupil an open ring."""
+    dim = QColor(INK)
+    dim.setAlpha(110)
+    _eye_shape(p, dim)
+    p.setPen(_pen(INK, 4))
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(QPointF(32, 32), 7.0, 7.0)
+
+
 def _edit(p) -> None:
     """A pencil: open the thing's own window."""
     p.setPen(_pen(INK, 4))
@@ -399,6 +410,39 @@ def _foot_strips(p) -> None:
     p.drawLine(QPointF(4, 58), QPointF(60, 58))
 
 
+def _ghost(p) -> None:
+    """The ghost level, OFF: two floors in thin dim outline."""
+    dim = QColor(INK)
+    dim.setAlpha(80)
+    p.setPen(_pen(dim, 3.5))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(20, 8, 36, 30))
+    p.drawRect(QRectF(8, 26, 36, 30))
+
+
+def _ghost_on(p) -> None:
+    """The ghost level, ON: the floor behind FILLED in its light blue, the
+    front one bold — unmistakable next to the dim «off» (his eye,
+    2026-10-06: two thin squares changing colour hardly showed)."""
+    blue = QColor("#6fa8dc")
+    p.setPen(Qt.NoPen)
+    p.setBrush(blue)
+    p.drawRect(QRectF(18, 6, 40, 34))
+    p.setPen(_pen(INK, 5))
+    p.setBrush(QColor(INK).darker(400))
+    p.drawRect(QRectF(8, 26, 36, 30))
+
+
+def _foot_rows(p) -> None:
+    """A row of columns standing on one strip footing (elevation)."""
+    p.setPen(Qt.NoPen)
+    p.setBrush(INK)
+    for x in (8, 27, 46):
+        p.drawRect(QRectF(x, 8, 10, 32))
+    p.setBrush(ACCENT)
+    p.drawRect(QRectF(4, 40, 56, 14))
+
+
 def _help(p) -> None:
     """A ring with a question mark — the tool's guide."""
     from PySide6.QtGui import QFont
@@ -423,6 +467,7 @@ def _guides(p) -> None:
 
 _CUSTOM = {"help": _help, "guides": _guides, "survey": _survey, "add_point": _add_point, "fit": _fit,
            "excavate": _excavate, "eye": _eye, "eye_off": _eye_off,
+           "eye_part": _eye_part,
            "edit": _edit, "ramp": _ramp, "stair": _stair,
            "col_single": _col_single, "col_row": _col_row,
            "col_grid": _col_grid, "col_corners": _col_corners,
@@ -433,7 +478,8 @@ _CUSTOM = {"help": _help, "guides": _guides, "survey": _survey, "add_point": _ad
            "doc_rooms": _doc_rooms, "doc_dxf": _doc_dxf, "io": _io,
            "web": _web, "grid_snap": _grid_snap,
            "op_window": _op_window, "op_void": _op_void,
-           "foot_pads": _foot_pads, "foot_strips": _foot_strips}
+           "foot_pads": _foot_pads, "foot_strips": _foot_strips,
+           "foot_rows": _foot_rows, "ghost": _ghost, "ghost_on": _ghost_on}
 _cache: dict[str, QIcon] = {}
 
 

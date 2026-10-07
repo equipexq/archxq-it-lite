@@ -2,8 +2,8 @@
 it; remembered).
 
 The building's levels top → bottom, as a section reads: floors, the ground
-floor, basements, and the Terrain at the foot. Each row: name · elevation ·
-eye. The level you work on is lit; a click on another makes it current.
+floor, basements, and the Terrain at the foot. Each row: name · ✎ ·
+elevation · ghost (that level in light blue in the plan) · eye. The level you work on is lit; a click on another makes it current.
 The ✎ or a double-click opens the level's own window (name,
 height, a level above / below, delete). «+» adds a level on top.
 
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from . import icons
 from .style import CSS
 
-WIDTH = 226
+WIDTH = 250
 
 
 class _Row(QFrame):
@@ -63,12 +63,43 @@ class _Row(QFrame):
             e = QLabel(_elev(row["elev"]))
             e.setProperty("axq", "lvelev")
             lay.addWidget(e)
+        if row["kind"] != "terrain":
+            # GHOST: this level drawn faint under the plan of the one
+            # worked on (his ask, 2026-10-06: one per level — any of them)
+            g = QToolButton()
+            g.setProperty("axq", "eye")
+            g.setIconSize(QSize(17, 17))
+            g.setFocusPolicy(Qt.NoFocus)
+            on = bool(row.get("ghost"))
+            g.setIcon(icons.icon("ghost_on" if on else "ghost"))
+            if on:                         # lit: a blue chip behind it
+                g.setStyleSheet("QToolButton { background: "
+                                "rgba(111, 168, 220, 70); border-radius: 4px; }")
+            if row["current"]:
+                g.setEnabled(False)
+                g.setToolTip("The level you work on — its ghost shows when "
+                             "you work on another one")
+            else:
+                g.setToolTip("Ghost ON — this level shows in light blue in "
+                             "the plan (click: off)" if on else
+                             "Ghost — show this level in light blue in the "
+                             "plan of the level you work on")
+            g.clicked.connect(lambda: strip.owner.toggle_ghost(row["key"]))
+            lay.addWidget(g)
+        else:
+            pad = QWidget()                # the eyes stay in one column
+            pad.setFixedWidth(21)
+            lay.addWidget(pad)
         eye = QToolButton()
         eye.setProperty("axq", "eye")
-        eye.setIcon(icons.icon("eye" if row["visible"] else "eye_off"))
+        part = row["visible"] and row.get("parts_off")
+        eye.setIcon(icons.icon("eye_part" if part else "eye" if row["visible"]
+                               else "eye_off"))
         eye.setIconSize(QSize(18, 18))
-        eye.setToolTip("Hide this level" if row["visible"]
-                       else "Show this level")
+        eye.setToolTip(
+            (", ".join(part) + " hidden on this level — ✎ ▸ Show brings "
+             "them back\nClick: hide this level") if part else
+            "Hide this level" if row["visible"] else "Show this level")
         eye.setFocusPolicy(Qt.NoFocus)
         eye.clicked.connect(lambda: strip.owner.toggle_level(row["key"]))
         lay.addWidget(eye)
@@ -133,7 +164,8 @@ class LevelStrip(QFrame):
         self.max_height = 10_000
 
     def fill(self, rows: list[dict]) -> None:
-        """rows top → bottom: {key, name, kind, elev, visible, current}."""
+        """rows top → bottom: {key, name, kind, elev, visible, current,
+        ghost}."""
         # the old rows go off NOW (until the loop deletes them they were
         # drawn under the new ones: every row looked «current»); kept
         # referenced so deleteLater, not Python, destroys them
@@ -151,6 +183,11 @@ class LevelStrip(QFrame):
             if r["current"]:
                 current = row
         self.fit()
+        # once more when the new rows are laid out (his screen, 2026-10-06:
+        # an eye's click shrank the strip to 80 px with a scroll bar — it was
+        # measured before its rows were)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self.fit)
         if current is not None:
             self.scroll.ensureWidgetVisible(current, 0, 20)
 
@@ -177,6 +214,10 @@ class LevelStrip(QFrame):
         self.body.adjustSize()
         m = self.layout().contentsMargins()
         head = self.layout().itemAt(0).sizeHint().height()
-        need = (self.body.sizeHint().height() + head + m.top() + m.bottom()
-                + self.layout().spacing() + 4)
+        # the rows' own heights (the body's hint can lag behind a refill)
+        ws = [self.rows.itemAt(i).widget() for i in range(self.rows.count())]
+        rows_h = sum(w.sizeHint().height() for w in ws if w is not None) \
+            + self.rows.spacing() * max(0, len(ws) - 1)
+        need = (max(self.body.sizeHint().height(), rows_h) + head + m.top()
+                + m.bottom() + self.layout().spacing() + 4)
         self.setFixedHeight(max(80, min(need, self.max_height)))

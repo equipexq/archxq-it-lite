@@ -359,9 +359,11 @@ GUIDES.update({
     },
     "beam": {
         "image": "beam.jpg",
-        "what": "A beam hangs under the <b>slab above</b>: its top at the "
-                "slab's underside, its <b>height</b> going down. Beams join "
-                "one another like walls (corners, T, crossings).",
+        "what": "A beam's <b>height includes the slab above</b>: its top is "
+                "flush with the slab's top, the rest hangs under it — type "
+                "the beam's real height (a 20×60 beam under a 20 cm slab "
+                "shows 40 cm below it). Beams join one another like walls "
+                "(corners, T, crossings).",
         "steps": [
             ("Point by point", "Click from support to support, beam after "
              "beam."),
@@ -378,8 +380,9 @@ GUIDES.update({
     "slab": {
         "image": "slab.jpg",
         "what": "A slab's <b>top</b> is its level's floor (or the offset "
-                "you give it); its <b>thickness</b> goes down. The walls, "
-                "columns and beams of the level below stop at its underside.",
+                "you give it); its <b>thickness</b> goes down. The walls and "
+                "columns of the level below stop at its underside; the "
+                "beams go up into it, flush with its top.",
         "steps": [
             ("Inside the walls", "One click: the slab under this level's "
              "walls, to their outer faces."),
@@ -404,15 +407,29 @@ GUIDES.update({
     "footing": {
         "image": "footing.jpg",
         "what": "Footings hang under their level's slab: a <b>pad</b> under "
-                "each column, a <b>strip</b> under each wall. <b>Depth</b> "
-                "goes down from the slab's underside.",
+                "a column, a <b>strip</b> (continuous) under a wall or a row "
+                "of columns. <b>Pad</b> = the pad's side (it is square), "
+                "<b>Strip</b> = the strip's width, <b>Depth</b> = how thick, "
+                "going down from the slab's underside. In an excavation "
+                "deeper than the level's floor, their top sits on its floor.",
         "steps": [
             ("Under the columns", "One click: a pad under every column of "
              "this level (never narrower than the column + 0.20)."),
             ("Under the walls", "One click: a strip footing under every "
              "wall of this level."),
+            ("Under the column rows", "One click: a strip footing along "
+             "every row of columns of this level (2 or more in line, up to "
+             "8.5 m apart) — the rows meet in clean corners. Under columns "
+             "along an excavation or a boundary, it later carries the "
+             "retaining wall too."),
         ],
-        "tips": ["Make them on the lowest level (usually the basement)."],
+        "tips": ["Make them on the lowest level (usually the basement).",
+                 "Pads OR a strip under the same columns — not both.",
+                 "Along an excavation's side they stay inside it, their face "
+                 "flush with it (a boundary footing — on site it cannot "
+                 "reach past the retaining face).",
+                 "In the plan they show <b>dashed</b>: they lie under the "
+                 "floor."],
         "keys": [("Ctrl+Z", "undo")],
     },
     # ---- Walls -----------------------------------------------------------

@@ -165,6 +165,33 @@ def set_hidden_ids(viewport, key: str, ids) -> None:
     viewport.update()
 
 
+def set_hidden_parts(viewport, key: str, parts: dict) -> None:
+    """The parts of each level switched off in its window («Show»): {level
+    id: [part keys]} — view state, written straight in, never an undo
+    step."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["hidden_parts"] = {lv: sorted(p) for lv, p in parts.items() if p}
+    data[key] = doc
+    bump = getattr(viewport.scene, "bump_view", None)
+    if callable(bump):
+        bump()
+    viewport.update()
+
+
+def set_ghosts(viewport, key: str, ids) -> None:
+    """The levels drawn as a ghost in the plan — view state, written
+    straight in, never an undo step."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["ghosts"] = sorted({str(i) for i in ids if i})
+    data[key] = doc
+    bump = getattr(viewport.scene, "bump_view", None)
+    if callable(bump):
+        bump()
+    viewport.update()
+
+
 def show_folds(viewport, group, corners, breaks, on: bool) -> None:
     """Fold lines drawn or not on the plot's surface, without rebuilding
     it: their edges hard (drawn) or soft (not)."""
@@ -636,8 +663,10 @@ def commit_terrain(viewport, key: str, doc: dict, z0: float,
     ensure_layers(viewport, [TERRAIN_LAYER])
     doc = dict(doc)
     built = terrain.build(doc, z0, earcut, arrangement)
+    from . import materials
     plot_g = _mesh_group(PLOT_NAME, built["plot"]["faces"],
                          built["plot"]["soft"], color, "plot")
+    materials.paint(viewport.scene, plot_g, "plot", "plot", doc)
     new = [plot_g]
     uids = {}
     for d, faces in built["digs"]:
@@ -645,6 +674,8 @@ def commit_terrain(viewport, key: str, doc: dict, z0: float,
         g = _mesh_group(d["name"], faces, built["dig_soft"].get(d["id"], ()),
                         FILL_COLOR if fill else DIG_COLOR,
                         "fill" if fill else "dig", id=d["id"])
+        materials.paint(viewport.scene, g, "fill" if fill else "dig",
+                        d["id"], doc)
         new.append(g)
         uids[d["id"]] = g.uid
     doc["plot"] = dict(doc["plot"], uid=plot_g.uid)
@@ -871,6 +902,7 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     from core.mesh import Mesh
     from PySide6.QtGui import QVector3D
 
+    from . import materials
     from . import structure as S
 
     layers = {lv["id"]: level_layer_of(lv["name"]) for lv in doc["levels"]}
@@ -903,6 +935,7 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
         if e.get("okind"):               # door | window
             extra["okind"] = e["okind"]
         tag(g, e["kind"], id=e["id"], level=e["level"], **extra)
+        materials.paint(viewport.scene, g, e["kind"], e["id"], doc)
         new.append(g)
     old = wall_groups(viewport, None, BUILT_KINDS)
 

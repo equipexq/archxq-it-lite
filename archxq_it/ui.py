@@ -93,6 +93,8 @@ FOOTING_SHAPES = [
                           "every column of this level"),
     ("strips", "foot_strips", "Under the walls — one click: a strip "
                               "footing under every wall of this level"),
+    ("rows", "foot_rows", "Under the column rows — one click: a strip "
+                          "footing along every row of columns of this level"),
 ]
 #: the openings' options bars: one way to place them — on a wall
 OPENING_SHAPES = {
@@ -152,7 +154,8 @@ SECTION_SHAPES = [
 #: shapes that are one click (they act at once — nothing to draw)
 STRUCT_ACTIONS = {("column", "corners"), ("beam", "walls"),
                   ("slab", "walls"), ("footing", "pads"),
-                  ("footing", "strips"), ("roof", "walls")}
+                  ("footing", "strips"), ("footing", "rows"),
+                  ("roof", "walls")}
 LEVELS_KEY = Qt.Key_N               # shows / hides the levels strip
 TERRAIN_ROW = "terrain"             # the levels strip's row at the ground
 
@@ -479,6 +482,21 @@ class ArchXQ:
         active = str(QSettings().value("archxq/active", "1")) != "0"
         self.hub.power.setChecked(active)
         self.set_active(active)
+        # the host restores its window layout after the extensions load —
+        # once it came back with ArchXQ's tray tab closed (his screen,
+        # 2026-10-06): put it back beside Properties
+        QTimer.singleShot(2500, self._ensure_dock)
+
+    def _ensure_dock(self) -> None:
+        from PySide6.QtWidgets import QDockWidget
+        if not (self.alive and self.active and self._dock is not None) \
+                or self._dock.isVisible():
+            return
+        props = self.window.findChild(QDockWidget, "tray_properties")
+        if props is not None and props is not self._dock:
+            self.window.tabifyDockWidget(props, self._dock)
+        self._dock.show()
+        self._dock.raise_()
 
     # ---- The sovereign switch ------------------------------------------------
     def set_active(self, on: bool) -> None:
@@ -717,6 +735,7 @@ class ArchXQ:
         self.hub.close_sub()
         dlg = PlotDialog(doc["plot"], self.window, self._preview_plot,
                          view=self._view_pair())
+        self._mat_tab(dlg, "plot", "plot")
         try:
             ok = dlg.exec()
         finally:
@@ -726,16 +745,63 @@ class ArchXQ:
         if getattr(dlg, "action", "apply") == "delete":
             QTimer.singleShot(0, self.delete_plot)      # it asks first
             return
+        self._mat_take(dlg)
         corners, heights, closing = dlg.result_data()
         # read again: what changed while the window was open (its «Show on
         # the model» boxes write at once) must not be put back
-        doc = self.doc()
+        doc = self._with_mats(self.doc())
         compat.commit_plot(self.viewport, self.app.key, doc, corners,
                            PLOT_Z, PLOT_COLOR, doc["plot"]["thickness"],
                            heights, closing, doc["plot"]["breaks"])
         compat.flash(self.viewport, "Plot updated — Ctrl+Z undoes it", 5000)
         self.refresh()
         self._again(dlg, self.edit_plot_table)
+
+    # ---- Materials: the «Material» tab of the elements' windows ---------------------
+    def _mat_tab(self, dlg, kind: str, el_id: str) -> None:
+        """Give an element's window its «Material» tab (materials.py)."""
+        from . import materials
+        try:
+            tab = materials.material_tab(kind, el_id, self.doc())
+            if tab is not None:
+                materials.with_tab(dlg, tab)
+        except Exception:  # noqa: BLE001 — the window works without it
+            import traceback
+            traceback.print_exc()
+
+    def _mat_take(self, dlg, action: str = "apply") -> None:
+        """The window closed with OK / Apply: its material change goes into
+        the SAME commit as the element's (one Ctrl+Z) — and, when nothing
+        else commits, into one of its own right after."""
+        tab = getattr(dlg, "_mat_tab", None)
+        if tab is None or action in ("delete", "hide"):
+            return
+        ch = tab.change()
+        if ch is None:
+            return
+        self._pending_mat = ch
+        QTimer.singleShot(0, lambda k=ch["kind"]: self._flush_mat(k))
+
+    def _with_mats(self, doc: dict) -> dict:
+        """``doc`` with the material change waiting, if any (taken)."""
+        ch = getattr(self, "_pending_mat", None)
+        if ch is None:
+            return doc
+        from . import materials
+        self._pending_mat = None
+        return materials.merge(doc, ch)
+
+    def _flush_mat(self, kind: str) -> None:
+        if getattr(self, "_pending_mat", None) is None:
+            return                         # the element's commit took it
+        doc = self._live(self.doc())
+        if kind in ("plot", "dig", "fill"):
+            if self.has_plot(doc):
+                self._commit_terrain(doc)
+        else:
+            self._commit_all(doc)
+        compat.flash(self.viewport, "Material applied — Ctrl+Z undoes it",
+                     4000)
 
     def _again(self, dlg, reopen) -> None:
         """«Apply» (not OK) was pressed: the window comes back, in its place,
@@ -1204,6 +1270,8 @@ class ArchXQ:
         self.hub.close_sub()
         dlg = DigDialog(dig, doc, self.window, self._preview_dig,
                         view=self._view_pair())
+        self._mat_tab(dlg, "fill" if dig.get("kind") == "fill" else "dig",
+                      dig_id)
         try:
             ok = dlg.exec()
         finally:
@@ -1211,6 +1279,7 @@ class ArchXQ:
         if not ok:
             return
         action, new = dlg.result_data()
+        self._mat_take(dlg, action)
         doc = self.doc()                 # fresh (the window's boxes wrote)
         if action == "delete":
             doc["digs"] = [d for d in doc["digs"] if d["id"] != dig_id]
@@ -1390,6 +1459,7 @@ class ArchXQ:
         changes the slabs that follow it (autoslabs), the building is made
         again in the same step."""
         from . import autoslabs
+        doc = self._with_mats(doc)
         before = doc.get("structure") or []
         doc = autoslabs.sync(doc, model.elevations)
         building = None
@@ -2416,6 +2486,8 @@ class ArchXQ:
                 tool.magnets = [tuple(p) for p in S.wall_corners(walls)]
             except Exception:  # noqa: BLE001 — no magnets: a plain tool
                 tool.magnets = []
+            # a row clicked along an excavation's side stands inside it
+            tool.pits = self._pits(doc)
         elif element == "beam":
             beams = T.beams_as_walls(self._level_struct(doc, lv["id"],
                                                         "beam"))
@@ -2423,6 +2495,7 @@ class ArchXQ:
                               lambda: {"t": self.beam_opts["w"],
                                        "align": "centre"},
                               lambda: beams)
+            tool.magnets = self._columns_reaching(doc, lv["id"])
         elif element == "slab":
             if o["shape"] == "hole":             # an opening through one
                 tool = T.SLAB_TOOLS["rect"](self._slab_hole_drawn,
@@ -2699,6 +2772,35 @@ class ArchXQ:
                      + 180) % 360 - 180) < 0.5
         return False
 
+    @staticmethod
+    def _columns_reaching(doc: dict, lid: str) -> list:
+        """The centres of the columns standing in level ``lid``: its own,
+        and a lower level's that rise into it (a basement column 6 m tall
+        holds the floor above too) — a beam's supports."""
+        from . import structure as S
+        info = S.levels_info(doc, model.elevations)
+        lo = info[lid]["z0"] + 0.01
+        hi = info[lid]["z0"] + info[lid]["height"] - 0.01
+        out = []
+        for c in doc.get("structure") or []:
+            if c["type"] != "column" or c["level"] not in info \
+                    or S.why_not(c) is not None:
+                continue
+            li = info[c["level"]]
+            top = li["under"] if c.get("height", "level") == "level" \
+                else li["z0"] + float(c["height"])
+            bot = li["z0"] + float(c.get("base", 0.0))
+            if c["level"] == lid or (top > lo and bot < hi):
+                out.append(tuple(S.column_centre(c)))
+        return out
+
+    @staticmethod
+    def _pits(doc: dict) -> list:
+        """The excavations' outlines (not the fills')."""
+        from . import terrain
+        return [[tuple(p) for p in d["corners"]]
+                for d in doc.get("digs") or [] if not terrain.is_fill(d)]
+
     def struct_action(self, element: str, shape: str) -> None:
         """The one-click shapes: they read this level's walls / columns
         and build at once."""
@@ -2736,16 +2838,26 @@ class ArchXQ:
             for c in self._level_struct(doc, lv["id"], "column"):
                 cx, cy = S.column_centre(c)
                 side = max(float(c["w"]), float(c["d"])) + 0.20
-                recs.append({"type": "footing", "kind": "pad",
-                             "x": round(cx, 4), "y": round(cy, 4),
-                             "w": max(o["w"], side), "d": o["d"],
-                             "angle": float(c.get("angle", 0.0))})
+                r = {"type": "footing", "kind": "pad", "x": cx, "y": cy,
+                     "w": max(o["w"], side), "d": o["d"],
+                     "angle": float(c.get("angle", 0.0))}
+                # by an excavation's side: kept inside it (eccentric)
+                sx, sy = S.push_inside(S.pad_outline(r), self._pits(doc))
+                r["x"], r["y"] = round(cx + sx, 4), round(cy + sy, 4)
+                recs.append(r)
             why = "No columns on this level (draw them first)"
         elif (element, shape) == ("footing", "strips"):
             o = self.foot_opts
             recs = [dict(s, type="footing", kind="strip", w=o["sw"],
                          d=o["d"]) for s in S.strips_under(walls)]
             why = "No walls on this level"
+        elif (element, shape) == ("footing", "rows"):
+            o = self.foot_opts
+            recs = [dict(s, type="footing", kind="strip", d=o["d"])
+                    for s in S.strips_under_columns(
+                        self._level_struct(doc, lv["id"], "column"),
+                        o["sw"], self._pits(doc))]
+            why = "No rows of columns on this level (2 or more in line)"
         elif (element, shape) == ("roof", "walls"):
             loop = S.inside_walls(walls, compat.outer_loop)
             if loop:
@@ -2885,7 +2997,8 @@ class ArchXQ:
         element rebuilt from ``doc`` — one Ctrl+Z. The excavations' slabs
         are made / followed first (autoslabs)."""
         from . import autoslabs
-        doc = self._with_built(autoslabs.sync(doc, model.elevations))
+        doc = self._with_built(autoslabs.sync(self._with_mats(doc),
+                                              model.elevations))
         compat.commit_build(self.viewport, self.app.key, doc,
                             model.elevations, compat.level_layer)
         self._apply_parts()              # «Show», and what hides in walls
@@ -2998,9 +3111,11 @@ class ArchXQ:
             self.edit_stair(el)
             return
         dlg = ElementDialog(el, lv, self.window)
+        self._mat_tab(dlg, el["type"], el_id)
         if not dlg.exec():
             return
         action, new = dlg.result_data()
+        self._mat_take(dlg, action)
         if action == "delete":
             self.delete_element(el_id)
         elif action == "hide":
@@ -3114,9 +3229,11 @@ class ArchXQ:
         from . import ramps as R
         dlg = R.RampDialog(el, self.doc(), model.elevations, edit=True,
                            parent=self.window)
+        self._mat_tab(dlg, "ramp", el["id"])
         if not dlg.exec():
             return
         action, new = dlg.result_data()
+        self._mat_take(dlg, action)
         if action == "delete":
             self.delete_element(el["id"])
             return
@@ -3165,9 +3282,11 @@ class ArchXQ:
         from . import stairs as ST
         dlg = ST.StairDialog(el, self.doc(), model.elevations, edit=True,
                              parent=self.window)
+        self._mat_tab(dlg, "stair", el["id"])
         if not dlg.exec():
             return
         action, new = dlg.result_data()
+        self._mat_take(dlg, action)
         if action == "delete":
             self.delete_element(el["id"])
             return
@@ -3242,9 +3361,11 @@ class ArchXQ:
             return
         self.hub.close_sub()
         dlg = WallDialog(wall, lv, self.window)
+        self._mat_tab(dlg, "wall", wall_id)
         if not dlg.exec():
             return
         action, new = dlg.result_data()
+        self._mat_take(dlg, action)
         if action == "delete":
             self.delete_wall(wall_id)
         elif action == "hide":
@@ -3688,10 +3809,15 @@ class ArchXQ:
                 compat.tag(g, "plot")
         elev = model.elevations(levels, doc["project"]["ground_level"]
                                 if model.has_project(doc) else 0.0)
+        off = doc.get("hidden_parts") or {}
         rows = [{"key": r["id"], "name": r["name"], "kind": r["kind"],
                  "elev": elev[i],
                  "current": i == self.floor and not self.terrain_current,
-                 "visible": compat.layer_visible(self.viewport, names[i])}
+                 "visible": compat.layer_visible(self.viewport, names[i]),
+                 # parts switched off in its window: the eye says so
+                 "parts_off": [label for key, label, _k in model.LEVEL_PARTS
+                               if key in off.get(r["id"], ())],
+                 "ghost": r["id"] in (doc.get("ghosts") or ())}
                 for i, r in reversed(list(enumerate(levels)))]
         rows.insert(self._terrain_at(rows),
                     {"key": TERRAIN_ROW, "name": "Terrain",
@@ -3804,7 +3930,8 @@ class ArchXQ:
         i = ids.index(key)
         layer = compat.level_layer(doc["levels"][i]["name"])
         dlg = LevelDialog(doc, i, compat.layer_content(self.viewport, layer),
-                          self.window)
+                          self.window,
+                          on_show=lambda off: self.set_level_parts(key, off))
         if not dlg.exec():
             return
         action, name, height = dlg.result_data()
@@ -4118,6 +4245,21 @@ class ArchXQ:
             a.setChecked(bool(on))
             a.blockSignals(False)
 
+    def toggle_ghost(self, key: str) -> None:
+        """A level row's ghost icon: that level drawn in light blue in the
+        plan of the one worked on — to line this one up with it. Any
+        number of them; a view change (no undo), kept in the file."""
+        doc = self.doc()
+        cur = set(doc.get("ghosts") or [])
+        on = key not in cur
+        cur = (cur | {key}) if on else (cur - {key})
+        compat.set_ghosts(self.viewport, self.app.key, cur)
+        self._fill_levels(self.doc())
+        if on and not self.plan_on:
+            compat.flash(self.viewport, "Ghost on — it shows in the plan "
+                         "view", 4000)
+        self.viewport.update()
+
     def toggle_levels_strip(self) -> None:
         if not self.active:
             self._menu_check("Levels strip\tN", self.levels_open)
@@ -4161,6 +4303,7 @@ class ArchXQ:
         walls_on = "walls" not in self.hidden_parts
         above = self._levels_above() if self.plan_on else set()
         mine_off = self._hidden_ids()     # hidden one by one (by its id)
+        lv_off = self._hidden_level_kinds()   # a level's window «Show»
         hide, show = [], []
         for g in self.viewport.scene.groups:
             k = compat.kind_of(g)
@@ -4181,7 +4324,9 @@ class ArchXQ:
                     or compat._rec(g).get("level") in above
                     # its window's «Hide» / the outliner's eye: it holds
                     # through every rebuild
-                    or compat._rec(g).get("id") in mine_off)
+                    or compat._rec(g).get("id") in mine_off
+                    # a part of its level switched off in the level's window
+                    or k in lv_off.get(compat._rec(g).get("level"), ()))
                 if bool(g.hidden) != want:
                     (hide if want else show).append(g)
         if hide:
@@ -4194,6 +4339,33 @@ class ArchXQ:
             return set(self.doc().get("hidden_ids") or [])
         except Exception:  # noqa: BLE001 — nothing hidden
             return set()
+
+    def _hidden_parts(self) -> dict:
+        """{level id: {part keys}} switched off in the levels' windows."""
+        try:
+            return {lv: set(p) for lv, p in
+                    (self.doc().get("hidden_parts") or {}).items()}
+        except Exception:  # noqa: BLE001 — nothing hidden
+            return {}
+
+    def _hidden_level_kinds(self) -> dict:
+        """{level id: {element kinds}} — the parts above, as kinds."""
+        out = {}
+        for lv, parts in self._hidden_parts().items():
+            out[lv] = {k for key, _l, kinds in model.LEVEL_PARTS
+                       if key in parts for k in kinds}
+        return out
+
+    def set_level_parts(self, level_id: str, off) -> None:
+        """A level's window «Show»: its parts in ``off`` hidden, the rest
+        shown — a view change (no undo), kept in the file. Right away,
+        with the window still open."""
+        cur = self._hidden_parts()
+        cur[level_id] = set(off)
+        compat.set_hidden_parts(self.viewport, self.app.key, cur)
+        self._apply_parts()
+        self._fill_levels(self.doc())      # the row's eye tells it
+        self._sync_outliner(force=True)
 
     def set_elements_hidden(self, ids, hidden: bool) -> None:
         """Hide / show ArchXQ elements by id — a view change (no undo),
@@ -4608,6 +4780,100 @@ class ArchXQ:
         except Exception:  # noqa: BLE001 — never break the host's paint
             pass
 
+    GHOST_INK = "#6fa8dc"       # the level below, faint
+
+    def _draw_ghost_level(self, viewport, painter) -> None:
+        """In the plan: the levels whose ghost is on (not the one worked
+        on), their outlines in light blue — seen, never picked."""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QPen
+        from . import structure as S
+        try:
+            doc = self.doc()
+            levels = doc["levels"]
+            if not 0 <= self.floor < len(levels):
+                return
+            here = levels[self.floor]["id"]
+            ghosts = [r["id"] for r in levels
+                      if r["id"] in (doc.get("ghosts") or ()) and
+                      r["id"] != here]
+            if not ghosts:
+                return
+            cache = getattr(self, "_ghost_cache", {})
+            loops = []
+            for lid in ghosts:
+                key = (repr([e for e in doc.get("walls") or []
+                             if e["level"] == lid]),
+                       repr([e for e in doc.get("structure") or []
+                             if e["level"] == lid]))
+                if cache.get(lid, (None,))[0] != key:
+                    cache[lid] = (key, S.level_plan_loops(doc, lid))
+                loops += cache[lid][1]
+            self._ghost_cache = cache
+            z = model.elevations(levels, doc["project"]["ground_level"]
+                                 if model.has_project(doc) else 0.0)[
+                self.floor]
+            painter.save()
+            painter.setRenderHint(painter.RenderHint.Antialiasing)
+            ink = QColor(self.GHOST_INK)
+            ink.setAlpha(190)
+            painter.setPen(QPen(ink, 1.2))
+            for loop in loops:
+                px = [compat.to_pixel(viewport, p[0], p[1], z) for p in loop]
+                for a, b in zip(px, px[1:] + px[:1]):
+                    if a and b:
+                        painter.drawLine(QPointF(*a), QPointF(*b))
+            painter.restore()
+        except Exception:  # noqa: BLE001 — never break the host's paint
+            pass
+
+    HIDDEN_INK = "#3b4048"      # what lies under the floor: dashed
+
+    def _draw_hidden_footings(self, viewport, painter) -> None:
+        """In the plan, the current level's footings DASHED, on top — as a
+        foundation plan draws them (his ask, 2026-10-06: the earth and the
+        slab hid them; hidden = dashed, the drawing convention every other
+        program follows). Their outline as built."""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QPen
+        from . import structure as S
+        try:
+            doc = self.doc()
+            levels = doc["levels"]
+            if not 0 <= self.floor < len(levels):
+                return
+            lv = levels[self.floor]
+            if not compat.layer_visible(viewport,
+                                        compat.level_layer(lv["name"])) \
+                    or "structure" in self.hidden_parts \
+                    or "footings" in self._hidden_parts().get(lv["id"], ()):
+                return
+            struct = doc.get("structure") or []
+            key = (lv["id"], repr([e for e in struct
+                                   if e["type"] == "footing"]))
+            if getattr(self, "_foot_cache", (None,))[0] != key:
+                self._foot_cache = (key, S.footing_plans(struct, lv["id"]))
+            off = self._hidden_ids()
+            z = model.elevations(levels, doc["project"]["ground_level"]
+                                 if model.has_project(doc) else 0.0)[
+                self.floor]
+            painter.save()
+            painter.setRenderHint(painter.RenderHint.Antialiasing)
+            pen = QPen(QColor(self.HIDDEN_INK), 1.3)
+            pen.setDashPattern([6.0, 4.0])
+            painter.setPen(pen)
+            for fid, loops in self._foot_cache[1]:
+                if fid in off:
+                    continue
+                for loop in loops:
+                    px = [compat.to_pixel(viewport, x, y, z) for x, y in loop]
+                    for a, b in zip(px, px[1:] + px[:1]):
+                        if a and b:
+                            painter.drawLine(QPointF(*a), QPointF(*b))
+            painter.restore()
+        except Exception:  # noqa: BLE001 — never break the host's paint
+            pass
+
     def _draw_opening_symbols(self, viewport, painter) -> None:
         """In the plan, the current level's openings as a plan draws them
         (jambs, glass, a door's leaf and swing) — the walls' tops hide the
@@ -4708,6 +4974,8 @@ class ArchXQ:
             self._draw_plan_grid(viewport, painter)
             self._draw_plan_guides(viewport, painter)
         if self.plan_on and not self.terrain_current:
+            self._draw_ghost_level(viewport, painter)
+            self._draw_hidden_footings(viewport, painter)
             self._draw_hidden_columns(viewport, painter)
             self._draw_opening_symbols(viewport, painter)
             self._draw_room_labels(viewport, painter)

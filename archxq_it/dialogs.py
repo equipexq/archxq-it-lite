@@ -55,6 +55,15 @@ FIELD_TABLE_CSS = (
     "stop:0.6 #2c3238, stop:1 #2c3238); }")
 
 
+def _rule() -> QWidget:
+    """A thin horizontal line that sets a section apart."""
+    from PySide6.QtWidgets import QFrame
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
+    line.setStyleSheet("color: #4a525b;")
+    return line
+
+
 def _with_help(widget: QWidget, topic: str) -> QWidget:
     box = QWidget()
     lay = QHBoxLayout(box)
@@ -778,7 +787,7 @@ class LevelDialog(QDialog):
     "delete"."""
 
     def __init__(self, doc: dict, index: int, content: int,
-                 parent=None) -> None:
+                 parent=None, on_show=None) -> None:
         super().__init__(parent)
         self.levels = copy.deepcopy(doc["levels"])
         self.index = index
@@ -818,6 +827,29 @@ class LevelDialog(QDialog):
             f"{content} object" + ("s" if content > 1 else "")))
         lay.addLayout(form)
 
+        # «Show» — a section of its own, set apart by rules above and below:
+        # this level's parts on / off, RIGHT AWAY (a view change: no undo,
+        # Cancel keeps it — like the levels' eye)
+        if on_show is not None:
+            lay.addSpacing(6)
+            lay.addWidget(_rule())
+            cap = QHBoxLayout()
+            t = QLabel("Show")
+            ft = t.font()
+            ft.setBold(True)
+            t.setFont(ft)
+            cap.addWidget(t)
+            note = QLabel("on this level — changes the view right away")
+            note.setEnabled(False)
+            cap.addWidget(note)
+            cap.addStretch()
+            lay.addLayout(cap)
+            lay.addLayout(self._show_grid(
+                set((doc.get("hidden_parts") or {}).get(lv["id"], ())),
+                on_show))
+            lay.addWidget(_rule())
+            lay.addSpacing(6)
+
         acts = QHBoxLayout()
         g = next(i for i, r in enumerate(self.levels) if r["kind"] == "ground")
         b_up = QPushButton("+ Level above")
@@ -846,6 +878,23 @@ class LevelDialog(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
         self._refresh()
+
+    def _show_grid(self, off: set, on_show):
+        """Two rows of three ticks; each change goes out at once."""
+        from PySide6.QtWidgets import QCheckBox, QGridLayout
+        grid = QGridLayout()
+        grid.setContentsMargins(12, 2, 0, 4)
+        grid.setHorizontalSpacing(18)
+        self.f_show = {}
+        for n, (key, label, _kinds) in enumerate(model.LEVEL_PARTS):
+            c = QCheckBox(label)
+            c.setChecked(key not in off)
+            c.toggled.connect(lambda _on: on_show(
+                {k for k, box in self.f_show.items() if not box.isChecked()}))
+            self.f_show[key] = c
+            grid.addWidget(c, n // 3, n % 3)
+        grid.setColumnStretch(3, 1)
+        return grid
 
     def _refresh(self) -> None:
         levels = copy.deepcopy(self.levels)

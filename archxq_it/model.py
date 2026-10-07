@@ -27,6 +27,15 @@ PAPERS = ("A1", "A2", "A3", "A4", "Letter", "Tabloid")
 SCALES = ("1:50", "1:75", "1:100", "1:200")
 UNITS = ("Metric (m)", "Imperial (ft-in)")
 
+#: the parts of ONE level its window shows / hides («Show»): (key, label,
+#: the kinds of the elements in it)
+LEVEL_PARTS = (("slabs", "Slabs", ("slab",)),
+               ("framing", "Columns & beams", ("column", "beam")),
+               ("footings", "Footings", ("footing",)),
+               ("walls", "Walls", ("wall",)),
+               ("openings", "Openings", ("opening",)),
+               ("ramps", "Ramps & stairs", ("ramp", "stair")))
+
 DEFAULT_PROJECT = {
     "name": "", "client": "", "location": "", "author": "",
     "date": "",                 # empty = today, when a sheet is exported
@@ -79,7 +88,16 @@ DEFAULT_DOC = {
     # the elements hidden (their window's «Hide», the outliner's eye) —
     # view state, written without an undo step (compat.set_hidden_ids)
     "hidden_ids": [],
-    "plot": None,       # {"corners": [[x, y], ...], "uid": str, "thickness",
+    # parts of a level switched off in its window («Show»): {level id:
+    # [part keys of LEVEL_PARTS]} — view state too (compat.set_hidden_parts)
+    "hidden_parts": {},
+    # the levels drawn as a GHOST (light blue) under the plan of the one
+    # worked on — the levels strip's per-level icon; view state too
+    "ghosts": [],
+    # what each element / part is made of (materials.py): {"el": {id:
+    # {part: ref}}, "type": {kind: {part: ref}}} — painted at every rebuild
+    "materials": {"el": {}, "type": {}},
+    "plot": None,    # {"corners": [[x, y], ...], "uid": str, "thickness",
                         #  "heights": [z per corner], "closing": side index,
                         #  "breaks": [[i, j], ...] fold lines,
                         #  "sb_front": [bool per side], "sb_custom": [m |
@@ -175,6 +193,20 @@ def load(raw) -> dict:
     _settle_owners(doc)
     if isinstance(raw.get("hidden_ids"), list):
         doc["hidden_ids"] = sorted({str(x) for x in raw["hidden_ids"]})
+    if raw.get("materials"):
+        from . import materials
+        doc["materials"] = materials.clean(raw["materials"], doc)
+    if isinstance(raw.get("ghosts"), list):
+        lv_ids = {r["id"] for r in doc["levels"]}
+        doc["ghosts"] = sorted({str(x) for x in raw["ghosts"]} & lv_ids)
+    if isinstance(raw.get("hidden_parts"), dict):
+        lv_ids = {r["id"] for r in doc["levels"]}
+        known = {k for k, _l, _kinds in LEVEL_PARTS}
+        for lv, parts in raw["hidden_parts"].items():
+            keep = sorted({str(p) for p in parts or []} & known) \
+                if isinstance(parts, list) else []
+            if lv in lv_ids and keep:
+                doc["hidden_parts"][lv] = keep
     if isinstance(raw.get("auto_off"), list):
         doc["auto_off"] = sorted({str(x) for x in raw["auto_off"]
                                   if str(x).startswith("dig:")})

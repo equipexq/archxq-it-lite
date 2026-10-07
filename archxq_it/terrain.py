@@ -37,6 +37,7 @@ from . import model, plotgeo
 DEFAULT_ELEV = -3.0        # a pit's bottom when there is no basement
 DEFAULT_DEPTH = 3.0        # a new pit: 3 m under the ground (his default)
 BELOW_FLOOR = -0.30        # a basement's pit: its floor minus slab + fill
+PIT_DRAW_DROP = 0.01       # m a pit's floor is DRAWN under its true level
 MIN_THICK = 0.30           # ground left under the deepest pit
 EPS = 1e-4
 
@@ -460,7 +461,18 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
             if is_fill(d):                      # never below the ground
                 r["zf"] = lambda p, f=f: max(f(p), gz(p))
             else:                               # never above it
-                r["zf"] = lambda p, f=f: min(f(p), gz(p))
+                # DRAWN 1 cm under its true floor (none at the rim, where
+                # it meets the ground): whatever stands on the floor —
+                # footings, strips, a ramp's foot, what comes later — never
+                # shares a plane with it and flickers (his call,
+                # 2026-10-06: one fix in the pit for everything). Its
+                # number, its volume and the elements stay at the true one.
+                def zf(p, f=f):
+                    z, g = f(p), gz(p)
+                    return z - min(PIT_DRAW_DROP, max(0.0, g - z)) \
+                        if z < g else g
+                r["zf"] = zf
+                r["zt"] = lambda p, f=f: min(f(p), gz(p))   # the true one
         return r["zf"]
 
     # -- the top: the ground, open where the excavations are ------------------------
@@ -546,7 +558,8 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
             lowest = lo if lowest is None else min(lowest, lo)
         # earth taken out (a cut) or brought in (a fill): triangles × depth
         sign = -1.0 if is_fill(r["dig"]) else 1.0
-        for t in _tri_faces(r["outer"], r["holes"], zf, earcut):
+        # (at the TRUE floor — not the one drawn 1 cm lower)
+        for t in _tri_faces(r["outer"], r["holes"], r.get("zt", zf), earcut):
             a = plotgeo.area([list(p[:2]) for p in t])
             depth = sum(max(0.0, sign * (gz(p[:2]) - p[2])) for p in t) / 3
             volumes[r["dig"]["id"]] += a * depth
