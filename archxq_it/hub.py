@@ -64,8 +64,8 @@ class Hub(QFrame):
         self.power.setToolTip("Enter / leave the ArchXQ environment "
                               "(the model is not changed)")
         self.power.toggled.connect(owner.set_active)
-        self.power.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.power.customContextMenuRequested.connect(self._placement_menu)
+        # (its right-click «placement» menu is gone: ONE interface, over the
+        # 3D view — his call, 2026-10-07)
         row.addWidget(self.power)
 
         self.env = QWidget()                  # everything hidden when off
@@ -296,18 +296,6 @@ class Hub(QFrame):
         if et in (QEvent.Resize, QEvent.Move):
             QTimer.singleShot(0, self.relayout)
         return False
-
-    def _placement_menu(self, pos) -> None:
-        from PySide6.QtWidgets import QMenu
-        menu = QMenu(self.power)
-        for key, text in (("viewport", "Over the 3D view"),
-                          ("toolbar", "Own bars around the 3D view")):
-            act = menu.addAction(text)
-            act.setCheckable(True)
-            act.setChecked(self.mode == key)
-            act.triggered.connect(
-                lambda _=False, k=key: self.owner.set_placement(k))
-        menu.exec(self.power.mapToGlobal(pos))
 
     # ---- geometry ------------------------------------------------------------
     def relayout(self) -> None:

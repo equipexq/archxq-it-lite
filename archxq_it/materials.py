@@ -45,6 +45,11 @@ PLURAL = {"plot": "plots", "dig": "excavations", "fill": "fills",
           "footing": "footings", "wall": "walls", "ramp": "ramps",
           "stair": "stairs"}
 MAT_PREFIX = "ArchXQ · "
+#: kinds whose faces carry colours of their own on purpose (a door's glass
+#: and frame, a roof's tiles and eaves) — kept under a material. Ramps and
+#: stairs carry their plain concrete per face too, but that one IS what a
+#: material replaces (his stair stayed grey under «Use for all», 2026-10-08)
+KEEP_OWN_COLOURS = {"opening", "roof"}
 
 
 def textures_allowed() -> bool:
@@ -300,8 +305,9 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
     # FACE by face, even for a one-part element: a group's own material
     # showed at first and was lost at the next redraw (his columns, beams
     # and footings, 2026-10-07) — the faces' attrs are what the host keeps
+    keep_own = kind in KEEP_OWN_COLOURS
     for f in group.mesh.faces:
-        if "color" in f.attrs and "mat" not in f.attrs:
+        if keep_own and "color" in f.attrs and "mat" not in f.attrs:
             continue                              # its own (glass, frame)
         n = f.normal() if callable(f.normal) else f.normal
         part = part_of(kind, n.z())
@@ -325,6 +331,7 @@ def _qt():
 
 THUMB = 64
 _PIX: dict = {}
+_REOPEN_AT: dict = {}     # a window reopened by Apply: (tab, part row)
 
 
 def thumb(ref, size: int = THUMB):
@@ -525,6 +532,18 @@ class MaterialTab:
             self.list.item(i).setIcon(QtGui.QIcon(thumb(self.now.get(p), 28)))
 
     # -- the result -----------------------------------------------------------------
+    #: ui sets it: commits a change at once (Apply on this tab)
+    on_apply = None
+
+    def apply_now(self) -> None:
+        """Apply on the Material tab: commit what changed, stay open."""
+        ch = self.change()
+        if ch is None or self.on_apply is None:
+            return
+        self.on_apply(ch)
+        self.start = dict(self.now)        # applied: no longer a change
+        self.all.setChecked(False)
+
     def change(self) -> dict | None:
         """What to store (``merge``), None: nothing changed."""
         parts = {p: r for p, r in self.now.items() if r != self.start.get(p)}
@@ -566,6 +585,27 @@ def with_tab(dlg, tab: MaterialTab) -> None:
     tabs.addTab(page, "Element")
     tabs.addTab(tab.widget, "Material")
     lay.addWidget(tabs, 1)
+    # reopened by «Apply» (the Element tab): back on the tab and the part it
+    # was on — it went back to «Element» every time (his test, 2026-10-07)
+    key = type(dlg).__name__
+    last = _REOPEN_AT.pop(key, None)
+    if last is not None:
+        tabs.setCurrentIndex(last[0])
+        tab.list.setCurrentRow(last[1])
+
+    def remember(_r=0) -> None:
+        if getattr(dlg, "again", False):
+            _REOPEN_AT[key] = (tabs.currentIndex(), tab.list.currentRow())
+    dlg.finished.connect(remember)
+    # «Apply» with the Material tab in front: the material goes on AT ONCE,
+    # the window stays (no close-and-reopen blink); on the Element tab it is
+    # the usual Apply
+    b = getattr(dlg, "_apply_btn", None)
+    if b is not None and hasattr(b, "_axq_go"):
+        b.clicked.disconnect()
+        b.clicked.connect(lambda: tab.apply_now()
+                          if tabs.currentWidget() is tab.widget
+                          and tab.on_apply is not None else b._axq_go())
     for it in keep:
         if it.widget() is not None:
             lay.addWidget(it.widget())

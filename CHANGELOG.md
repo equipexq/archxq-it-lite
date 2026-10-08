@@ -1,5 +1,25 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.9.5
+
+- **Library** — the strip on the right opens on the library of what you
+  draw: **types** in pictures on top, their **parts** below; the sizes stay
+  in the bar on the left. Walls (15 cm, 20 cm, partition) and columns
+  (rectangular, round); select elements and click another type to change
+  them (one Ctrl+Z). The Pro's types (doors, windows, beams, slabs, stairs,
+  ramps) show with a PRO badge; greyed items are on the way.
+- **The bar edits what is selected**: select walls or columns — the bar
+  shows their sizes, and a change goes straight to them (a run of clicks on
+  one field = one Ctrl+Z).
+- **IngeTrazo's own tools on ArchXQ's columns**: **Move** (M), **Copy**
+  (Ctrl + Move, arrays ×3 / 3), **Rotate** (Q) and **Scale** (S) — the
+  column's record follows: the same gestures you already know.
+- **Material** tab: **Apply** works in place (no closing and reopening).
+- **About**: «Version» with a **Copy** button (for support), and a
+  **What's new** link.
+- The «own bars» placement is gone (one interface, over the 3D view); the
+  Extensions ▸ ArchXQ menu opens its items at the first click.
+
 ## 0.9.4
 
 - **Materials** — every element's window has a **Material** tab: IngeTrazo's

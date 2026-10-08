@@ -622,6 +622,14 @@ def _openings(raw, wall_ids: set) -> list[dict]:
                    "sill": min(max(float(o.get("sill", 0.0)), 0.0), 20.0),
                    "swing": "right" if o.get("swing") == "right"
                    else "left"}
+            if o["kind"] == "door":          # its type (library, 0.9.5)
+                rec["op"] = "sliding" if o.get("op") == "sliding" \
+                    else "swing"
+                rec["leaves"] = 2 if str(o.get("leaves")) == "2" else 1
+                rec["leaf"] = "glass" if o.get("leaf") == "glass" \
+                    else "solid"
+                rec["open"] = round(min(max(float(o.get("open", 0.0)),
+                                            0.0), 1.0), 3)
         except (TypeError, ValueError, KeyError):
             continue
         oid = str(o.get("id") or "") or uuid.uuid4().hex[:8]

@@ -54,7 +54,9 @@ HELP: dict[str, tuple[str, str]] = {
         "walls</b> makes it in one click, to the walls' outer faces."
         "<br><br>An <b>excavation</b> makes its own slabs: on every basement "
         "it holds and on the ground floor over them, following its outline. "
-        "Delete one you do not want — it stays away."),
+        "Delete one you do not want — it stays away.<br><br>An "
+        "<b>opening</b> drawn in a slab is closed from the slab's window: "
+        "double-click it ▸ «Close its opening(s)» ▸ OK."),
     "footing": (
         "Footing",
         "Footings hang under their level's slab: a <b>pad</b> under each "
@@ -153,9 +155,30 @@ HELP: dict[str, tuple[str, str]] = {
         "Door",
         "A door sits in a straight wall: move along the wall and click. "
         "The wall is cut through for it (floor to its head) and a frame "
-        "and leaf go in.<br><br><b>Hinge</b>: the jamb it hangs on; it "
-        "opens to the wall's inside. In the plan it is drawn with its "
-        "leaf open and its swing."),
+        "and its leaves go in.<br><br>Its <b>type</b> is picked in the "
+        "<b>Library</b> (the strip on the right): <b>Swing</b> (hinged, it "
+        "opens to the wall's inside), <b>Sliding</b> (a leaf on a rail along "
+        "the inside face) or <b>Glass sliding</b> (glazed leaves in a slim "
+        "frame, in two tracks); <b>1 or 2 leaves</b>. <b>Hinge · slides "
+        "to</b>: the jamb it hangs on, or the side it slides to.<br><br>"
+        "<b>Open</b> shows it open in 3D (0–100 %) — drag it with doors "
+        "selected and they open as you go. In the plan a swing door is "
+        "drawn with its leaf open and its swing; a sliding one with its "
+        "leaves and an arrow."),
+    "library": (
+        "Library",
+        "What you draw, in pictures: pick a <b>type</b> (the cards) and its "
+        "<b>parts</b> (the chips under them), then draw — the sizes stay in "
+        "the bar on the left. The last type you used is already marked: "
+        "just draw if it is the one.<br><br>With elements <b>selected</b>, "
+        "their type is marked: click another card or chip and they change "
+        "(one Ctrl+Z). The bar on the left shows their sizes too — change "
+        "one and they follow.<br><br>Greyed items are on the way: they "
+        "switch on with the coming updates.<br><br>IngeTrazo's own "
+        "<b>Move</b> (M), <b>Copy</b> (Ctrl + Move, arrays ×3 / 3), "
+        "<b>Rotate</b> (Q) and <b>Scale</b> (S) work on ArchXQ's columns, "
+        "beams, footings, slabs, ramps and stairs: their records follow — "
+        "slab openings, materials, everything."),
     "window": (
         "Window",
         "A window sits in a straight wall, its <b>sill</b> measured from "

@@ -425,6 +425,23 @@ def level_plan_loops(doc: dict, lid: str) -> list:
         loops += [[tuple(p) for p in h] for h in s.get("holes") or []]
     for _fid, ls in footing_plans(struct, lid):
         loops += ls
+    # ramps and stairs, their outline in plan (his screen, 2026-10-07: the
+    # ghost of Basement 1 did not show its entrance ramps)
+    rs = [e for e in els if e["type"] in ("ramp", "stair")]
+    if rs:
+        from . import model
+        from . import ramps as R
+        for r in rs:
+            try:
+                if r["type"] == "ramp":
+                    zs, ze = R.heights(r, doc, model.elevations)
+                    polys = R.footprints(r, zs, ze, R.length_of(r, zs, ze))
+                else:
+                    from . import stairs as ST
+                    polys = ST.footprints(r, doc, model.elevations)
+            except Exception:  # noqa: BLE001 — a ghost never breaks
+                continue
+            loops += [[tuple(p[:2]) for p in poly] for poly in polys]
     return loops
 
 
@@ -569,8 +586,11 @@ def strips_under_columns(cols: list[dict], width: float,
 #: an opening: {"id", "name", "kind": "door" | "window" | "void",
 #:   "wall": wall id, "pos": its centre along the wall's line (m from the
 #:   wall's start), "w", "h", "sill" (from the level's floor),
-#:   "swing": "left" | "right" (a door's hinge, seen from inside)}
+#:   "swing": "left" | "right" (a door's hinge, seen from inside — a
+#:   sliding door: the side it slides to), a door's "op": "swing" |
+#:   "sliding" and "leaves": 1 | 2 (the library's types, 2026-10-08)}
 OPENING_LABEL = {"door": "Door", "window": "Window", "void": "Opening"}
+RAIL = 0.04             # m, a sliding door's rail (height and depth)
 FRAME = 0.05            # m, a frame's face width
 FRAME_DEPTH = 0.07      # m, a frame's depth through the wall
 LEAF = 0.04             # m, a door leaf
@@ -747,9 +767,11 @@ def _box(p0, u, n, sa, sb, ca, cb, za, zb, color) -> list:
             for q in quads]
 
 
-def opening_parts(o: dict, seg, z0: float) -> list:
-    """The frame (and glass / leaf) of an opening, on the wall's centre
-    line: faces with their colours. A void has none."""
+def opening_parts(o: dict, seg, z0: float, wall: dict | None = None) -> list:
+    """The frame (and glass / leaves) of an opening, on the wall's centre
+    line: faces with their colours. A void has none. A door: one or two
+    leaves, hinged («swing») or SLIDING — one leaf runs on a rail on the
+    wall's inside face, two part in the middle within the frame."""
     if o["kind"] == "void":
         return []
     p0, u = seg.p0, seg.u
@@ -768,10 +790,121 @@ def opening_parts(o: dict, seg, z0: float) -> list:
                           FRAME_COLOR))
         parts.append(_box(p0, u, n, s0 + f, s1 - f, -0.005, 0.005,
                           zs + f, zt - f, GLASS_COLOR))
-    else:                                            # a door: its leaf
-        parts.append(_box(p0, u, n, s0 + f, s1 - f, -LEAF / 2, LEAF / 2,
-                          zs + 0.01, zt - f, LEAF_COLOR))
+    else:                                            # a door: its leaves
+        parts += _door_leaves(o, p0, u, n, s0 + f, s1 - f, zs + 0.01,
+                              zt - f, zt, wall)
     return [face for p in parts for face in p]
+
+
+ALU_COLOR = (0.23, 0.25, 0.27, 1.0)   # a glazed leaf's slim frame
+ALU = 0.045                            # m, its face width
+
+
+def _leaf(p0, u, n, a, b, c0, c1, za, zb, glass: bool) -> list:
+    """One leaf: solid wood, or GLAZED — a slim dark frame round a pane
+    (the curtain wall's look, his ask 2026-10-08)."""
+    if not glass:
+        return [_box(p0, u, n, a, b, c0, c1, za, zb, LEAF_COLOR)]
+    f = min(ALU, (b - a) / 4, (zb - za) / 4)
+    cm = (c0 + c1) / 2
+    return [_box(p0, u, n, a, a + f, c0, c1, za, zb, ALU_COLOR),
+            _box(p0, u, n, b - f, b, c0, c1, za, zb, ALU_COLOR),
+            _box(p0, u, n, a + f, b - f, c0, c1, za, za + f * 2, ALU_COLOR),
+            _box(p0, u, n, a + f, b - f, c0, c1, zb - f, zb, ALU_COLOR),
+            _box(p0, u, n, a + f, b - f, cm - 0.004, cm + 0.004,
+                 za + f * 2, zb - f, GLASS_COLOR)]
+
+
+def opened(o: dict) -> float:
+    """How open a door is shown: 0 closed … 1 wide open (the library's
+    «Open» slider, 2026-10-08)."""
+    try:
+        return min(max(float(o.get("open", 0.0)), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _swung(p0, u, n, hinge_s, back: bool, inside: float, theta: float,
+           length, za, zb) -> list:
+    """A hinged leaf turned ``theta`` radians from closed, about its hinge
+    on the wall's centre line, towards the inside."""
+    h = (p0[0] + u[0] * hinge_s, p0[1] + u[1] * hinge_s)
+    base = (-u[0], -u[1]) if back else u
+    d = (math.cos(theta) * base[0] + math.sin(theta) * inside * n[0],
+         math.cos(theta) * base[1] + math.sin(theta) * inside * n[1])
+    return _box(h, d, (-d[1], d[0]), 0.0, length, -LEAF / 2, LEAF / 2, za,
+                zb, LEAF_COLOR)
+
+
+def _door_leaves(o, p0, u, n, a, b, za, zb, zt, wall) -> list:
+    """A door's leaves between ``a`` and ``b`` along the wall (its clear
+    opening), ``za``..``zb`` high — by its type (``op``, ``leaves``,
+    ``leaf``: solid | glass) and how open it is shown (``open``)."""
+    two = int(o.get("leaves", 1) or 1) == 2
+    op = opened(o)
+    if o.get("leaf") == "glass":
+        return _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two)
+    if o.get("op") != "sliding":
+        inside = 1.0 if wall is None or float(wall.get("side", 1)) >= 0 \
+            else -1.0
+        th = op * math.pi / 2                       # up to 90°, inwards
+        if not two:
+            left = o.get("swing", "left") == "left"
+            return [_swung(p0, u, n, a if left else b, not left, inside,
+                           th, b - a, za, zb)]
+        half = (b - a) / 2 - 0.0025                  # a pair, 5 mm apart
+        return [_swung(p0, u, n, a, False, inside, th, half, za, zb),
+                _swung(p0, u, n, b, True, inside, th, half, za, zb)]
+    if two:
+        # two leaves parting in the middle, each in its own track within
+        # the frame's depth, overlapping 5 cm when closed — open, they run
+        # into the wall
+        m, lap = (a + b) / 2, 0.025
+        g = 0.003
+        s = op * (m - a)
+        return [_box(p0, u, n, a - s, m + lap - s, -LEAF - g, -g, za, zb,
+                     LEAF_COLOR),
+                _box(p0, u, n, m - lap + s, b + s, g, LEAF + g, za, zb,
+                     LEAF_COLOR)]
+    # one leaf on the inside face, on a rail that runs on past the side it
+    # slides to — the length of the leaf again
+    t = float(wall["t"]) / 2 if wall else FRAME_DEPTH / 2
+    side = 1.0 if wall is None or float(wall.get("side", 1)) >= 0 else -1.0
+    c0, c1 = sorted((side * (t + 0.005), side * (t + 0.005 + LEAF)))
+    lap = 0.05                                       # over the jambs
+    w = b - a + 2 * lap
+    left = o.get("swing", "left") == "left"
+    s = op * w * (-1.0 if left else 1.0)
+    leaf = _box(p0, u, n, a - lap + s, b + lap + s, c0, c1, za, zt + 0.005,
+                LEAF_COLOR)
+    r0, r1 = (a - lap - w, b + lap) if left else (a - lap, b + lap + w)
+    rc0, rc1 = sorted((side * (t + 0.002), side * (t + 0.002 + RAIL)))
+    rail = _box(p0, u, n, r0, r1, rc0, rc1, zt + 0.01, zt + 0.01 + RAIL,
+                FRAME_COLOR)
+    return [leaf, rail]
+
+
+def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
+    """A GLAZED sliding door: its leaves in two tracks within the frame —
+    one fixed pane and one sliding over it, or two sliding apart from the
+    middle — the curtain wall's look."""
+    g, d = 0.003, LEAF
+    op = opened(o)
+    m, lap = (a + b) / 2, 0.025
+    if two:                                  # open: into the wall
+        s = op * (m - a)
+        return (_leaf(p0, u, n, a - s, m + lap - s, -d - g, -g, za, zb,
+                      True)
+                + _leaf(p0, u, n, m - lap + s, b + s, g, d + g, za, zb,
+                        True))
+    # one: the fixed pane on the side it slides TO, the moving one in the
+    # front track, sliding over it
+    left = o.get("swing", "left") == "left"
+    s = op * (m - a) * (-1.0 if left else 1.0)
+    fixed = (a, m + lap) if left else (m - lap, b)
+    moving = (m - lap + s, b + s) if left else (a + s, m + lap + s)
+    return (_leaf(p0, u, n, *fixed, -d - g, -g, za, zb, True)
+            + _leaf(p0, u, n, *moving, g, d + g, za, zb, True))
 
 
 # ---- roofs ---------------------------------------------------------------------------
@@ -967,7 +1100,7 @@ def build(doc: dict, elevations) -> list[dict]:
                          for f in wall_with_openings(pc, seg, ops, z0, b,
                                                      top)]
                 for o in ops:
-                    parts = opening_parts(o, seg, z0)
+                    parts = opening_parts(o, seg, z0, w)
                     if parts:
                         out.append({"kind": "opening", "id": o["id"],
                                     "name": o["name"], "level": lid,

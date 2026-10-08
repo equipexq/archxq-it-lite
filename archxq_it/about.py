@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
+                               QVBoxLayout)
 
 from . import edition
 from .style import BLUE
@@ -29,6 +30,26 @@ def _version() -> str:
     return __version__.removesuffix("-lite").removesuffix("-pro")
 
 
+def _host_version() -> str:
+    """IngeTrazo's own version (core.version), or «?»."""
+    try:
+        from core import version as v
+        return str(getattr(v, "__version__", "") or getattr(v, "VERSION", "")
+                   or "?")
+    except Exception:  # noqa: BLE001 — an older host
+        return "?"
+
+
+def version_line() -> str:
+    """What support needs to know, in one line to copy (his idea,
+    2026-10-07): «ArchXQ IT Pro 0.9.3 · IngeTrazo 0.5.7 · Windows 11»."""
+    import platform
+    ed = "Lite" if edition.lite() else "Pro"
+    system = f"{platform.system()} {platform.release()}".strip()
+    return (f"ArchXQ IT {ed} {_version()} · IngeTrazo {_host_version()}"
+            f" · {system}")
+
+
 def _links() -> list[tuple[str, str, str]]:
     """(label, target, note) — target «guide» = the in-app manual."""
     out = [("Website", SITE, "xq.com.br/archxq-it")]
@@ -43,7 +64,9 @@ def _links() -> list[tuple[str, str, str]]:
     from urllib.parse import quote
     ed = "Lite" if edition.lite() else "Pro"
     support = f"{SUPPORT}?product=archxq-it&version={quote(ed + ' ' + _version())}"
-    out += [("Manual", "guide", "the Help of every tool"),
+    out += [("What's new", f"{SITE}/whats-new?edition={ed.lower()}",
+             "every version's changes"),
+            ("Manual", "guide", "the Help of every tool"),
             ("Videos", VIDEOS, "tutorials on YouTube"),
             ("Report a problem", support, "xq.com.br/support")]
     return out
@@ -76,6 +99,24 @@ class _About(QFrame):
         what.setWordWrap(True)
         what.setFixedWidth(330)
         lay.addWidget(what)
+        # the version, to copy into a support request in one click
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        ver = QLabel(f"<span style='color:#9aa5b1'>Version:</span> "
+                     f"{version_line().removeprefix('ArchXQ IT ')}")
+        ver.setTextFormat(Qt.RichText)
+        ver.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(ver)
+        self.copy = QLabel("<a href='copy' style='color:#8fd3ff; "
+                           "text-decoration:none'>Copy</a>")
+        self.copy.setTextFormat(Qt.RichText)
+        self.copy.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.copy.setToolTip("Copy the version — paste it in a support "
+                             "request")
+        self.copy.linkActivated.connect(self._copy)
+        row.addWidget(self.copy)
+        row.addStretch()
+        lay.addLayout(row)
         # one label per cell: a rich-text table in one label was measured
         # short — its last row ran under the footer
         grid = QGridLayout()
@@ -97,6 +138,11 @@ class _About(QFrame):
         foot.setStyleSheet("color: #6b7480; font-size: 11px;")
         lay.addSpacing(6)
         lay.addWidget(foot)
+
+    def _copy(self, _target: str = "") -> None:
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(version_line())
+        self.copy.setText("<span style='color:#7ee2a8'>Copied ✓</span>")
 
     def _go(self, target: str) -> None:
         self.close()

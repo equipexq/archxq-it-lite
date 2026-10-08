@@ -114,6 +114,7 @@ def ok_apply(dlg: QDialog, bb: QDialogButtonBox, ok: str = "OK") -> None:
     b = bb.addButton("Apply", QDialogButtonBox.ApplyRole)
     b.setToolTip("Apply the changes and keep this window open")
     dlg.again = False
+    dlg._apply_btn = b                   # (materials.with_tab takes it over)
 
     def go() -> None:
         dlg.again = True
@@ -123,6 +124,7 @@ def ok_apply(dlg: QDialog, bb: QDialogButtonBox, ok: str = "OK") -> None:
             dlg.again = False
             _REOPEN.pop(type(dlg).__name__, None)
     b.clicked.connect(go)
+    b._axq_go = go
     geo = _REOPEN.pop(type(dlg).__name__, None)
     if geo is not None:                  # once shown (its own sizing first)
         QTimer.singleShot(0, lambda: dlg.isVisible() and dlg.setGeometry(geo))
@@ -459,11 +461,7 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         disp = QWidget()
         form = QFormLayout(disp)
-        self.f_place = QComboBox()
-        self.f_place.addItem("In the 3D view", "viewport")
-        self.f_place.addItem("In the program's toolbars", "toolbar")
-        self.f_place.setCurrentIndex(max(0, self.f_place.findData(placement)))
-        form.addRow("ArchXQ bars", self.f_place)
+        # (where ArchXQ's bars sit is no longer a choice: over the 3D view)
         self.f_dims = QComboBox()
         for k, label in prefs.PLOT_DIMS.items():
             self.f_dims.addItem(label, k)
@@ -533,7 +531,6 @@ class SettingsDialog(QDialog):
         prefs.put("warn_setbacks", self.f_warn_sb.isChecked())
         prefs.put("ground_thickness", round(self.f_ground.value(), 3))
         prefs.put("floor_height", round(self.f_floor.value(), 3))
-        self.placement = self.f_place.currentData()
         self.accept()
 
 
@@ -1376,14 +1373,29 @@ class OpeningDialog(QDialog):
         if op["kind"] != "door":
             self.f_sill = _metres(op.get("sill", 0.0), 0.0, 20.0)
             form.addRow("Sill (from the floor)", self.f_sill)
-        self.f_swing = None
+        self.f_swing = self.f_op = self.f_leaves = None
         if op["kind"] == "door":
+            # its type (the library's): hinged or sliding, 1 or 2 leaves
+            self.f_op = QComboBox()
+            self.f_op.addItem("Swing", ("swing", "solid"))
+            self.f_op.addItem("Sliding", ("sliding", "solid"))
+            self.f_op.addItem("Glass sliding", ("sliding", "glass"))
+            self.f_op.setCurrentIndex(
+                0 if op.get("op") != "sliding" else
+                2 if op.get("leaf") == "glass" else 1)
+            form.addRow("Type", self.f_op)
+            self.f_leaves = QComboBox()
+            self.f_leaves.addItem("1", 1)
+            self.f_leaves.addItem("2", 2)
+            self.f_leaves.setCurrentIndex(1 if int(op.get("leaves", 1) or 1)
+                                          == 2 else 0)
+            form.addRow("Leaves", self.f_leaves)
             self.f_swing = QComboBox()
             self.f_swing.addItem("Left", "left")
             self.f_swing.addItem("Right", "right")
             self.f_swing.setCurrentIndex(0 if op.get("swing") != "right"
                                          else 1)
-            form.addRow("Hinge", self.f_swing)
+            form.addRow("Hinge / slides to", self.f_swing)
         L = W.drawn(wall).L
         self.f_pos = _metres(op["pos"], 0.0, max(L, 0.1))
         self.f_pos.setToolTip("Its centre, from the start of the wall")
@@ -1422,6 +1434,9 @@ class OpeningDialog(QDialog):
             o["sill"] = round(self.f_sill.value(), 3)
         if self.f_swing is not None:
             o["swing"] = self.f_swing.currentData()
+        if self.f_op is not None:
+            o["op"], o["leaf"] = self.f_op.currentData()
+            o["leaves"] = int(self.f_leaves.currentData())
         return self.action, o
 
 

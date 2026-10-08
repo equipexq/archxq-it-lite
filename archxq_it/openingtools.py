@@ -55,6 +55,13 @@ def symbol_lines(o: dict, wall: dict, seg) -> list:
     if o["kind"] == "window":
         for c in (-t / 3, t / 3):
             lines.append((P(s0, c), P(s1, c)))
+    elif o["kind"] == "door" and o.get("op") == "sliding":
+        lines += _sliding_lines(o, wall, P, s0, s1, t)
+    elif o["kind"] == "door" and int(o.get("leaves", 1) or 1) == 2:
+        inside = 1.0 if float(wall.get("side", 1)) >= 0 else -1.0
+        m = (s0 + s1) / 2
+        for hinge, away in ((s0, 1.0), (s1, -1.0)):   # a pair, each half
+            lines += _swing_lines(P, hinge, away, inside, t, m - s0, u, n)
     elif o["kind"] == "door":
         inside = 1.0 if float(wall.get("side", 1)) >= 0 else -1.0
         hinge = s0 if o.get("swing", "left") == "left" else s1
@@ -70,6 +77,63 @@ def symbol_lines(o: dict, wall: dict, seg) -> list:
                 h[1] + r * math.sin(a0 + da * k / 12)) for k in range(13)]
         lines += list(zip(pts, pts[1:]))               # the swing
     return lines
+
+
+def _swing_lines(P, hinge, away, inside, t, r, u, n) -> list:
+    """One hinged leaf of width ``r``, open 90° to the inside, and its
+    swing."""
+    h = P(hinge, inside * t)
+    out = [(h, (h[0] + n[0] * inside * r, h[1] + n[1] * inside * r))]
+    a0 = math.atan2(n[1] * inside, n[0] * inside)
+    a1 = math.atan2(u[1] * away, u[0] * away)
+    da = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
+    pts = [(h[0] + r * math.cos(a0 + da * k / 12),
+            h[1] + r * math.sin(a0 + da * k / 12)) for k in range(13)]
+    return out + list(zip(pts, pts[1:]))
+
+
+def _sliding_lines(o, wall, P, s0, s1, t) -> list:
+    """A sliding door in plan: its leaf (a thin box) and an arrow the way
+    it slides — one leaf along the inside face, two inside the wall."""
+    def box(a, b, c0, c1):
+        return [(P(a, c0), P(b, c0)), (P(b, c0), P(b, c1)),
+                (P(b, c1), P(a, c1)), (P(a, c1), P(a, c0))]
+    two = int(o.get("leaves", 1) or 1) == 2
+    if two or o.get("leaf") == "glass":
+        # within the frame, two tracks: two leaves part from the middle; a
+        # glazed single one slides over its fixed pane
+        m, lap, d = (s0 + s1) / 2, 0.025, 0.04
+        out = box(s0, m + lap, -d, 0.0) + box(m - lap, s1, 0.0, d)
+        arrows = ((m - 0.10, s0 + 0.10, -d / 2), (m + 0.10, s1 - 0.10, d / 2))
+        if not two:
+            # the fixed pane (back track) on the side it slides TO, the
+            # moving one in front, its arrow going over the fixed one
+            left = o.get("swing", "left") == "left"
+            if left:
+                out = box(s0, m + lap, -d, 0.0) + box(m - lap, s1, 0.0, d)
+                arrows = ((s1 - 0.10, m - 0.10, d / 2),)
+            else:
+                out = box(m - lap, s1, -d, 0.0) + box(s0, m + lap, 0.0, d)
+                arrows = ((s0 + 0.10, m + 0.10, d / 2),)
+        for a, b, c in arrows:
+            out += _arrow(P, a, b, c)
+        return out
+    inside = 1.0 if float(wall.get("side", 1)) >= 0 else -1.0
+    c0, c1 = inside * (t + 0.01), inside * (t + 0.05)
+    out = box(s0 - 0.05, s1 + 0.05, c0, c1)
+    w = s1 - s0
+    left = o.get("swing", "left") == "left"
+    a, b = (s0 + w * 0.7, s0 - w * 0.4) if left else (s1 - w * 0.7,
+                                                     s1 + w * 0.4)
+    return out + _arrow(P, a, b, inside * (t + 0.12))
+
+
+def _arrow(P, a, b, c) -> list:
+    """An arrow along the wall from ``a`` to ``b``, ``c`` across."""
+    k = 0.08 if b > a else -0.08
+    tip = P(b, c)
+    return [(P(a, c), tip), (P(b - k, c - 0.05), tip),
+            (P(b - k, c + 0.05), tip)]
 
 
 def draw_lines(viewport, painter, lines, z, ink, width=1.6) -> None:
@@ -133,6 +197,11 @@ class OpeningTool(_PlotTool):
                "pos": round(pos, 4), "w": o["w"], "h": o["h"],
                "sill": 0.0 if self.kind == "door" else o.get("sill", 0.0),
                "swing": o.get("swing", "left")}
+        if self.kind == "door":                     # its library type
+            rec["op"] = o.get("op", "swing")
+            rec["leaves"] = int(o.get("leaves", 1) or 1)
+            rec["leaf"] = o.get("leaf", "solid")
+            rec["open"] = o.get("open", 0.0)
         return wall, seg, rec
 
     def on_hover(self, ctx) -> None:

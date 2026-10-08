@@ -294,7 +294,6 @@ class PropsPanel(QWidget):
         self.hint = QLabel()
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint)
-
         self.form_host = QWidget()
         self.form = QFormLayout(self.form_host)
         self.form.setContentsMargins(0, 8, 0, 8)

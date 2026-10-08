@@ -33,6 +33,10 @@ ACTIVE = "#2f7df6"       # the plot table's current row, on the model
 # the guide lines pull harder than the rest (his ask, 2026-10-05: «too
 # subtle, it takes skill to land on it») — the 4 px above are too little
 # for a guide; their crossings most of all, the corner one digs to
+#: the ghost levels' outlines drawn in the plan now (ui._draw_ghost_level
+#: keeps it): their corners and edges pull the cursor
+GHOST: dict = {"loops": []}
+GHOST_MARK = "#6fa8dc"
 GUIDE_CROSS_PX = 16.0
 GUIDE_LINE_PX = 8.0
 GUIDE_MARK = "#0a84ff"   # the plan's guide blue, louder
@@ -178,6 +182,10 @@ class _PlotTool(Tool):
         if g is not None:
             self._aligned = []
             return g
+        g = self._ghost_pull(ctx, p, snap)
+        if g is not None:
+            self._aligned = []
+            return g
         on_axis = bool(getattr(snap, "axis", None))
         p = self._align(p, snap)
         if self._aligned:
@@ -252,6 +260,53 @@ class _PlotTool(Tool):
             return None                      # the same spot: keep the host's
         self._guide_hit = hit
         return q
+
+    _ghost_hit = None        # "cross" | "line": the cursor is on a ghost level
+
+    def _ghost_pull(self, ctx, p, snap):
+        """The GHOST levels' pull (his ask, 2026-10-07: stacking a fire
+        stair over another level's): a corner of their outlines within
+        GUIDE_CROSS_PX, else an edge within GUIDE_LINE_PX. Only where the
+        host has no real snap (an end, an edge…) of its own."""
+        self._ghost_hit = None
+        vp = self.viewport
+        loops = GHOST.get("loops") or ()
+        if vp is None or not loops \
+                or getattr(snap, "kind", "") in HARD_SNAPS:
+            return None
+        scr = getattr(ctx, "screen", None)
+        here = (scr.x(), scr.y()) if scr is not None \
+            else compat.to_pixel(vp, p[0], p[1], self.z)
+        if not here:
+            return None
+        best = None
+        for loop in loops:
+            for q in loop:
+                px = compat.to_pixel(vp, q[0], q[1], self.z)
+                if px:
+                    d = math.dist(here, px)
+                    if d <= GUIDE_CROSS_PX and (best is None or d < best[0]):
+                        best = (d, (q[0], q[1]), "cross")
+        if best is None:
+            for loop in loops:
+                for a, b in zip(loop, list(loop[1:]) + [loop[0]]):
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    L2 = dx * dx + dy * dy
+                    if L2 < 1e-12:
+                        continue
+                    t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2
+                    if not 0.0 <= t <= 1.0:
+                        continue
+                    q = (a[0] + dx * t, a[1] + dy * t)
+                    px = compat.to_pixel(vp, q[0], q[1], self.z)
+                    if px:
+                        d = math.dist(here, px)
+                        if d <= GUIDE_LINE_PX and (best is None or d < best[0]):
+                            best = (d, q, "line")
+        if best is None:
+            return None
+        self._ghost_hit = best[2]
+        return [round(best[1][0], 4), round(best[1][1], 4)]
 
     def _on_grid(self, p, snap):
         """The plan grid's pull (the hub's grid button): the point on the
@@ -388,12 +443,13 @@ class _PlotTool(Tool):
             painter.drawLine(QPointF(c.x() + 4, c.y()), QPointF(c.x() + 11, c.y()))
             painter.drawLine(QPointF(c.x(), c.y() - 11), QPointF(c.x(), c.y() - 4))
             painter.drawLine(QPointF(c.x(), c.y() + 4), QPointF(c.x(), c.y() + 11))
-            if self._guide_hit:              # on the guides: say it loud
-                ink = QColor(GUIDE_MARK)
+            hit = self._guide_hit or self._ghost_hit
+            if hit:                          # on the guides / a ghost: loud
+                ink = QColor(GUIDE_MARK if self._guide_hit else GHOST_MARK)
                 painter.setPen(QPen(ink, 2.6))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(c, 13.0, 13.0)
-                if self._guide_hit == "cross":
+                if hit == "cross":
                     painter.setPen(Qt.NoPen)
                     painter.setBrush(ink)
                     painter.drawEllipse(c, 5.0, 5.0)

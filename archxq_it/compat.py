@@ -107,7 +107,13 @@ def add_ext_menu(app, title: str, entries):
         if checked is not None:
             a.setCheckable(True)
             a.setChecked(bool(checked))
-        a.triggered.connect(lambda _=False, f=fn: f())
+        # run once the menu has closed: an action that relays the window
+        # out (switching ArchXQ on / off) while the menu bar is still in
+        # its popup state could leave it unable to open File on the first
+        # click (a Pro buyer's report, 2026-10-07)
+        a.triggered.connect(
+            lambda _=False, f=fn: __import__(
+                "PySide6.QtCore", fromlist=["QTimer"]).QTimer.singleShot(0, f))
         acts[text] = a
     return menu, acts
 
@@ -870,6 +876,75 @@ def outer_loop(pieces) -> list | None:
     return Polygon(coords).simplify(1e-4).exterior.coords[:-1]
 
 
+#: ArchXQ's look at every command the host runs (edits.py): fn(history, cmd)
+_AFTER_COMMAND = {"fn": None}
+
+
+def watch_commands(fn) -> None:
+    """``fn(history, cmd)`` runs after every command the host's history
+    executes (its Move, Rotate, Copy… on ArchXQ's elements are adopted
+    there). The class is wrapped once — a new document's history too —
+    and ``fn=None`` takes ArchXQ out again (the wrapper stays, idle)."""
+    from core.history import History
+    _AFTER_COMMAND["fn"] = fn
+    if getattr(History.execute, "_axq", False):
+        return
+    orig = History.execute
+
+    def execute(self, cmd, *a, **kw):
+        out = orig(self, cmd, *a, **kw)
+        f = _AFTER_COMMAND["fn"]
+        if f is not None:
+            try:
+                f(self, cmd)
+            except Exception:  # noqa: BLE001 — never break the host's undo
+                import traceback
+                traceback.print_exc()
+        return out
+    execute._axq = True
+    execute._orig = orig
+    History.execute = execute
+
+
+def join_last_steps(history, first) -> None:
+    """The last two undo steps (``first`` and what ArchXQ ran right after
+    it) become ONE: Ctrl+Z takes back the host's Move and the rebuild
+    that followed it together."""
+    from core.history import CompoundCommand
+    st = history.undo_stack
+    if len(st) < 2 or st[-2] is not first:
+        return
+    second = st.pop()
+    both = CompoundCommand([first, second])
+    if hasattr(first, "_history_mesh"):
+        both._history_mesh = first._history_mesh
+    st[-1] = both
+
+
+def touch_scene(viewport) -> None:
+    """The scene's drawing changed outside the undo history (a live
+    preview): the host redraws it."""
+    sc = viewport.scene
+    try:
+        sc.version += 1
+    except (AttributeError, TypeError):
+        pass
+    if hasattr(viewport, "notify_scene_changed"):
+        viewport.notify_scene_changed()
+    else:
+        viewport.update()
+
+
+def select_ids(viewport, ids: set) -> None:
+    """Select ArchXQ's groups of these element ids (after a rebuild)."""
+    sel = getattr(viewport.scene, "selection", None)
+    if not isinstance(sel, set):
+        return
+    sel.clear()
+    sel.update(g for g in viewport.scene.groups if _rec(g).get("id") in ids)
+    touch_scene(viewport)
+
+
 def _unselect(scene, groups) -> None:
     """Groups taken out of the scene leave the selection too — else their
     outline stayed drawn until the next click (his screen, 2026-10-05)."""
@@ -893,6 +968,31 @@ def commit_build(viewport, key: str, doc: dict, elevations,
     return doc
 
 
+def mesh_of(faces):
+    """A host mesh from ArchXQ's faces (plain loops, or {loop, holes,
+    color} dicts)."""
+    from core.mesh import Mesh
+    from PySide6.QtGui import QVector3D
+    mesh = Mesh()
+    for f in faces:
+        if isinstance(f, dict):
+            face = mesh.add_face([QVector3D(*q) for q in f["loop"]],
+                                 [[QVector3D(*q) for q in h]
+                                  for h in f["holes"]])
+            if f.get("color") is not None and face is not None:
+                # glass, leaf… — the host wants RGB in "color" and the
+                # alpha apart in "opacity" (the glTF/Blender export
+                # unpacks exactly three values)
+                c = tuple(f["color"])
+                face.attrs["color"] = c[:3]
+                if len(c) > 3 and c[3] < 1.0:
+                    face.attrs["opacity"] = c[3]
+        else:
+            mesh.add_face([QVector3D(*q) for q in f])
+    _soften_flat_seams(mesh)
+    return mesh
+
+
 def building_swap(viewport, doc: dict, elevations, level_layer_of):
     """The command that puts the building rebuilt from ``doc`` in place of
     the one in the scene (not executed: ``commit_build`` runs it — and the
@@ -902,31 +1002,16 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     from core.mesh import Mesh
     from PySide6.QtGui import QVector3D
 
+    from . import edits
     from . import materials
     from . import structure as S
 
     layers = {lv["id"]: level_layer_of(lv["name"]) for lv in doc["levels"]}
     ensure_layers(viewport, list(layers.values()))
     new = []
+    nth: dict = {}               # the groups of one element: 0, 1…
     for e in S.build(doc, elevations):
-        mesh = Mesh()
-        for f in e["faces"]:
-            if isinstance(f, dict):
-                face = mesh.add_face([QVector3D(*q) for q in f["loop"]],
-                                     [[QVector3D(*q) for q in h]
-                                      for h in f["holes"]])
-                if f.get("color") is not None and face is not None:
-                    # glass, leaf… — the host wants RGB in "color" and the
-                    # alpha apart in "opacity" (the glTF/Blender export
-                    # unpacks exactly three values)
-                    c = tuple(f["color"])
-                    face.attrs["color"] = c[:3]
-                    if len(c) > 3 and c[3] < 1.0:
-                        face.attrs["opacity"] = c[3]
-            else:
-                mesh.add_face([QVector3D(*q) for q in f])
-        _soften_flat_seams(mesh)
-        g = Group(mesh, name=e["name"])
+        g = Group(mesh_of(e["faces"]), name=e["name"])
         g.material = {"color": KIND_COLOR[e["kind"]], "opacity": 1.0}
         g.layer = layers[e["level"]]
         extra = {}
@@ -935,6 +1020,10 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
         if e.get("okind"):               # door | window
             extra["okind"] = e["okind"]
         tag(g, e["kind"], id=e["id"], level=e["level"], **extra)
+        # where it was built: the host's Move / Rotate / Copy is read from
+        # it (edits.py)
+        k = nth[e["id"]] = nth.get(e["id"], -1) + 1
+        edits.stamp(g, k)
         materials.paint(viewport.scene, g, e["kind"], e["id"], doc)
         new.append(g)
     old = wall_groups(viewport, None, BUILT_KINDS)

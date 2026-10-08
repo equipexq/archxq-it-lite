@@ -391,6 +391,9 @@ GUIDES.update({
             ("Point by point", "Any outline."),
             ("Opening in a slab", "Draw a rectangle inside a slab: a hole "
              "for a stair, a lift, a void."),
+            ("Closing an opening", "Double-click the slab ▸ tick «Close its "
+             "opening(s)» ▸ OK — it closes every opening drawn in that slab "
+             "(Ctrl+Z right after drawing one takes back just that one)."),
         ],
         "tips": ["<b>Top</b>: 0 = the floor itself; a small negative value "
                  "sinks it (a bathroom, a terrace).",
