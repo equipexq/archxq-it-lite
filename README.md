@@ -26,15 +26,22 @@ kept: the Lite never removes what it cannot edit.
 
 ## Install
 
-1. Download the zip and unzip it: you get a folder `archxq_it`. That whole
-   folder is the extension — do not take the files out of it.
+The easy way (IngeTrazo 0.5.8+): **Extensions ▸ Manage extensions**, find
+ArchXQ IT Lite and install it.
+
+By hand:
+
+1. Download the zip and unzip it: you get a folder `archxq_it_lite`. That
+   whole folder is the extension — do not take the files out of it.
 2. In IngeTrazo: **Extensions ▸ Open plugins folder**, and copy the
-   `archxq_it` folder there.
+   `archxq_it_lite` folder there. (A Lite installed by hand before 0.10.2
+   is in a folder `archxq_it`: delete that one.)
 3. Close and open IngeTrazo again. Turn ArchXQ on with the **⏻ ArchXQ**
    switch at the top left of the 3D view.
 
-Upgrading to the Pro: replace the `archxq_it` folder with the Pro's and
-restart. Your files stay as they are.
+Upgrading to the Pro: unzip the Pro's folder (`archxq_it_pro`) into the
+plugins folder and restart — the Pro sets the Lite aside by itself. Your
+files stay as they are.
 
 ## Licence
 

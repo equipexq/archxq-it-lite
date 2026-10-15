@@ -21,7 +21,8 @@ Records (``doc["structure"]``): {"id", "name", "type", "level", …}
     slab    corners [[x, y]…], t, offset
     footing kind "pad": x, y, w, d (depth), angle
             kind "strip": a, b (or an arc's "m"), w, d
-    roof    kind "gable"|"hip"|"flat", corners, slope, overhang, t,
+    roof    kind "gable"|"hip"|"flat"|"shed"|"hidden", corners, slope,
+            overhang, go, t, fall, slopes, pauto, gutter,
             ridge "long"|"short", parapet, pt — on its level's wall tops
 """
 from __future__ import annotations
@@ -36,6 +37,9 @@ SHRINK = 0.001          # m off every face of columns and beams
 #: through it (seen on the demo, 2026-10-03) — 1 cm hides them, and a
 #: hidden structure 2 cm slimmer is never seen
 FIT_SHRINK = 0.01
+#: a beam's / a tall column's top under a FLOOR: 1 cm (at 1 mm their edges
+#: showed through the slab's top surface — his screen, 2026-10-09)
+TOP_GAP = 0.01
 ROUND_SEGS = 24         # a round column's sides
 TYPES = ("column", "beam", "slab", "footing", "roof", "ramp", "stair")
 LABEL = {"column": "Column", "beam": "Beam", "slab": "Slab",
@@ -88,6 +92,39 @@ def ground_under(doc: dict, info: dict, lid: str, p) -> float | None:
     if any(low - 1e-4 <= v["z0"] < z0 - 1e-4 for k, v in info.items()
            if k != lid):
         return None                    # a floor in between holds it
+    return low
+
+
+def deepest_below(doc: dict, elevations) -> float | None:
+    """The lowest point the structure reaches into the ground — its
+    footings' bottoms, its columns' feet — as ``build`` makes them; None
+    = no footing nor column. The terrain's ground goes down under it (a
+    customer's report, 2026-10-13: footings poked out under the ground's
+    bottom, and showed in the sections)."""
+    info = levels_info(doc, elevations)
+    low = None
+    for e in doc.get("structure") or []:
+        lid = e.get("level")
+        if lid not in info or why_not(e):
+            continue
+        li = info[lid]
+        z = None
+        if e["type"] == "footing":
+            if e.get("kind") == "strip":
+                p = ((e["a"][0] + e["b"][0]) / 2, (e["a"][1] + e["b"][1]) / 2)
+            else:
+                p = (float(e["x"]), float(e["y"]))
+            top = li["z0"] - li["slab"]
+            g = ground_under(doc, info, lid, p)
+            top = top if g is None else min(top, g)
+            z = top - float(e["d"])
+        elif e["type"] == "column":
+            z = li["z0"] + float(e.get("base", 0.0))
+            if float(e.get("base", 0.0)) <= 0:
+                g = ground_under(doc, info, lid, column_centre(e))
+                z = z if g is None else min(z, g)
+        if z is not None:
+            low = z if low is None else min(low, z)
     return low
 
 
@@ -188,9 +225,17 @@ def why_not(e: dict) -> str | None:
         elif t == "roof":
             if len(e["corners"]) < 3 or abs(_area(e["corners"])) < 1.0:
                 return "Too small for a roof"
-            if e.get("kind") in ("gable", "hip") and not \
+            if e.get("kind") != "flat" and not \
                     5.0 <= float(e["slope"]) <= 75.0:
                 return "A pitched roof needs a slope of 5° to 75°"
+            if e.get("kind") == "hidden" and len(e["corners"]) == 4:
+                _c, _u, ha, _v, hb = rect_frame(e["corners"])
+                room = min(ha, hb) - float(e.get("pt", 0.15))
+                need = float(e.get("gutter", 0.30)) * (
+                    2 if int(e.get("slopes", 2)) == 2 else 1) / 2 + 0.30
+                if room < need:
+                    return "Too narrow for a hidden roof (its parapet and " \
+                           "gutter take the room)"
         elif t == "ramp":                  # a «Building element» (ramps.py)
             from .ramps import why_not as ramp_why
             return ramp_why(e)
@@ -445,6 +490,24 @@ def level_plan_loops(doc: dict, lid: str) -> list:
     return loops
 
 
+def rows_of(c: dict, columns: list) -> list:
+    """The rows a column stands in («Select its row», his call,
+    2026-10-09): the ids of its level's columns whose centres lie on the
+    line through it along its width, or across it — within half its larger
+    side. A row is two columns at least. No row is stored: it is read."""
+    a = math.radians(float(c.get("angle", 0.0)))
+    tol = max(float(c["w"]), float(c.get("d", c["w"]))) / 2
+    out = []
+    for u in ((math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a))):
+        ids = [o["id"] for o in columns
+               if o["type"] == "column" and o["level"] == c["level"]
+               and abs((float(o["x"]) - float(c["x"])) * u[1]
+                       - (float(o["y"]) - float(c["y"])) * u[0]) <= tol]
+        if len(ids) >= 2 and ids not in out:
+            out.append(ids)
+    return out
+
+
 def push_inside(outline, pits, along=None) -> tuple:
     """(dx, dy) that brings a footing crossing an excavation's side back
     inside it, its face flush with the side — a boundary (eccentric)
@@ -644,7 +707,7 @@ def _clip(poly, p0, u, s, keep_more: bool) -> list:
 
 
 def wall_with_openings(piece: dict, seg, ops: list[dict], z0: float,
-                       b: float, top: float) -> list:
+                       b: float, top: float, dropped: bool = False) -> list:
     """A straight wall's solid with its openings, made as a plan draws
     it: each long face is ONE face with the openings cut out of it (a
     window: a hole; a door: a notch from the floor) — no seams running
@@ -660,6 +723,11 @@ def wall_with_openings(piece: dict, seg, ops: list[dict], z0: float,
     spans = []                       # (s0, s1, zs, zt) — clipped to the wall
     for o in ops:
         zs = max(b, z0 + float(o.get("sill", 0.0)))
+        # a wall gone down through its slab: a door's sill face 1 cm under
+        # the floor — on it, it would share the slab's top; down to the
+        # wall's foot, a 20 cm pit showed under every door
+        if dropped and float(o.get("sill", 0.0)) <= 0:
+            zs = max(b, z0 - 0.01)
         zt = min(top, z0 + float(o.get("sill", 0.0)) + float(o["h"]))
         if zt - zs > 0.01:
             spans.append((o["pos"] - o["w"] / 2, o["pos"] + o["w"] / 2,
@@ -767,7 +835,56 @@ def _box(p0, u, n, sa, sb, ca, cb, za, zb, color) -> list:
             for q in quads]
 
 
-def opening_parts(o: dict, seg, z0: float, wall: dict | None = None) -> list:
+def door_side(o: dict, wall: dict | None) -> float:
+    """The side a door opens to (its leaf, its rail): +1 / −1 across its
+    wall — the wall's inside, turned for a door that opens OUT (``out``:
+    read from a CAD's swing, 2026-10-09 — a wall holds doors opening
+    both ways)."""
+    inside = 1.0 if wall is None or float(wall.get("side", 1)) >= 0 \
+        else -1.0
+    return -inside if o.get("out") else inside
+
+
+class _Frame:
+    """Boxes along a wall (``_box`` in its frame) — and, turned about a
+    hinge, in a leaf's own frame (the shopfront's doors)."""
+
+    def __init__(self, p0, u, n) -> None:
+        self.p0, self.u, self.n = p0, u, n
+
+    def __call__(self, sa, sb, ca, cb, za, zb, color) -> list:
+        return _box(self.p0, self.u, self.n, sa, sb, ca, cb, za, zb, color)
+
+    def turned(self, hinge, back: bool, side: float, th: float):
+        p0, u, n = self.p0, self.u, self.n
+        h = (p0[0] + u[0] * hinge, p0[1] + u[1] * hinge)
+        base = (-u[0], -u[1]) if back else u
+        d = (math.cos(th) * base[0] + math.sin(th) * side * n[0],
+             math.cos(th) * base[1] + math.sin(th) * side * n[1])
+        return _Frame(h, d, (-d[1], d[0]))
+
+
+def opening_parts(o: dict, seg, z0: float, wall: dict | None = None,
+                  top: float | None = None) -> list:
+    """The frame (and glass / leaves) of an opening — ``_opening_parts`` —
+    its glass made OPAQUE when ``o["glass"] == "opaque"`` (his ask,
+    2026-10-14: IngeTrazo has no reflections, and it draws the lines
+    behind any see-through glass; an opaque pane reads as glass at a
+    distance and hides them). Every see-through face of it: alpha 1."""
+    faces = _opening_parts(o, seg, z0, wall, top)
+    if o.get("glass") != "opaque":
+        return faces
+    out = []
+    for f in faces:
+        c = f.get("color") if isinstance(f, dict) else None
+        if c is not None and len(c) > 3 and c[3] < 1.0:
+            f = dict(f, color=tuple(c[:3]) + (1.0,))
+        out.append(f)
+    return out
+
+
+def _opening_parts(o: dict, seg, z0: float, wall: dict | None = None,
+                   top: float | None = None) -> list:
     """The frame (and glass / leaves) of an opening, on the wall's centre
     line: faces with their colours. A void has none. A door: one or two
     leaves, hinged («swing») or SLIDING — one leaf runs on a rail on the
@@ -779,6 +896,11 @@ def opening_parts(o: dict, seg, z0: float, wall: dict | None = None) -> list:
     s0, s1 = o["pos"] - o["w"] / 2, o["pos"] + o["w"] / 2
     zs = z0 + float(o.get("sill", 0.0))
     zt = zs + float(o["h"])
+    if o.get("op") == "shop":       # a shopfront / shop window (shopfront.py)
+        from . import shopfront
+        return [face for p in shopfront.parts(o, _Frame(p0, u, n), s0, s1,
+                                              zs, zt, wall, top)
+                for face in p]
     hd = FRAME_DEPTH / 2
     f = FRAME
     parts = [_box(p0, u, n, s0, s0 + f, -hd, hd, zs, zt, FRAME_COLOR),
@@ -788,6 +910,9 @@ def opening_parts(o: dict, seg, z0: float, wall: dict | None = None) -> list:
     if o["kind"] == "window":
         parts.append(_box(p0, u, n, s0 + f, s1 - f, -hd, hd, zs, zs + f,
                           FRAME_COLOR))
+        if o.get("op") in WIN_KINDS:      # sliding / casement / awning
+            return [face for p in parts for face in p] + _window_leaves(
+                o, p0, u, n, s0 + f, s1 - f, zs + f, zt - f, wall)
         parts.append(_box(p0, u, n, s0 + f, s1 - f, -0.005, 0.005,
                           zs + f, zt - f, GLASS_COLOR))
     else:                                            # a door: its leaves
@@ -800,19 +925,138 @@ ALU_COLOR = (0.23, 0.25, 0.27, 1.0)   # a glazed leaf's slim frame
 ALU = 0.045                            # m, its face width
 
 
-def _leaf(p0, u, n, a, b, c0, c1, za, zb, glass: bool) -> list:
-    """One leaf: solid wood, or GLAZED — a slim dark frame round a pane
-    (the curtain wall's look, his ask 2026-10-08)."""
+def _leaf(p0, u, n, a, b, c0, c1, za, zb, glass: bool,
+          color=ALU_COLOR) -> list:
+    """One leaf: solid wood, or GLAZED — a slim frame round a pane (dark:
+    the curtain wall's look, his ask 2026-10-08; a window's: white)."""
     if not glass:
         return [_box(p0, u, n, a, b, c0, c1, za, zb, LEAF_COLOR)]
     f = min(ALU, (b - a) / 4, (zb - za) / 4)
     cm = (c0 + c1) / 2
-    return [_box(p0, u, n, a, a + f, c0, c1, za, zb, ALU_COLOR),
-            _box(p0, u, n, b - f, b, c0, c1, za, zb, ALU_COLOR),
-            _box(p0, u, n, a + f, b - f, c0, c1, za, za + f * 2, ALU_COLOR),
-            _box(p0, u, n, a + f, b - f, c0, c1, zb - f, zb, ALU_COLOR),
+    return [_box(p0, u, n, a, a + f, c0, c1, za, zb, color),
+            _box(p0, u, n, b - f, b, c0, c1, za, zb, color),
+            _box(p0, u, n, a + f, b - f, c0, c1, za, za + f * 2, color),
+            _box(p0, u, n, a + f, b - f, c0, c1, zb - f, zb, color),
             _box(p0, u, n, a + f, b - f, cm - 0.004, cm + 0.004,
                  za + f * 2, zb - f, GLASS_COLOR)]
+
+
+# ---- WINDOWS with leaves (his customers' ask, 2026-10-12 — PLANO_JANELAS.md)
+WIN_LEAF = 0.025        # m, a window leaf's depth
+WIN_COLOR = (0.93, 0.93, 0.91, 1.0)   # white aluminium (Brazil's usual)
+WIN_KINDS = ("sliding", "casement", "awning")
+#: a sliding window's leaves, back (B) or front (F) track, left to right —
+#: neighbours always in different tracks
+WIN_TRACKS = {2: "BF", 3: "FBF", 4: "BFBF"}
+
+
+def window_leaves(o: dict) -> int:
+    """How many leaves a window of its type has: sliding 2–4, casement
+    1–2, awning 1 — whatever the record says."""
+    op = o.get("op")
+    try:
+        n = int(o.get("leaves") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if op == "sliding":
+        return min(max(n or 2, 2), 4)
+    if op == "casement":
+        return 1 if n == 1 else 2
+    return 1
+
+
+def _mbox(M, sa, sb, ca, cb, ta, tb, color) -> list:
+    """A box given in ANY frame: ``M(s, c, t)`` → a world point; its faces
+    turned outward whatever the frame's handedness (a tilted leaf)."""
+    c = [M(sa, ca, ta), M(sb, ca, ta), M(sb, cb, ta), M(sa, cb, ta),
+         M(sa, ca, tb), M(sb, ca, tb), M(sb, cb, tb), M(sa, cb, tb)]
+    mid = tuple(sum(p[i] for p in c) / 8 for i in range(3))
+    out = []
+    for q in ((0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5),
+              (2, 3, 7, 6), (3, 0, 4, 7)):
+        loop = [c[i] for i in q]
+        a, b, d = loop[0], loop[1], loop[2]
+        e1 = [b[i] - a[i] for i in range(3)]
+        e2 = [d[i] - a[i] for i in range(3)]
+        nrm = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+               e1[0] * e2[1] - e1[1] * e2[0])
+        fc = [sum(p[i] for p in loop) / 4 - mid[i] for i in range(3)]
+        if sum(nrm[i] * fc[i] for i in range(3)) < 0:
+            loop.reverse()
+        out.append({"loop": loop, "holes": [], "color": color})
+    return out
+
+
+def _window_leaves(o, p0, u, n, a, b, za, zb, wall) -> list:
+    """A window's leaves as FACES (see ``_window_boxes``)."""
+    out = []
+    for x in _window_boxes(o, p0, u, n, a, b, za, zb, wall):
+        out += x if isinstance(x, list) else [x]
+    return out
+
+
+def _window_boxes(o, p0, u, n, a, b, za, zb, wall) -> list:
+    """A window's leaves within its frame's clear opening a..b, za..zb:
+    SLIDING (2–4 glazed leaves in two tracks, 5 cm over each other),
+    CASEMENT (1–2 hinged on the jambs, In / Out) or AWNING (one, hinged at
+    its top, pushed out) — shown as open as «Open» says."""
+    op, k = o.get("op"), window_leaves(o)
+    opn = opened(o)
+    d, g = WIN_LEAF, 0.003
+    if op == "sliding":
+        lap = 0.05
+        lw = (b - a + (k - 1) * lap) / k
+        tracks = WIN_TRACKS[k]
+        # which leaves slide, and which way: 2 — the front one left, over
+        # the back one; 3 — the first one right, over the middle one, up
+        # to just short of the third (the same track); 4 — the second one
+        # left over the first, the third right under the fourth (never two
+        # in one track over each other: coplanar faces flicker)
+        moves = {2: {1: -1}, 3: {0: 1}, 4: {1: -1, 2: 1}}[k]
+        run = lw - lap if k != 3 else lw - 2 * lap - 0.005
+        out = []
+        for i in range(k):
+            s0 = a + i * (lw - lap)
+            s = moves.get(i, 0) * opn * run
+            c0, c1 = (g, g + d) if tracks[i] == "F" else (-g - d, -g)
+            out += _leaf(p0, u, n, s0 + s, s0 + lw + s, c0, c1, za, zb, True,
+                         WIN_COLOR)
+        return out
+    if op == "casement":
+        side = door_side(o, wall)
+        th = opn * math.pi / 2
+        F = _Frame(p0, u, n)
+        if k == 1:
+            left = o.get("swing", "left") == "left"
+            hinge, back = (a, False) if left else (b, True)
+            fr = F.turned(hinge, back, side, th)
+            return _leaf(fr.p0, fr.u, fr.n, 0.0, b - a, -d / 2, d / 2, za, zb,
+                         True, WIN_COLOR)
+        half = (b - a) / 2 - 0.0025
+        out = []
+        for hinge, back in ((a, False), (b, True)):
+            fr = F.turned(hinge, back, side, th)
+            out += _leaf(fr.p0, fr.u, fr.n, 0.0, half, -d / 2, d / 2, za, zb,
+                         True, WIN_COLOR)
+        return out
+    # AWNING: hinged at its top, the bottom pushed OUT (up to 35°)
+    so = -door_side(dict(o, out=False), wall)
+    th = opn * math.radians(35)
+    H = zb - za
+
+    def M(s, c, t):
+        # t: 0 at the hinge (top) … H at the bottom edge, down the leaf
+        cc = c * math.cos(th) + t * math.sin(th) * so
+        zz = zb - t * math.cos(th) + c * math.sin(th) * so
+        return (p0[0] + u[0] * s + n[0] * cc, p0[1] + u[1] * s + n[1] * cc,
+                zz)
+    f = min(ALU, (b - a) / 4, H / 4)
+    out = []
+    for sa, sb, ta, tb in ((a, a + f, 0, H), (b - f, b, 0, H),
+                           (a + f, b - f, 0, f), (a + f, b - f, H - 2 * f, H)):
+        out += _mbox(M, sa, sb, -d / 2, d / 2, ta, tb, WIN_COLOR)
+    out += _mbox(M, a + f, b - f, -0.004, 0.004, f, H - 2 * f, GLASS_COLOR)
+    return out
 
 
 def opened(o: dict) -> float:
@@ -836,6 +1080,16 @@ def _swung(p0, u, n, hinge_s, back: bool, inside: float, theta: float,
                 zb, LEAF_COLOR)
 
 
+def _room(wall, a, b) -> tuple:
+    """How far a sliding leaf may run past ``a`` (back) and ``b`` (on)
+    and stay in its wall — 10 cm short of the wall's ends (seen
+    2026-10-08: a door near a corner slid its leaf out of the house)."""
+    if wall is None:
+        return 1e9, 1e9
+    L = W.centre(wall).L
+    return max(a - 0.10, 0.0), max(L - b - 0.10, 0.0)
+
+
 def _door_leaves(o, p0, u, n, a, b, za, zb, zt, wall) -> list:
     """A door's leaves between ``a`` and ``b`` along the wall (its clear
     opening), ``za``..``zb`` high — by its type (``op``, ``leaves``,
@@ -845,8 +1099,7 @@ def _door_leaves(o, p0, u, n, a, b, za, zb, zt, wall) -> list:
     if o.get("leaf") == "glass":
         return _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two)
     if o.get("op") != "sliding":
-        inside = 1.0 if wall is None or float(wall.get("side", 1)) >= 0 \
-            else -1.0
+        inside = door_side(o, wall)
         th = op * math.pi / 2                       # up to 90°, inwards
         if not two:
             left = o.get("swing", "left") == "left"
@@ -861,23 +1114,26 @@ def _door_leaves(o, p0, u, n, a, b, za, zb, zt, wall) -> list:
         # into the wall
         m, lap = (a + b) / 2, 0.025
         g = 0.003
-        s = op * (m - a)
-        return [_box(p0, u, n, a - s, m + lap - s, -LEAF - g, -g, za, zb,
+        back, on = _room(wall, a, b)
+        sl, sr = min(op * (m - a), back), min(op * (m - a), on)
+        return [_box(p0, u, n, a - sl, m + lap - sl, -LEAF - g, -g, za, zb,
                      LEAF_COLOR),
-                _box(p0, u, n, m - lap + s, b + s, g, LEAF + g, za, zb,
+                _box(p0, u, n, m - lap + sr, b + sr, g, LEAF + g, za, zb,
                      LEAF_COLOR)]
     # one leaf on the inside face, on a rail that runs on past the side it
     # slides to — the length of the leaf again
     t = float(wall["t"]) / 2 if wall else FRAME_DEPTH / 2
-    side = 1.0 if wall is None or float(wall.get("side", 1)) >= 0 else -1.0
+    side = door_side(o, wall)
     c0, c1 = sorted((side * (t + 0.005), side * (t + 0.005 + LEAF)))
     lap = 0.05                                       # over the jambs
     w = b - a + 2 * lap
     left = o.get("swing", "left") == "left"
-    s = op * w * (-1.0 if left else 1.0)
+    back, on = _room(wall, a - lap, b + lap)
+    run = min(w, back if left else on)        # the rail stays on its wall
+    s = op * run * (-1.0 if left else 1.0)
     leaf = _box(p0, u, n, a - lap + s, b + lap + s, c0, c1, za, zt + 0.005,
                 LEAF_COLOR)
-    r0, r1 = (a - lap - w, b + lap) if left else (a - lap, b + lap + w)
+    r0, r1 = (a - lap - run, b + lap) if left else (a - lap, b + lap + run)
     rc0, rc1 = sorted((side * (t + 0.002), side * (t + 0.002 + RAIL)))
     rail = _box(p0, u, n, r0, r1, rc0, rc1, zt + 0.01, zt + 0.01 + RAIL,
                 FRAME_COLOR)
@@ -892,10 +1148,11 @@ def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
     op = opened(o)
     m, lap = (a + b) / 2, 0.025
     if two:                                  # open: into the wall
-        s = op * (m - a)
-        return (_leaf(p0, u, n, a - s, m + lap - s, -d - g, -g, za, zb,
+        back, on = _room(wall, a, b)
+        sl, sr = min(op * (m - a), back), min(op * (m - a), on)
+        return (_leaf(p0, u, n, a - sl, m + lap - sl, -d - g, -g, za, zb,
                       True)
-                + _leaf(p0, u, n, m - lap + s, b + s, g, d + g, za, zb,
+                + _leaf(p0, u, n, m - lap + sr, b + sr, g, d + g, za, zb,
                         True))
     # one: the fixed pane on the side it slides TO, the moving one in the
     # front track, sliding over it
@@ -908,14 +1165,25 @@ def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
 
 
 # ---- roofs ---------------------------------------------------------------------------
-#: a roof: {"type": "roof", "kind": "gable" | "hip" | "flat",
-#:   "corners": its outline (a pitched roof: a rectangle, 4 corners),
-#:   "slope" (°), "overhang", "t" (thickness), "ridge": "long" | "short"
-#:   (a gable's), "parapet" (m over a flat roof, 0 = none), "pt" (its
-#:   thickness)} — it rests on the top of its level's walls.
+#: a roof: {"type": "roof", "kind": "gable" | "hip" | "flat" | "shed" |
+#:   "hidden", "corners": its outline (a pitched roof: a rectangle, 4
+#:   corners), "slope" (°), "overhang" (the eaves'), "go" (the gable
+#:   ends'), "t" (thickness; a hidden roof's: its slab), "ridge": "long" |
+#:   "short" (a gable's), "fall": "right" | "left" (the low side of a
+#:   shed / a one-slope hidden roof), "slopes": 1 | 2 (a hidden roof's),
+#:   "parapet" (m over a flat roof, 0 = none; a hidden roof's when not
+#:   "pauto"), "pauto" (a hidden roof's parapet just hides its ridge),
+#:   "pt" (the parapet's thickness), "gutter" (a hidden roof's gutter
+#:   width)} — it rests on the top of its level's walls.
+ROOF_KINDS = ("gable", "hip", "flat", "shed", "hidden")
 ROOF_COLOR = (0.66, 0.36, 0.27, 1.0)       # tiles
 FLAT_COLOR = (0.72, 0.73, 0.74, 1.0)       # a flat roof (concrete)
 GABLE_COLOR = (0.88, 0.86, 0.82, 1.0)      # the gable walls (as walls)
+SHEET_COLOR = (0.60, 0.63, 0.66, 1.0)      # a hidden roof's sheets
+GUTTER_COLOR = (0.50, 0.53, 0.57, 1.0)     # its gutter (sheet metal)
+SHEET_T = 0.05             # a hidden roof's sheets (metal, fibre cement)
+GUTTER_DEPTH = 0.15        # its gutter, inside
+PARAPET_CLEAR = 0.10       # an «Auto» parapet: this much over the ridge
 
 
 def rect_frame(corners):
@@ -983,14 +1251,21 @@ def roof_faces(r: dict, base: float, wall_t: float = 0.20) -> list:
     if kind == "gable" and r.get("ridge", "long") == "short":
         along = not along
     ux, A, B = (u0, ha, hb) if along else (v0, hb, ha)
+    if kind in ("shed", "hidden") and r.get("fall") == "left":
+        ux = (-ux[0], -ux[1])        # turned half round: the low side swaps
     uy = (-ux[1], ux[0])
     ang = math.radians(float(r.get("slope", 30.0)))
     tan, dz = math.tan(ang), t / math.cos(ang)
+    go = float(r.get("go", o))       # the gable ends' overhang
 
     def P(x, y, z):
         return (cx + ux[0] * x + uy[0] * y, cy + ux[1] * x + uy[1] * y, z)
+    if kind == "hidden":
+        return _hidden_roof(r, base, A, B, P)
+    if kind == "shed":
+        return _shed_roof(base, A, B, o, go, tan, dz, wall_t, P)
     if kind == "gable":
-        Y, X = B + o, A + o
+        Y, X = B + o, A + go
 
         def zb(y):
             return base + (B - abs(y)) * tan
@@ -1008,6 +1283,11 @@ def roof_faces(r: dict, base: float, wall_t: float = 0.20) -> list:
         faces += _sweep(tri, A - wall_t + 0.001, A - 0.001, P, GABLE_COLOR)
         faces += _sweep(tri, -A + 0.001, -A + wall_t - 0.001, P,
                         GABLE_COLOR)
+        # the EAVE walls up to the roof's underside: it passes over their
+        # outer top edge, so a wedge was left open over their thickness —
+        # seen in the sections (a customer's report, 2026-10-13)
+        faces += _eave_wedge(+1, B, wall_t, base, zb, d, A, P)
+        faces += _eave_wedge(-1, B, wall_t, base, zb, d, A, P)
         return faces
     # a hip roof: four planes of one slope, the ridge along x
     Ao, Bo = A + o, B + o
@@ -1037,6 +1317,122 @@ def roof_faces(r: dict, base: float, wall_t: float = 0.20) -> list:
     return faces
 
 
+def _eave_wedge(side, B, wall_t, base, zb, d, A, P) -> list:
+    """The eave wall's top filled up to the roof's underside (a wedge as
+    thick as the wall, ``side`` +1 / −1 across), between the end walls —
+    2 mm under the roof, 1 mm off the wall's faces, its foot 1 mm into the
+    wall (nothing coplanar)."""
+    yo, yi = side * (B - 0.001), side * (B - wall_t + 0.001)
+    if zb(yi) - d <= base + 0.002:
+        return []                         # a slope too low to leave a gap
+    tri = [(yi, base - 0.001), (yo, base - 0.001), (yi, zb(yi) - d)]
+    if side < 0:                          # counter-clockwise in (y, z)
+        tri = [(yo, base - 0.001), (yi, base - 0.001), (yi, zb(yi) - d)]
+    return _sweep(tri, -A + wall_t, A - wall_t, P, GABLE_COLOR)
+
+
+def _shed_roof(base, A, B, o, go, tan, dz, wall_t, P) -> list:
+    """One slope, low on −y: its underside passes through the low wall's
+    outer top edge. The end walls rise to it (a trapezoid each) and the
+    high wall goes up under it — 2 mm under the roof, 1 mm off the walls'
+    faces (nothing coplanar)."""
+    Y, X = B + o, A + go
+
+    def zb(y):
+        return base + (y + B) * tan
+    faces = _sweep([(-Y, zb(-Y)), (Y, zb(Y)), (Y, zb(Y) + dz),
+                    (-Y, zb(-Y) + dz)], -X, X, P, ROOF_COLOR)
+    d = 0.002
+    y0 = -B + 2 * d / tan                  # where the end wall starts
+    y1 = B - 0.001
+    trap = [(y0, base - 0.001), (y1, base - 0.001), (y1, zb(y1) - d),
+            (y0, zb(y0) - d)]
+    faces += _sweep(trap, A - wall_t + 0.001, A - 0.001, P, GABLE_COLOR)
+    faces += _sweep(trap, -A + 0.001, -A + wall_t - 0.001, P, GABLE_COLOR)
+    # the high wall, between the end walls
+    h0 = B - wall_t + 0.001
+    high = [(h0, base - 0.001), (y1, base - 0.001), (y1, zb(y1) - d),
+            (h0, zb(h0) - d)]
+    faces += _sweep(high, -A + wall_t, A - wall_t, P, GABLE_COLOR)
+    # the low wall up to the roof's underside (see _eave_wedge)
+    faces += _eave_wedge(-1, B, wall_t, base, zb, d, A, P)
+    return faces
+
+
+def hidden_parts(r: dict, A: float, B: float) -> dict:
+    """A hidden roof's measures, in its frame (x along, y across, from its
+    centre; z over the walls' top): the room inside the parapet, the
+    gutters' spans, the sheets' low and high edges, the ridge's top and
+    the parapet's height."""
+    t = float(r.get("t", 0.20))
+    pt = float(r.get("pt", 0.15))
+    gw = float(r.get("gutter", 0.30))
+    two = int(r.get("slopes", 2)) == 2
+    tan = math.tan(math.radians(float(r.get("slope", 10.0))))
+    ai, bi = A - pt, B - pt                    # inside the parapet
+    g0 = t + 0.001                             # the gutters' floor
+    gutters = [(-bi + 0.001, -bi + 0.001 + gw)]
+    if two:
+        gutters.append((bi - 0.001 - gw, bi - 0.001))
+    y_low = -bi + 0.001 + gw / 2               # over the gutter's middle
+    z_low = g0 + GUTTER_DEPTH + 0.02           # over its lip
+    run = (-y_low) if two else (bi - 0.01 - y_low)
+    top = z_low + run * tan + SHEET_T / math.cos(math.atan(tan))
+    ph = (top + PARAPET_CLEAR if r.get("pauto", True)
+          else float(r.get("parapet", 1.0)))
+    return {"ai": ai, "bi": bi, "t": t, "g0": g0, "gutters": gutters,
+            "y_low": y_low, "z_low": z_low, "two": two, "tan": tan,
+            "top": top, "ph": ph}
+
+
+def hidden_height(r: dict) -> float:
+    """A hidden roof's parapet height (over the walls' top), as built."""
+    _c, _u, ha, _v, hb = rect_frame(r["corners"])
+    A, B = (ha, hb) if ha >= hb else (hb, ha)
+    return round(hidden_parts(r, A, B)["ph"], 2)
+
+
+def _hidden_roof(r: dict, base: float, A: float, B: float, P) -> list:
+    """A HIDDEN roof (telhado embutido): the walls go on up as a parapet;
+    inside it, a slab, the gutter(s) on it along the low side(s), and one
+    or two slopes of sheets falling into them — under the parapet's top
+    («Auto»: its ridge + 10 cm). 1 mm between every two parts."""
+    from . import walls as W
+    m = hidden_parts(r, A, B)
+    ai, bi, tan = m["ai"], m["bi"], m["tan"]
+
+    def rect(a, b):
+        return [P(x, y, 0)[:2] for x, y in ((-a, -b), (a, -b), (a, b),
+                                             (-a, b))]
+    faces = _faces(W.solid({"outer": rect(A, B),
+                            "holes": [list(reversed(rect(ai, bi)))]},
+                           base, base + m["ph"]), GABLE_COLOR)
+    faces += _faces(W.solid({"outer": rect(ai - 0.001, bi - 0.001),
+                             "holes": []}, base, base + m["t"]), FLAT_COLOR)
+    e, gd, z0 = 0.02, GUTTER_DEPTH, base + m["g0"]
+    for y0, y1 in m["gutters"]:                # a U, open on top
+        u = [(y0, z0), (y1, z0), (y1, z0 + gd), (y1 - e, z0 + gd),
+             (y1 - e, z0 + e), (y0 + e, z0 + e), (y0 + e, z0 + gd),
+             (y0, z0 + gd)]
+        faces += _sweep(u, -ai + 0.001, ai - 0.001, P, GUTTER_COLOR)
+    dz = SHEET_T / math.cos(math.atan(tan))
+    yl, zl = m["y_low"], base + m["z_low"]
+    if m["two"]:
+        def zb(y):
+            return zl + (-yl - abs(y)) * tan
+        sec = [(yl, zb(yl)), (0, zb(0)), (-yl, zb(-yl)), (-yl, zb(-yl) + dz),
+               (0, zb(0) + dz), (yl, zb(yl) + dz)]
+    else:
+        yh = bi - 0.01
+
+        def zb(y):
+            return zl + (y - yl) * tan
+        sec = [(yl, zb(yl)), (yh, zb(yh)), (yh, zb(yh) + dz),
+               (yl, zb(yl) + dz)]
+    faces += _sweep(sec, -ai + 0.01, ai - 0.01, P, SHEET_COLOR)
+    return faces
+
+
 def roof_outline(walls: list[dict], union, kind: str):
     """A roof's outline from its level's walls: their outer contour; a
     pitched roof's, the rectangle round it (turned with the building)."""
@@ -1056,6 +1452,371 @@ def roof_corners(corners, kind: str) -> list:
 
 
 # ---- everything, with its faces ----------------------------------------------------
+#: a slab stops this far inside the outer face of the outside walls over it
+#: (his rule, 2026-10-10: 1 mm still showed lines; 1 cm showed them from
+#: afar too — the host draws edges with a depth offset: 3 cm, as railings'
+#: BODY_IN)
+SLAB_IN = 0.03
+
+
+def outside_walls(mine: list[dict], plans: dict):
+    """(ids, cutter, foot) of a level's OUTSIDE walls — those with a face
+    on the outer contour of all its walls together — the 1 cm strip,
+    inside that contour, under them: where a slab under them gives way —
+    and that contour filled (``foot``; None without walls). Such a
+    wall goes down through its level's slab (his ask, 2026-10-10: with the
+    slab hidden a gap showed under it; in a real building no slab edge
+    shows on the façade). Partitions stay on the slab."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    polys = {}
+    for wid, pcs in plans.items():
+        for pc in pcs:
+            try:
+                p = Polygon(pc["outer"], pc.get("holes") or []).buffer(0)
+            except Exception:  # noqa: BLE001
+                continue
+            if not p.is_empty:
+                polys.setdefault(wid, []).append(p)
+    if not polys:
+        return set(), None, None
+    union = unary_union([p for ps in polys.values() for p in ps])
+    foot = unary_union([Polygon(g.exterior)
+                        for g in getattr(union, "geoms", [union])])
+    edge = foot.boundary.buffer(0.003)
+    t = {w["id"]: float(w["t"]) for w in mine}
+    ids = {wid for wid, ps in polys.items()
+           if sum(p.exterior.intersection(edge).length for p in ps)
+           > max(0.3, 2 * t.get(wid, 0.2))}
+    if not ids:
+        return ids, None, foot
+    strip = foot.difference(foot.buffer(-SLAB_IN, join_style=2))
+    under = unary_union([p for wid in ids for p in polys[wid]]).buffer(0.002)
+    cut = strip.intersection(under)
+    # a CURTAIN wall: the slab runs into it up to 1 cm short of its band
+    # (the band hides the slab's edge; stopped at its inner face, a dark
+    # slot showed along the floor) — curtain.py
+    by_id = {w["id"]: w for w in mine}
+    extra = []
+    for wid in ids:
+        w = by_id.get(wid)
+        if not w or not w.get("cw") or w.get("kind", "line") != "line":
+            continue
+        from shapely import affinity
+        from shapely.geometry import Point, box as _bx
+        from . import curtain
+        seg = W.centre(w)
+        nx, ny = -seg.u[1], seg.u[0]
+        mx, my = seg.at(0.5)
+        t = float(w["t"])
+        out = 1.0 if not foot.contains(Point(mx + nx * (t / 2 + 0.02),
+                                             my + ny * (t / 2 + 0.02))) \
+            else -1.0
+        # the band on the OUTER face (2026-10-14): the slab up to 1 cm
+        # behind it
+        k = t / 2 - (curtain.FACE + curtain.BAND_T + 0.01)
+        c0, c1 = (k, t) if out > 0 else (-t, -k)
+        g = _bx(-1e4, c0, 1e4, c1)
+        g = affinity.rotate(g, math.degrees(math.atan2(seg.u[1], seg.u[0])),
+                            origin=(0, 0))
+        g = affinity.translate(g, seg.p0[0], seg.p0[1])
+        extra.append(unary_union(polys[wid]).buffer(0.002).intersection(g))
+    if extra:
+        cut = unary_union([cut] + extra)
+    return ids, cut.buffer(0), foot
+
+
+def _depth_under(doc: dict, info: dict, lid: str):
+    """p → how far under level ``lid``'s floor the excavation's floor is
+    there (None: no pit under it) — for ``wall_drops``."""
+    z0 = info[lid]["z0"]
+
+    def depth(p):
+        g = ground_under(doc, info, lid, p)
+        return None if g is None else z0 - g
+    return depth
+
+
+def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
+               slab_t: float, ground=None) -> dict:
+    """{wall id: how far it goes below its floor} — an outside wall with
+    no base of its own (0), over a slab of its level: that slab's
+    thickness — or down to the excavation's floor when that lies deeper
+    (``ground(p)`` → its depth under the floor at p, or None; his screen,
+    2026-10-10: a 10 cm gap over the footings, which stand on the pit's
+    floor). ``build`` and a bar dragged (``wall_live``) agree."""
+    if slab_t <= 0 or not slabs:
+        return {}
+    from shapely.geometry import Polygon
+    ids, _cut, foot = outside_walls(mine, plans)
+    out = {}
+    try:
+        floor = [Polygon(s["corners"]).buffer(0) for s in slabs]
+    except Exception:  # noqa: BLE001
+        return {}
+    # a slab INSIDE the walls' contour: every outside wall goes down through
+    # it, standing on the slab or not — a wall dragged off the slab's edge
+    # (a grip; the slab stays) lost its drop and «shrank upwards» from its
+    # foot (his screen, 2026-10-13)
+    floored = foot is not None and any(
+        f.intersection(foot).area > 1e-4 for f in floor)
+    for w in mine:
+        if w["id"] not in ids or abs(float(w.get("base", 0.0))) > 1e-9:
+            continue
+        if floored:
+            out[w["id"]] = slab_t
+        for pc in () if floored else plans.get(w["id"], ()):
+            try:
+                p = Polygon(pc["outer"]).buffer(0)
+            except Exception:  # noqa: BLE001
+                continue
+            if any(f.intersection(p).area > 1e-4 for f in floor):
+                out[w["id"]] = slab_t
+                break
+        if w["id"] in out and ground is not None:
+            # read on its centre line, inside its ends (its outer face may
+            # stand on the pit's edge)
+            c = W.centre(w)
+            deep = [ground(c.at(f)) for f in (0.25, 0.5, 0.75)]
+            deep = [x for x in deep if x is not None]
+            if deep:
+                out[w["id"]] = max(slab_t, max(deep))
+    return out
+
+
+def trim_slab(parts: list, cutter) -> list:
+    """A slab's pieces with the strip under the outside walls taken out —
+    only a slab that stays inside the walls' contour (one running past
+    them, a balcony, would be cut in two: left whole)."""
+    if cutter is None or cutter.is_empty:
+        return parts
+    from shapely.geometry import Polygon
+    out = []
+    for pc in parts:
+        try:
+            poly = Polygon(pc["outer"], pc.get("holes") or []).buffer(0)
+            if not poly.intersects(cutter):
+                out.append(pc)
+                continue
+            rest = poly.difference(cutter)
+        except Exception:  # noqa: BLE001
+            out.append(pc)
+            continue
+        for g in getattr(rest, "geoms", [rest]):
+            if g.is_empty or g.area < 1e-6:
+                continue
+            out.append({"outer": _ccw(list(g.exterior.coords)[:-1]),
+                        "holes": [list(reversed(_ccw(list(r.coords)[:-1])))
+                                  for r in g.interiors]})
+    return out
+
+
+#: a ramp's way through a wall starts this far under its surface: the cut's
+#: bottom hides in the ramp's body, never in the plane of its top
+RAMP_WALL_DIP = 0.03
+
+
+def ramp_runs(doc: dict, elevations) -> list:
+    """Every ramp's pieces in plan with their top's height: [(outline,
+    piece)] — what a wall it crosses gives way to (``ramp_voids``)."""
+    from . import ramps as R
+    out = []
+    for r in doc.get("structure") or []:
+        if r.get("type") != "ramp" or why_not(r) is not None:
+            continue
+        try:
+            zs, ze = R.heights(r, doc, elevations)
+            L = R.length_of(r, zs, ze)
+            if L < 0.1 or abs(zs - ze) < 0.01:
+                continue
+            for p in R.pieces(r, zs, ze, L):
+                out.append((R.piece_corners(p), dict(p, t=float(r["t"]),
+                                                     rid=r["id"])))
+        except Exception:  # noqa: BLE001 — a ramp that can't say: no cut
+            continue
+    return out
+
+
+def ramp_voids(w: dict, pieces, runs: list, z0: float, b: float,
+               top: float) -> list:
+    """The openings a straight wall takes where a ramp goes THROUGH it (his
+    project, 2026-10-10: the street ramp ran into the retaining wall):
+    along the wall, the stretch the ramp crosses; from just under the
+    ramp's surface up to the wall's top — under the ramp the wall stays
+    (it holds the ground). Not stored: they follow the ramp, as the slab's
+    hole does. A ramp running under the wall cuts nothing."""
+    if not runs or not pieces or w.get("kind", "line") != "line":
+        return []
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    try:
+        body = unary_union([Polygon(pc["outer"]).buffer(0) for pc in pieces])
+    except Exception:  # noqa: BLE001
+        return []
+    seg = W.centre(w)
+    out = []
+    for k, (outline, p) in enumerate(runs):
+        try:
+            cross = body.intersection(Polygon(outline).buffer(0))
+        except Exception:  # noqa: BLE001
+            continue
+        if cross.is_empty or cross.area < 1e-4:
+            continue
+        pts = [c for g in getattr(cross, "geoms", [cross])
+               if hasattr(g, "exterior") for c in g.exterior.coords]
+        (cx, cy), (dx, dy) = p["c"], p["d"]
+
+        def z_at(q):
+            s = min(max((q[0] - cx) * dx + (q[1] - cy) * dy, 0.0), p["l"])
+            return p["z0"] + (p["z1"] - p["z0"]) * s / max(p["l"], 1e-9)
+        zs = [z_at(q) for q in pts]
+        if max(zs) < b + 0.05 or min(zs) >= top - 0.05:
+            continue                     # under the wall, or over it
+        bottom = max(min(zs) - min(RAMP_WALL_DIP, p["t"] / 2), b)
+        ss = [(q[0] - seg.p0[0]) * seg.u[0] + (q[1] - seg.p0[1]) * seg.u[1]
+              for q in pts]
+        # 1 cm past the ramp's sides: the jambs never in the plane of its
+        # side faces
+        s0, s1 = min(ss) - 0.01, max(ss) + 0.01
+        if s1 - s0 < 0.07:
+            continue
+        out.append({"id": f"ramp:{p['rid']}:{k}", "name": "", "kind": "void",
+                    "wall": w["id"], "pos": (s0 + s1) / 2, "w": s1 - s0,
+                    "sill": bottom - z0, "h": top - bottom + 0.01})
+    return out
+
+
+def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
+               drop: float = 0.0, runs=()):
+    """A wall's faces cut by its openings, and each opening's own faces —
+    (faces, [(opening, parts)]); None: nothing to build. ``build`` uses it,
+    and so does a size bar dragged (the hole follows the door live).
+    ``drop``: an outside wall going down through its slab (wall_drops);
+    ``runs``: the ramps that may go through it (ramp_runs)."""
+    if not pieces:
+        return None
+    b = z0 + float(w.get("base", 0.0)) - drop
+    top = under if w.get("height", "level") == "level" \
+        else z0 + float(w["height"])
+    if top - b < 0.01:
+        return None
+    if w.get("cw"):                     # a curtain wall (curtain.py)
+        from . import curtain
+        return curtain.faces(w, pieces, z0, b, top), []
+    ops = [o for o in openings if o["wall"] == w["id"]
+           and opening_room(o, w, openings, top - z0) is None]
+    ops += ramp_voids(w, pieces, runs, z0, b, top)
+    made = []
+    if ops:
+        seg = W.centre(w)
+        faces = [f for pc in pieces
+                 for f in wall_with_openings(pc, seg, ops, z0, b, top,
+                                             drop > 0)]
+        for o in ops:
+            parts = opening_parts(o, seg, z0, w, top)
+            if parts:
+                made.append((o, parts))
+    else:
+        faces = [f for pc in pieces for f in W.solid(pc, b, top)]
+    return faces, made
+
+
+def wall_bay(doc: dict, wall: dict, pos: float) -> tuple:
+    """(s0, s1) along a straight wall: the stretch of its FACE an opening
+    at ``pos`` stands in — between the walls that meet or cross it (its
+    room's wall, corner face to corner face), not its whole drawn line
+    (his test, 2026-10-10: a door «centred» on a wall running past two
+    rooms)."""
+    seg = W.drawn(wall)
+    L = seg.L
+    try:
+        from shapely.geometry import LineString, Polygon
+        from shapely.ops import unary_union
+        mine = [x for x in doc["walls"] if x["level"] == wall["level"]]
+        plans = W.plan(mine)
+        others = [Polygon(pc["outer"]).buffer(0.002)
+                  for wid, pcs in plans.items() if wid != wall["id"]
+                  for pc in pcs]
+        # read 5 mm off its INSIDE face, in the room: the walls meeting it
+        # cover that line from their faces (a partition stops on the face;
+        # on the axis a mitred corner ends at the axis)
+        side = -1.0 if float(wall.get("side", 1)) < 0 else 1.0
+        c = W.centre(wall).offset(side * (float(wall["t"]) / 2 + 0.005))
+        line = LineString([c.p0, c.p1])
+        free = line.difference(unary_union(others)) if others else line
+        best = None
+        for part in getattr(free, "geoms", [free]):
+            if part.is_empty:
+                continue
+            ss = sorted((p[0] - c.p0[0]) * c.u[0] + (p[1] - c.p0[1]) * c.u[1]
+                        for p in part.coords)
+            s0, s1 = ss[0], ss[-1]
+            if s0 - 1e-6 <= pos <= s1 + 1e-6:
+                return (max(s0, 0.0), min(s1, L))
+            d = min(abs(pos - s0), abs(pos - s1))
+            if best is None or d < best[0]:
+                best = (d, (max(s0, 0.0), min(s1, L)))
+        if best is not None:
+            return best[1]
+    except Exception:  # noqa: BLE001 — no faces read: the whole wall
+        pass
+    return (0.0, L)
+
+
+def wall_live(doc: dict, elevations, wall_id: str, openings: list):
+    """``wall_parts`` of one wall with these openings (a bar dragged)."""
+    return walls_live(doc, elevations, [wall_id], openings).get(wall_id)
+
+
+def walls_live(doc: dict, elevations, wall_ids, openings: list) -> dict:
+    """{wall id: ``wall_parts``} of several walls — the joins, the drops
+    and the ramps read ONCE per level (a grip dragged: three walls each
+    reading them made a step 150 ms, his model, 2026-10-12)."""
+    info = levels_info(doc, elevations)
+    want = set(wall_ids)
+    out = {}
+    runs = None
+    for lid in {x["level"] for x in doc["walls"] if x["id"] in want}:
+        if lid not in info:
+            continue
+        li = info[lid]
+        mine = [x for x in doc["walls"] if x["level"] == lid]
+        plans = W.plan(mine)
+        slabs = [e for e in doc.get("structure") or []
+                 if e.get("type") == "slab" and e["level"] == lid]
+        drops = wall_drops(mine, plans, slabs, li["slab"],
+                           _depth_under(doc, info, lid))
+        if runs is None:
+            runs = ramp_runs(doc, elevations)
+        for w in mine:
+            if w["id"] in want:
+                out[w["id"]] = wall_parts(w, plans.get(w["id"]), openings,
+                                          li["z0"], li["under"],
+                                          drops.get(w["id"], 0.0), runs)
+    return out
+
+
+def elements_live(doc: dict, elevations, ids) -> dict:
+    """{id: faces} of these columns / beams / slabs, as ``build`` makes
+    them — built from their levels only (a grip dragged). The walls are
+    read only when a slab is in it (they trim it); no openings."""
+    want = set(ids)
+    st = doc.get("structure") or []
+    mine = [e for e in st if e["id"] in want]
+    lids = {e["level"] for e in mine}
+    slabs = any(e["type"] == "slab" for e in mine)
+    # every SLAB stays in: the level above's slab sets where a column «to
+    # the slab» stops (levels_info) — without it the live column jumped up
+    # and down while a face was dragged (his screen, 2026-10-12)
+    sub = dict(doc, structure=[e for e in st if e["level"] in lids
+                               or e.get("type") in ("ramp", "stair", "slab")],
+               walls=[w for w in doc.get("walls") or []
+                      if slabs and w["level"] in lids],
+               openings=[])
+    return {e["id"]: e["faces"] for e in build(sub, elevations)
+            if e["id"] in want and e.get("kind") != "wall"}
+
+
 def build(doc: dict, elevations) -> list[dict]:
     """[{"kind", "id", "name", "level", "faces"}] for every wall and
     structural element of the building, at its true heights."""
@@ -1068,45 +1829,44 @@ def build(doc: dict, elevations) -> list[dict]:
     # not stored: it follows the ramp, and goes with it (ramps.py)
     ramp_cuts: dict = {}
     for r in struct:
-        if r.get("type") in ("ramp", "stair") and why_not(r) is None:
+        # «Opening in the slab: None» (``cut`` False — a customer's ask,
+        # 2026-10-13): the slab stays whole; a hole is drawn by hand
+        if r.get("type") in ("ramp", "stair") and why_not(r) is None \
+                and r.get("cut", True):
             from . import ramps as R
             if r["type"] == "ramp":
                 zs, ze = R.heights(r, doc, elevations)
                 polys = R.footprints(r, zs, ze, R.length_of(r, zs, ze))
             else:
                 from . import stairs as ST
-                polys = ST.footprints(r, doc, elevations)
+                polys = ST.well(r, doc, elevations)
             for lid in R.through_levels(r, doc, elevations):
                 ramp_cuts.setdefault(lid, []).extend(polys)
+    order = [lv["id"] for lv in doc["levels"]]
+    above = {a: b for a, b in zip(order, order[1:])}   # level → next one up
+    floors = [v["z0"] for v in info.values()]           # every floor's z
+    runs = ramp_runs(doc, elevations)          # what walls give way to
     for lid, li in info.items():
         z0, under = li["z0"], li["under"]
         # walls — cut by their openings
         mine = [w for w in walls if w["level"] == lid]
         plans = W.plan(mine)
+        lv_slabs = [e for e in struct if e["level"] == lid
+                    and e["type"] == "slab" and why_not(e) is None]
+        drops = wall_drops(mine, plans, lv_slabs, li["slab"],
+                           _depth_under(doc, info, lid))
+        _ids, cutter, foot = outside_walls(mine, plans) if drops \
+            else (None, None, None)
         for w in mine:
-            pieces = plans.get(w["id"])
-            if not pieces:
+            made = wall_parts(w, plans.get(w["id"]), openings, z0, under,
+                              drops.get(w["id"], 0.0), runs)
+            if made is None:
                 continue
-            b = z0 + float(w.get("base", 0.0))
-            top = under if w.get("height", "level") == "level" \
-                else z0 + float(w["height"])
-            if top - b < 0.01:
-                continue
-            ops = [o for o in openings if o["wall"] == w["id"]
-                   and opening_room(o, w, openings, top - z0) is None]
-            if ops:
-                seg = W.centre(w)
-                faces = [f for pc in pieces
-                         for f in wall_with_openings(pc, seg, ops, z0, b,
-                                                     top)]
-                for o in ops:
-                    parts = opening_parts(o, seg, z0, w)
-                    if parts:
-                        out.append({"kind": "opening", "id": o["id"],
-                                    "name": o["name"], "level": lid,
-                                    "okind": o["kind"], "faces": parts})
-            else:
-                faces = [f for pc in pieces for f in W.solid(pc, b, top)]
+            faces, ops = made
+            for o, parts in ops:
+                out.append({"kind": "opening", "id": o["id"],
+                            "name": o["name"], "level": lid,
+                            "okind": o["kind"], "faces": parts})
             out.append({"kind": "wall", "id": w["id"], "name": w["name"],
                         "level": lid, "faces": faces})
         els = [e for e in struct if e["level"] == lid and why_not(e) is None]
@@ -1114,6 +1874,11 @@ def build(doc: dict, elevations) -> list[dict]:
         for c in (e for e in els if e["type"] == "column"):
             top = (under if c.get("height", "level") == "level"
                    else z0 + float(c["height"])) - SHRINK
+            # a tall column reaching a floor (its top in that slab's top
+            # face): 1 cm under it, as a beam — its edges showed through
+            for f in floors:
+                if f - TOP_GAP < top <= f + 0.002:
+                    top = f - TOP_GAP
             sh = FIT_SHRINK if c.get("fit") else SHRINK
             piece = {"outer": _ccw(column_outline(c, sh)), "holes": []}
             bot = z0 + float(c.get("base", 0.0)) + SHRINK   # its base
@@ -1129,13 +1894,25 @@ def build(doc: dict, elevations) -> list[dict]:
         beams = [e for e in els if e["type"] == "beam"]
         bplans = W.plan([as_wall(e, shrink=FIT_SHRINK if e.get("fit")
                                  else SHRINK) for e in beams])
+        # a beam runs IN the slab over it: where that slab is opened (an
+        # opening drawn in it, a ramp's or a stair's way through), the beam
+        # is cut too (his project, 2026-10-09: the street ramp under the
+        # ring of beams — «where the slab opens, the beam opens»)
+        cuts = slab_openings(struct, above.get(lid), ramp_cuts)
         for e in beams:
             # its height INCLUDES the slab over it: its top flush with the
             # slab's top, 1 mm down, hidden in it (a customer's catch,
             # 2026-10-06 — it hung whole under the slab: 60 + 20 read 80)
-            top = z0 + li["height"] - SHRINK
-            bot = top - float(e["h"]) + 2 * SHRINK
-            out.append(dict(_el(e, lid, [f for pc in bplans.get(e["id"], ())
+            # 1 cm under the floor above — at 1 mm its top edges showed
+            # through the slab's top (his screen, 2026-10-09: the host draws
+            # edges with a depth offset; FIT_SHRINK's lesson); its bottom
+            # stays where its height puts it
+            top = z0 + li["height"] - TOP_GAP
+            bot = z0 + li["height"] - float(e["h"]) + SHRINK
+            pieces = bplans.get(e["id"], ())
+            if cuts:
+                pieces = cut_pieces(pieces, cuts)
+            out.append(dict(_el(e, lid, [f for pc in pieces
                                          for f in W.solid(pc, bot, top)]),
                             inwall=in_one_wall(e, mine)))
         # slabs
@@ -1152,6 +1929,24 @@ def build(doc: dict, elevations) -> list[dict]:
                                  ramp_cuts[lid])
                 if cut is not None:
                     parts = cut
+            if cutter is not None:
+                # SIDE BY SIDE (his balconies, 2026-10-12): it gives way
+                # under the outside walls wherever it ends there — only
+                # where it runs on OUT (a balcony) does it go on whole under
+                # them (else a slot would cut it in two)
+                from shapely.geometry import Polygon
+                cut = cutter
+                try:
+                    spill = Polygon(piece["outer"]).buffer(0).difference(
+                        foot.buffer(0.003))
+                    if spill.area > 1e-4:
+                        reach = max((float(w["t"]) for w in mine),
+                                    default=0.2) + 0.10
+                        cut = cutter.difference(spill.buffer(reach))
+                except Exception:  # noqa: BLE001
+                    cut = None
+                if cut is not None and not cut.is_empty:
+                    parts = trim_slab(parts, cut)
             out.append(_el(s, lid, [f for pc in parts for f in W.solid(
                 pc, top - float(s["t"]), top)]))
         # footings: under the slab of their level
@@ -1198,6 +1993,83 @@ def build(doc: dict, elevations) -> list[dict]:
             for r in sts:
                 out.append(_el(r, lid, ST.faces(r, doc, elevations)))
     return [e for e in out if e["faces"]]
+
+
+def beam_magnets(cols: list[dict], tol: float = 0.02) -> list:
+    """Where a beam is pulled to, over these columns: each one's centre —
+    but where the AXES of two rows of columns (3 or more on one line)
+    cross inside a column (a corner), that crossing instead of its centre:
+    a ring of beams drawn corner to corner then runs on the side columns'
+    axis, whatever the corner column's turn."""
+    pts = [tuple(column_centre(c)) for c in cols]
+
+    def axes(i):
+        vals = sorted(p[i] for p in pts)
+        out, run = [], []
+        for v in vals:
+            if run and v - run[-1] > tol:
+                if len(run) >= 3:
+                    out.append(sum(run) / len(run))
+                run = []
+            run.append(v)
+        if len(run) >= 3:
+            out.append(sum(run) / len(run))
+        return out
+    xs, ys = axes(0), axes(1)
+    from shapely.geometry import Point, Polygon
+    shapes = [Polygon(column_outline(c, 0.0)) for c in cols]
+    taken, extra = set(), []
+    for x in xs:
+        for y in ys:
+            q = Point(x, y)
+            for k, sh in enumerate(shapes):
+                if sh.buffer(1e-4).contains(q):
+                    if math.dist(pts[k], (x, y)) > tol:
+                        taken.add(k)
+                        extra.append((round(x, 4), round(y, 4)))
+                    break
+    return [p for k, p in enumerate(pts) if k not in taken] + extra
+
+
+def slab_openings(struct: list[dict], lid, ramp_cuts: dict) -> list:
+    """The plan outlines where level ``lid``'s slab is OPEN: the openings
+    drawn in its slabs, and the ways ramps / stairs take through it."""
+    if lid is None:
+        return []
+    out = [list(h) for s in struct if s.get("type") == "slab"
+           and s.get("level") == lid for h in s.get("holes") or []
+           if len(h) >= 3]
+    out += [list(p) for p in ramp_cuts.get(lid, ()) if len(p) >= 3]
+    return out
+
+
+def cut_pieces(pieces, cuts) -> list:
+    """Plan pieces ({outer, holes}) with the ``cuts`` outlines taken out —
+    each piece left a piece of its own (a beam cut in two by an opening)."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    try:
+        hole = unary_union([Polygon(c).buffer(0) for c in cuts])
+    except Exception:  # noqa: BLE001 — a bad outline cuts nothing
+        return list(pieces)
+    out = []
+    for pc in pieces:
+        try:
+            poly = Polygon(pc["outer"], pc.get("holes") or []).buffer(0)
+            if not poly.intersects(hole):
+                out.append(pc)
+                continue
+            rest = poly.difference(hole)
+        except Exception:  # noqa: BLE001
+            out.append(pc)
+            continue
+        for g in getattr(rest, "geoms", [rest]):
+            if g.is_empty or g.area < 1e-6:
+                continue
+            out.append({"outer": _ccw(list(g.exterior.coords)[:-1]),
+                        "holes": [list(reversed(_ccw(list(r.coords)[:-1])))
+                                  for r in g.interiors]})
+    return out
 
 
 def hole_place(slabs: list[dict], hole) -> tuple:

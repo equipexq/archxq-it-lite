@@ -25,9 +25,10 @@ import math
 
 from . import model
 
-#: the record kinds a host Move / Rotate / Copy is adopted for (walls and
-#: openings: next — a wall is joined to its neighbours)
-ADOPT = ("column", "beam", "footing", "slab", "roof", "ramp", "stair")
+#: the record kinds a host Move / Rotate / Copy is adopted for — a wall
+#: moved stretches the walls joined to it (wallmove.py, 2026-10-10)
+ADOPT = ("column", "beam", "footing", "slab", "roof", "ramp", "stair",
+         "wall")
 TOL = 0.002                     # m — a vertex «still there»
 
 
@@ -324,7 +325,16 @@ def adopt(doc: dict, groups) -> tuple[dict | None, list[str]]:
         for i, m in copies))
     if not (moves or copies or scaled):
         return None, []
-    notes = []
+    # walls apart: a wall moved stretches the ones joined to it
+    wall_ids = {w["id"] for w in doc.get("walls") or []}
+    wmoves = {i: m for i, m in moves.items() if i in wall_ids}
+    wcopies = [(i, k) for i, k in copies if i in wall_ids]
+    wbad = sum(1 for i, _g in scaled if i in wall_ids)
+    moves = {i: m for i, m in moves.items() if i not in wall_ids}
+    copies = [(i, k) for i, k in copies if i not in wall_ids]
+    scaled = [(i, g) for i, g in scaled if i not in wall_ids]
+    doc, wnotes = _adopt_walls(doc, wmoves, wcopies)
+    notes = list(wnotes)
     st = doc.get("structure") or []
     by_id = {e["id"]: e for e in st}
     # the host's Scale: the element's new sizes, read from its group
@@ -337,7 +347,8 @@ def adopt(doc: dict, groups) -> tuple[dict | None, list[str]]:
             bad += 1
         else:
             resized[eid] = r
-    auto = [i for i in list(moves) + [i for i, _ in copies]
+    bad += wbad
+    auto =[i for i in list(moves) + [i for i, _ in copies]
             if by_id.get(i, {}).get("auto")]
     new_st = []
     for e in st:
@@ -379,4 +390,64 @@ def adopt(doc: dict, groups) -> tuple[dict | None, list[str]]:
     if n_cp:
         notes.insert(0 if not n_mv else 1,
                      f"{n_cp} cop{'ies' if n_cp > 1 else 'y'} made")
+    return doc, notes
+
+
+def _adopt_walls(doc: dict, moves: dict, copies: list) -> tuple[dict, list]:
+    """Walls the host moved / turned / copied: moved (shifted only) →
+    ``wallmove.move`` stretches the walls joined to them; turned → the
+    wall alone; a copy → a new wall with copies of its openings."""
+    from . import wallmove
+    notes = []
+    if not (moves or copies):
+        return doc, notes
+
+    def moved(w, m):                    # a round wall's centre too
+        r = globals()["moved"](w, m)
+        if "c" in w:
+            th, (tx, ty), _dz = m
+            c, s = math.cos(math.radians(th)), math.sin(math.radians(th))
+            x, y = w["c"]
+            r["c"] = [round(c * x - s * y + tx, 4), round(s * x + c * y + ty,
+                                                          4)]
+        return r
+    by_id = {w["id"]: w for w in doc.get("walls") or []}
+    shifts = {i: m[1] for i, m in moves.items()
+              if abs(_angle(m[0])) < 0.01}
+    turned = {i: m for i, m in moves.items() if i not in shifts}
+    if shifts:
+        doc, more = wallmove.move(doc, shifts)
+        notes += more
+    if turned:
+        # the joined walls follow the turn (2026-10-14: a corner's end goes
+        # with it, a T's end slides onto the new line) — a round wall turns
+        # alone
+        recs = {w["id"]: moved(w, turned[w["id"]]) for w in doc["walls"]
+                if w["id"] in turned}
+        doc, more = wallmove.reshape(doc, recs)
+        doc = dict(doc, walls=[recs[w["id"]] if w["id"] in recs else w
+                               for w in doc["walls"]])
+        notes.append(f"{len(turned)} wall{'s' if len(turned) > 1 else ''} "
+                     "turned")
+        notes += more
+    if copies:
+        walls, ops = list(doc["walls"]), list(doc.get("openings") or [])
+        n = 0
+        for eid, key in copies:
+            w = by_id.get(eid)
+            if w is None:
+                continue
+            m = (key[2], (key[0], key[1]), 0.0)
+            r = {k: v for k, v in moved(w, m).items() if k not in ("id",
+                                                                 "name")}
+            nw = model.new_walls(walls, [r])[0]
+            walls.append(nw)
+            ops += model.new_openings(ops, [
+                {k: v for k, v in dict(o, wall=nw["id"]).items()
+                 if k not in ("id", "name")}
+                for o in doc.get("openings") or [] if o["wall"] == eid])
+            n += 1
+        doc = dict(doc, walls=walls, openings=ops)
+        if n:
+            notes.append(f"{n} wall cop{'ies' if n > 1 else 'y'} made")
     return doc, notes

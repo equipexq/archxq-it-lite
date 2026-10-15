@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -29,6 +29,20 @@ from . import icons, model
 from .help import HELP, help_button
 from .phases import ELEMENTS, PHASES, SYSTEMS, VISIBLE_PARTS
 from .style import BLUE, CSS
+
+
+class _WheelGuard(QObject):
+    """The mouse wheel over a field: it scrolls the panel unless the field
+    was clicked (has the keyboard)."""
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return False
+
+
+_WHEEL_GUARD = _WheelGuard()
 
 
 def _chip(text: str, checkable: bool = True) -> QPushButton:
@@ -200,11 +214,125 @@ class PlanSwitch(QPushButton):
         self.setFocusPolicy(Qt.NoFocus)
         self.setToolTip("Plan view: from the top, to draw and edit — "
                         "locked to the top (pan and zoom freely).\n"
+                        "The icons under it: the plan and the four "
+                        "elevations, square with the building.\n"
                         "Click again = back to the 3D view.")
         self.clicked.connect(lambda: owner.toggle_plan())
 
     def set_plan(self, on: bool) -> None:
         self.setChecked(bool(on))
+
+
+#: the plan and the four sides (his idea, 2026-10-10): shown under «Plan
+#: view» while it is on — (key, tooltip)
+#: the sides CLOCKWISE round the square, as the eye goes (his call,
+#: 2026-10-10): left, top (the back), right, bottom (the front)
+VIEWS = (("plan", "Plan — from the top"),
+         ("left", "Left elevation"), ("back", "Back elevation"),
+         ("right", "Right elevation"), ("front", "Front elevation"))
+
+
+def _view_icon(key: str, size: int = 22):
+    """A square drawn in light ink: the plan, four squares; a side, the
+    square with that side in orange."""
+    from PySide6.QtCore import QPointF, QRectF
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+    ink, accent = QColor("#d6d9dd"), QColor("#e8742c")
+    pm = QPixmap(size * 2, size * 2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    s = size * 2
+    m = s * 0.18
+    r = QRectF(m, m, s - 2 * m, s - 2 * m)
+    p.setPen(QPen(ink, s * 0.07))
+    p.setBrush(Qt.NoBrush)
+    if key == "plan":
+        h = r.width() / 2
+        for i in range(2):
+            for j in range(2):
+                p.drawRect(QRectF(r.left() + i * h, r.top() + j * h, h, h))
+    elif key == "xray":
+        # two boxes seen through each other: the one behind, dashed
+        d = r.width() * 0.28
+        front = QRectF(r.left(), r.top() + d, r.width() - d, r.height() - d)
+        back = QRectF(r.left() + d, r.top(), r.width() - d, r.height() - d)
+        p.setPen(QPen(ink, s * 0.06, Qt.DashLine))
+        p.drawRect(back)
+        p.setPen(QPen(accent, s * 0.07))
+        p.drawRect(front)
+    else:
+        p.drawRect(r)
+        a, b = {"front": (r.bottomLeft(), r.bottomRight()),
+                "back": (r.topLeft(), r.topRight()),
+                "left": (r.topLeft(), r.bottomLeft()),
+                "right": (r.topRight(), r.bottomRight())}[key]
+        p.setPen(QPen(accent, s * 0.16, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(a), QPointF(b))
+    p.end()
+    return QIcon(pm)
+
+
+class ViewsStrip(QFrame):
+    """The plan and the four elevations — five icons, no text, under the
+    «Plan view» switch while it is on; the one shown is lit."""
+
+    def __init__(self, owner) -> None:
+        super().__init__()
+        self.owner = owner
+        self.setObjectName("axq_strip")
+        self.setStyleSheet(CSS)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 3, 4, 3)
+        lay.setSpacing(2)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.buttons = {}
+        from PySide6.QtWidgets import QToolButton
+        for key, tip in VIEWS:
+            b = QToolButton()
+            b.setIcon(_view_icon(key))
+            b.setIconSize(QSize(20, 20))
+            b.setCheckable(True)
+            b.setAutoRaise(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setToolTip(tip)
+            b.setStyleSheet("QToolButton { border: 1px solid transparent; "
+                            "border-radius: 4px; padding: 2px; }"
+                            "QToolButton:hover { border-color: #6b7178; }"
+                            "QToolButton:checked { border: 1px solid "
+                            "#e8742c; background: #4a3324; }")
+            b.clicked.connect(lambda _c=False, k=key: owner.show_view(k))
+            self.group.addButton(b)
+            self.buttons[key] = b
+            lay.addWidget(b)
+        # after them, apart: X-RAY — the faces see-through, to pick and
+        # place what lies behind (his ask, 2026-10-10: a side view is of no
+        # use for precise edits without it)
+        lay.addWidget(_vsep())
+        self.xray = QToolButton()
+        self.xray.setIcon(_view_icon("xray"))
+        self.xray.setIconSize(QSize(20, 20))
+        self.xray.setCheckable(True)
+        self.xray.setAutoRaise(True)
+        self.xray.setFocusPolicy(Qt.NoFocus)
+        self.xray.setToolTip("X-ray: see through the faces — pick and move "
+                             "what lies behind (the plan and the "
+                             "elevations)")
+        self.xray.setStyleSheet(self.buttons["plan"].styleSheet())
+        self.xray.toggled.connect(lambda on: owner.toggle_xray(on))
+        lay.addWidget(self.xray)
+
+    def set_current(self, key: str | None, tips: dict | None = None,
+                    xray: bool | None = None) -> None:
+        for k, b in self.buttons.items():
+            b.setChecked(k == key)
+            if tips and k in tips:
+                b.setToolTip(tips[k])
+        if xray is not None and self.xray.isChecked() != xray:
+            self.xray.blockSignals(True)
+            self.xray.setChecked(xray)
+            self.xray.blockSignals(False)
 
 
 # ---- Bottom: view controls --------------------------------------------------------
@@ -301,32 +429,8 @@ class PropsPanel(QWidget):
         self.actions = QVBoxLayout()
         lay.addLayout(self.actions)
         lay.addStretch(1)
-
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setEnabled(False)
-        lay.addWidget(line)
-        phase_row = QHBoxLayout()
-        self.phase_label = QLabel()
-        phase_row.addWidget(self.phase_label)
-        phase_row.addStretch()
-        phase_row.addWidget(help_button("phase_done"))
-        lay.addLayout(phase_row)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        lay.addWidget(self.status)
-        row = QHBoxLayout()
-        self.done_btn = QPushButton()
-        self.done_btn.clicked.connect(owner.on_toggle_done)
-        row.addWidget(self.done_btn)
-        row.addStretch()
-        lay.addLayout(row)
-        self.note = QLabel("Prototype: «Mark phase complete» stands in for "
-                           "the real checks of this phase. Properties are "
-                           "not applied to the model yet.")
-        self.note.setWordWrap(True)
-        self.note.setEnabled(False)
-        lay.addWidget(self.note)
+        # (the prototype's «Phase: … Mark phase complete» section is gone —
+        # his call, 2026-10-09: the phases are a guide on the top bar)
 
     def show_for(self, phase: str, element: str | None, done: bool,
                  doc: dict) -> None:
@@ -362,25 +466,6 @@ class PropsPanel(QWidget):
                 for prop in el.props:
                     self.form.addRow(prop.name,
                                      self._editor(el.key, prop, doc))
-
-        self.phase_label.setText(f"<b>Phase: {ph.label}</b>")
-        auto = phase in ("project", "terrain")  # complete themselves
-        self.done_btn.setVisible(not auto)
-        self.note.setVisible(not auto)
-        if phase == "project":
-            self.status.setText("✔ Complete — the project is started."
-                                if done else
-                                "Starts when you press «Start a new "
-                                "project…».")
-        elif phase == "terrain":
-            self.status.setText("✔ Complete — the plot is drawn."
-                                if done else
-                                "Completes when the plot is drawn "
-                                "(Draw plot, on the left).")
-        else:
-            self.status.setText("✔ Complete." if done else "In progress.")
-        self.done_btn.setText("Reopen phase" if done
-                              else "Mark phase complete  ✔")
 
     # -- project phase: a summary + the buttons that open the dialog ---------------
     def _action(self, text: str, fn, primary: bool = False) -> None:
@@ -546,6 +631,15 @@ class PropsPanel(QWidget):
 
     # -- one editor per property kind --------------------------------------------
     def _editor(self, ekey: str, prop, doc: dict | None = None) -> QWidget:
+        w = self._editor_of(ekey, prop, doc)
+        if isinstance(w, (QDoubleSpinBox, QSpinBox, QComboBox)):
+            # the wheel changes it only once clicked (his test, 2026-10-11:
+            # scrolling over the panel changed values unseen)
+            w.setFocusPolicy(Qt.StrongFocus)
+            w.installEventFilter(_WHEEL_GUARD)
+        return w
+
+    def _editor_of(self, ekey: str, prop, doc: dict | None = None) -> QWidget:
         # real document values
         if ekey == "setbacks" and prop.name in ("Front", "Back", "Sides"):
             plot = (doc or {}).get("plot")

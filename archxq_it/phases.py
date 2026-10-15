@@ -107,6 +107,12 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
     _e("column", "Column", ()),
     _e("beam", "Beam", ()),
     _e("slab", "Slab", ()),
+    # a drawn slab's corners and sides with the mouse (slabedit.py, his ask
+    # 2026-10-12)
+    _e("slab_edit", "Edit slabs", (("Move points", "move"),
+                                   ("Move side", "move"),
+                                   ("Add point", "add_point"),
+                                   ("Delete point", "eraser"))),
     _e("footing", "Footing", ()),
     # -- Walls
     # HOW it is drawn (rectangle, point by point, arc, circle…), its
@@ -146,7 +152,7 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
            "excavation_edit", "ground")),
     Phase("structure", "Structure",
           "Columns, beams, slabs and footings of the current floor.",
-          ("column", "beam", "slab", "footing")),
+          ("column", "beam", "slab", "slab_edit", "footing")),
     Phase("walls", "Walls",
           "Walls of the current floor, by axis, thickness and height.",
           ("wall", "wall_edit", "wall_import")),
@@ -164,7 +170,7 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
 #: What the Lite leaves to ArchXQ IT Pro (his call, 2026-10-04): the
 #: Lite draws the project, the terrain, the walls and the columns.
 PRO_ELEMENTS = frozenset({
-    "beam", "slab", "footing",
+    "beam", "slab", "slab_edit", "footing",
     "wall_import",
     "door", "window", "void",
     "roof",

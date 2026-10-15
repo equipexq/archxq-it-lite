@@ -185,6 +185,19 @@ def set_hidden_parts(viewport, key: str, parts: dict) -> None:
     viewport.update()
 
 
+def set_guides_off(viewport, key: str, store: dict) -> None:
+    """The guide lines set aside per level ({level id: [guide dicts]}) —
+    view state, written straight in, never an undo step."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["guides_off"] = {lv: gs for lv, gs in store.items() if gs}
+    data[key] = doc
+    bump = getattr(viewport.scene, "bump_view", None)
+    if callable(bump):
+        bump()
+    viewport.update()
+
+
 def set_ghosts(viewport, key: str, ids) -> None:
     """The levels drawn as a ghost in the plan — view state, written
     straight in, never an undo step."""
@@ -305,6 +318,28 @@ def back_to_select(viewport) -> None:
 def typed_value(viewport) -> str:
     """What the user is typing in the measurements box (VCB), or ""."""
     return str(getattr(viewport, "_value_buffer", "") or "")
+
+
+def doc_length_unit() -> str:
+    """The open document's length unit (IngeTrazo 0.5.8+: «m», «mm»,
+    «ft-in-frac»…); «m» on an older host."""
+    try:
+        from core import units
+        return str(units.model_unit())
+    except Exception:  # noqa: BLE001 — before 0.5.8: metres
+        return "m"
+
+
+def parse_host_length(text: str):
+    """A typed length read as IngeTrazo's value box reads it (0.5.8+): a
+    bare number in the DOCUMENT's unit, «2'6"», «85cm»… → metres, or None
+    (unreadable, or an older host)."""
+    try:
+        from core import units
+        v = units.parse_length_field(text)
+        return None if v is None else float(v)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def to_pixel(viewport, x: float, y: float, z: float = 0.0):
@@ -558,7 +593,30 @@ def selecting(viewport) -> bool:
         == "SelectTool"
 
 
+#: this package's own top name, whatever it is loaded as: «archxq_it» by the
+#: dev loader, but «ingetrazo_plugin_<folder>» for a buyer (IngeTrazo's
+#: plugin loader) — a check for the literal «archxq_it» never matched there
+#: (the catalog maintainer's note on PR #77, 2026-10-13)
+PACKAGE = __name__.split(".")[0]
+
+
+def ours(obj) -> bool:
+    """``obj`` (a tool, a widget) is one of this package's classes."""
+    return (type(obj).__module__ or "").split(".")[0] == PACKAGE
+
+
 PLOT_NAME = "ArchXQ Plot"
+
+
+def terrain_bottom(viewport, doc: dict):
+    """The lowest point of the plot's ground as BUILT (its mesh), or None."""
+    g = find_plot(viewport, (doc.get("plot") or {}).get("uid"))
+    if g is None:
+        return None
+    try:
+        return min(v.z() for f in g.mesh.faces for v in f.vertices)
+    except (ValueError, AttributeError):
+        return None
 
 
 def find_plot(viewport, uid: str):
@@ -622,13 +680,16 @@ def dig_volumes(doc: dict, z0: float = 0.0) -> dict:
     return terrain.build(doc, z0, earcut, arrangement)["volumes"]
 
 
-def _soften_flat_seams(mesh) -> None:
+def _soften_flat_seams(mesh, smooth=()) -> None:
     """An edge between two faces of ONE plane is no fold — a seam the
     regions left (a pit's floor around a ramp's footprint, a wall cut in
     panels where a ramp meets it): drawn smooth, so it doesn't show. So
     is the joint of two upright panels less than 25° apart (a round
-    pit's wall reads as one curve, as SketchUp softens it)."""
+    pit's wall reads as one curve, as SketchUp softens it), and the
+    facets of a round tube (``smooth``: their face ids — a handrail's
+    eight sides drew eight lines, his screen 2026-10-10)."""
     curve = math.cos(math.radians(25))
+    tube = math.cos(math.radians(50))
     for e in mesh.edges:
         fs = list(getattr(e, "faces", ()) or [])
         if len(fs) != 2:
@@ -637,6 +698,10 @@ def _soften_flat_seams(mesh) -> None:
         n1 = n1() if callable(n1) else n1
         n2 = n2() if callable(n2) else n2
         dot = n1.dotProduct(n1, n2)
+        if smooth and id(fs[0]) in smooth and id(fs[1]) in smooth \
+                and dot >= tube:
+            e.soft = True
+            continue
         if abs(n1.z()) < 0.05 and abs(n2.z()) < 0.05 and dot >= curve \
                 and dot < 0.99995:
             e.soft = True                          # a curved wall
@@ -974,11 +1039,14 @@ def mesh_of(faces):
     from core.mesh import Mesh
     from PySide6.QtGui import QVector3D
     mesh = Mesh()
+    smooth = set()                     # a round tube's facets (railings)
     for f in faces:
         if isinstance(f, dict):
             face = mesh.add_face([QVector3D(*q) for q in f["loop"]],
                                  [[QVector3D(*q) for q in h]
                                   for h in f["holes"]])
+            if f.get("soft") and face is not None:
+                smooth.add(id(face))
             if f.get("color") is not None and face is not None:
                 # glass, leaf… — the host wants RGB in "color" and the
                 # alpha apart in "opacity" (the glTF/Blender export
@@ -989,7 +1057,7 @@ def mesh_of(faces):
                     face.attrs["opacity"] = c[3]
         else:
             mesh.add_face([QVector3D(*q) for q in f])
-    _soften_flat_seams(mesh)
+    _soften_flat_seams(mesh, smooth)
     return mesh
 
 
@@ -1103,7 +1171,7 @@ def plan_camera(viewport) -> None:
 _STYLE_BEFORE = {}
 
 
-def plan_style(viewport, on: bool) -> None:
+def plan_style(viewport, on: bool, mode: str = "hidden_line") -> None:
     """The plan seen in HIDDEN LINE (his call, 2026-10-02 — compared with
     the host's «técnico» and Monochrome: the walls read best white on the
     background): the file's own style, face mode «hidden_line», as the 3D
@@ -1115,8 +1183,10 @@ def plan_style(viewport, on: bool) -> None:
             _STYLE_BEFORE["was"] = getattr(viewport, "style_override", None)
         base = getattr(viewport.scene, "display_style", None)
         if base is not None:
-            viewport.style_override = dataclasses.replace(
-                base, face_mode="hidden_line")
+            # «hidden_line» (the plan) or «xray» (see-through: the X-ray
+            # button of the plan / elevations, 2026-10-10)
+            viewport.style_override = dataclasses.replace(base,
+                                                          face_mode=mode)
     elif "was" in _STYLE_BEFORE:
         viewport.style_override = _STYLE_BEFORE.pop("was")
     viewport.update()

@@ -1,5 +1,36 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.10.2
+
+Everything since 0.9.5, for what the Lite draws (the plot and its
+excavations, walls, columns, levels):
+
+- **New edit windows** — tabs at the top, folding sections, a small live
+  drawing beside the fields, choices as pictures; **Apply** keeps the
+  window open. Walls, columns, levels, Settings and the Project.
+- **On-screen grips** — select a wall or a column and drag it into shape;
+  **magnets** and temporary **guides** line it up with what is around it,
+  on every level.
+- **Quick help** — a small card in the 3D view lists the keys of the tool
+  that is out (F1 hides it); a **radial menu** at the mouse on a click.
+- **Walls**: a **curtain wall** type (glass between mullions — their
+  sizes, the band at each floor and the glass transparency in its own
+  tab, set before drawing with **More…**, several edited at once);
+  **Move a wall** with M; walls joined to a turned wall follow it; a run
+  of walls keeps its type.
+- **Levels**: **Repeat** a level and **Copy to a level** — what the target
+  already has is left as it is, only what is missing is copied.
+- **Plan view + four elevations** from the view bar; guide lines per level.
+- **Size bars** — drag a size or type it in its field.
+- IngeTrazo's **light theme** and **0.5.8** (document units, the Extension
+  Manager): the panels stay readable, the sizes right.
+- **Installed folder = `archxq_it_lite`** (the catalog id), so a hand
+  install never lands where the Pro lives. If you installed the Lite by
+  hand before, delete the old `archxq_it` folder in the plugins folder.
+- ArchXQ's tools are recognised in any install (they were told apart by
+  a module name IngeTrazo does not use for extensions) — thanks to the
+  catalog maintainer.
+
 ## 0.9.5
 
 - **Library** — the strip on the right opens on the library of what you

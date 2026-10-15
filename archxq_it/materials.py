@@ -16,8 +16,9 @@ again (compat calls ``paint``)::
     ref = {"lib": "concrete/concrete_exposed.png"}   # IngeTrazo's library
         | {"color": [r, g, b], "name": "RAL 7035 Light grey"}
 
-An element's part: its own ref → its kind's → none (ArchXQ's plain colour,
-as before). Solid colours in the Lite; the textures are the Pro's.
+An element's part: its own ref → its kind's → its kind's ``DEFAULTS`` (Pro)
+→ none (ArchXQ's plain colour, as before). Solid colours in the Lite; the
+textures are the Pro's.
 """
 from __future__ import annotations
 
@@ -37,19 +38,29 @@ SLOTS = {
     "slab": (("top", "Top"), ("under", "Underside and edges")),
     "footing": (("all", "Footing"),),
     "wall": (("all", "Wall"),),
-    "ramp": (("top", "Floor"), ("side", "Sides")),
-    "stair": (("top", "Treads"), ("side", "Sides")),
+    "ramp": (("top", "Floor"), ("side", "Sides"),
+             ("rail", "Railing (posts, handrail)"), ("glass", "Railing glass"),
+             ("lowwall", "Low wall")),
+    "stair": (("top", "Treads"), ("side", "Sides"),
+              ("rail", "Railing (posts, handrail)"), ("glass", "Railing glass"),
+              ("lowwall", "Low wall")),
+    "roof": (("cover", "Covering (tiles, sheets)"),
+             ("parapet", "Parapet and gable walls"),
+             ("gutter", "Gutter"), ("slab", "Slab (flat, hidden)")),
 }
 PLURAL = {"plot": "plots", "dig": "excavations", "fill": "fills",
           "column": "columns", "beam": "beams", "slab": "slabs",
           "footing": "footings", "wall": "walls", "ramp": "ramps",
-          "stair": "stairs"}
+          "stair": "stairs", "roof": "roofs"}
 MAT_PREFIX = "ArchXQ · "
 #: kinds whose faces carry colours of their own on purpose (a door's glass
-#: and frame, a roof's tiles and eaves) — kept under a material. Ramps and
-#: stairs carry their plain concrete per face too, but that one IS what a
-#: material replaces (his stair stayed grey under «Use for all», 2026-10-08)
-KEEP_OWN_COLOURS = {"opening", "roof"}
+#: and frame) — kept under a material. Ramps and stairs carry their plain
+#: concrete per face too, but that one IS what a material replaces (his
+#: stair stayed grey under «Use for all», 2026-10-08); a roof's colours
+#: tell its PARTS apart (``roof_part``)
+#: (a wall: a CURTAIN wall's glass, mullions and band carry their colours;
+#: a plain wall's faces carry none — they take its material)
+KEEP_OWN_COLOURS = {"opening", "wall"}
 
 
 def textures_allowed() -> bool:
@@ -280,22 +291,81 @@ def part_of(kind: str, nz: float) -> str:
     return "all"
 
 
+def roof_part(color) -> str:
+    """A roof face's part, by the colour ArchXQ built it with (the roof's
+    faces are made fresh at every rebuild, before they are painted)."""
+    from . import structure as S
+    c = tuple(round(v, 3) for v in (color or ())[:3])
+    for part, ref in (("parapet", S.GABLE_COLOR), ("gutter", S.GUTTER_COLOR),
+                      ("slab", S.FLAT_COLOR)):
+        if c == tuple(round(v, 3) for v in ref[:3]):
+            return part
+    return "cover"
+
+
+#: a hidden roof's sheets when nothing is chosen for its covering (Pro)
+SHEET_DEFAULT = {"lib": "roof/corrugated_sheet.jpg"}
+#: what a kind's part is made of when nothing is chosen (Pro: textures).
+#: His rule, 2026-10-09: what we make comes with a fitting material.
+_EXPOSED = {"lib": "concrete/concrete_exposed.png"}
+_SMOOTH = {"lib": "concrete/concrete_smooth.png"}
+_PLASTER = {"lib": "wall/white_roughcast.jpg"}
+_GRASS = {"lib": "ground/grass_lawn.png"}
+_GRAVEL = {"lib": "ground/gravel.png"}
+_BRUSHED = {"lib": "metal/metal_brushed.png"}
+DEFAULTS = {"stair": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
+                      "lowwall": _PLASTER},
+            "ramp": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
+                     "lowwall": _PLASTER},
+            "column": {"all": _EXPOSED}, "beam": {"all": _EXPOSED},
+            "footing": {"all": _EXPOSED},
+            "slab": {"top": _SMOOTH, "under": _EXPOSED},
+            "wall": {"all": _PLASTER},
+            "plot": {"top": _GRASS, "side": _GRAVEL},
+            "dig": {"floor": _GRAVEL, "wall": _GRAVEL},
+            "fill": {"top": _GRASS, "wall": _GRAVEL},
+            # his own pick for every roof, 2026-10-09 (the hidden roof's
+            # sheets keep SHEET_DEFAULT)
+            "roof": {"cover": {"lib": "roof/roof_tiles_colonial.png"},
+                     "parapet": _PLASTER,
+                     "gutter": {"lib": "metal/metal_brushed.png"},
+                     "slab": _SMOOTH}}
+
+
+def _is_sheet(color) -> bool:
+    from . import structure as S
+    return tuple(round(v, 3) for v in (color or ())[:3]) == \
+        tuple(round(v, 3) for v in S.SHEET_COLOR[:3])
+
+
 def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
     """Paint one rebuilt group with its element's materials (nothing
-    chosen: as ArchXQ always drew it). Faces with a colour of their own
-    (a door's glass, a frame) keep it."""
-    if kind not in SLOTS or not doc.get("materials"):
+    chosen: its kind's ``DEFAULTS``, or as ArchXQ always drew it — and a
+    hidden roof's sheets, with nothing chosen for the covering, are
+    corrugated sheet: ``SHEET_DEFAULT``, his pick, 2026-10-09). Faces with
+    a colour of their own (a door's glass, a frame) keep it."""
+    if kind not in SLOTS:
         return
     from core.materials import Material, register
     made = {}
-    for part, _label in SLOTS[kind]:
-        a = attrs(resolve(doc, kind, el_id, part))
-        if a is not None:
-            made[part] = a
-    if not made:
+    if doc.get("materials"):
+        for part, _label in SLOTS[kind]:
+            a = attrs(resolve(doc, kind, el_id, part))
+            if a is not None:
+                made[part] = a
+    sheet = None
+    if textures_allowed():
+        if kind == "roof" and "cover" not in made:   # nothing CHOSEN for it
+            sheet = attrs(SHEET_DEFAULT)
+        for part, ref in DEFAULTS.get(kind, {}).items():
+            if part not in made:
+                a = attrs(ref)
+                if a is not None:
+                    made[part] = a
+    if not made and sheet is None:
         return
     reg = getattr(scene, "materials", None)
-    for name, a in made.values():
+    for name, a in list(made.values()) + ([sheet] if sheet else []):
         if isinstance(reg, dict):
             try:
                 register(reg, Material.from_dict(dict(
@@ -309,8 +379,24 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
     for f in group.mesh.faces:
         if keep_own and "color" in f.attrs and "mat" not in f.attrs:
             continue                              # its own (glass, frame)
-        n = f.normal() if callable(f.normal) else f.normal
-        part = part_of(kind, n.z())
+        if kind == "roof":
+            part = roof_part(f.attrs.get("color"))
+            if sheet and part == "cover" and _is_sheet(f.attrs.get("color")):
+                f.attrs.update(sheet[1])
+                continue
+        else:
+            part = None
+            if kind in ("stair", "ramp"):
+                # its railing's parts, told by the colours they are built
+                # with; the glass keeps its own until one is chosen
+                try:
+                    from .railings import part_of_color   # Pro only
+                    part = part_of_color(f.attrs.get("color"))
+                except ImportError:
+                    part = None
+            if part is None:
+                n = f.normal() if callable(f.normal) else f.normal
+                part = part_of(kind, n.z())
         if part in made:
             f.attrs.update(made[part][1])
 
@@ -421,11 +507,15 @@ class MaterialTab:
         left.addWidget(self.big)
         self.name = W.QLabel()
         self.name.setWordWrap(True)
-        self.name.setMaximumWidth(150)
+        self.name.setMaximumWidth(196)
         left.addWidget(self.name)
         self.list = W.QListWidget()
         self.list.setIconSize(QtCore.QSize(28, 28))
-        self.list.setMaximumWidth(150)
+        # wide enough for «Railing (posts, handrail)» (cut, a scroll bar
+        # under it — his screen, 2026-10-13)
+        self.list.setFixedWidth(196)
+        self.list.setWordWrap(True)
+        self.list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for p, label in self.parts:
             self.list.addItem(W.QListWidgetItem(label))
         self.list.setCurrentRow(0)
@@ -475,7 +565,7 @@ class MaterialTab:
         own.clicked.connect(self._own_colour)
         row.addWidget(own)
         dflt = W.QPushButton("Default")
-        dflt.setToolTip("Back to ArchXQ's own colour for this part")
+        dflt.setToolTip("Back to ArchXQ's default for this part")
         dflt.clicked.connect(lambda: self._choose(None))
         row.addWidget(dflt)
         row.addStretch()
@@ -559,6 +649,11 @@ def with_tab(dlg, tab: MaterialTab) -> None:
     """Put a window's content under an «Element» tab and the material
     under «Material» — its buttons (OK, Cancel, Apply…) stay below both."""
     _c, _g, W = _qt()
+    own = getattr(dlg, "_axq_tabs", None)
+    if own is not None:                   # a window of 0.10.0 (look.py)
+        own.addTab(tab.widget, "Material", "material")
+        _hook(dlg, own, tab)
+        return
     lay = dlg.layout()
     page = W.QWidget()
     pl = W.QVBoxLayout(page)
@@ -585,6 +680,21 @@ def with_tab(dlg, tab: MaterialTab) -> None:
     tabs.addTab(page, "Element")
     tabs.addTab(tab.widget, "Material")
     lay.addWidget(tabs, 1)
+    _hook(dlg, tabs, tab)
+    for it in keep:
+        if it.widget() is not None:
+            lay.addWidget(it.widget())
+        elif it.layout() is not None:
+            sub = it.layout()
+            sub.setParent(None)
+            lay.addLayout(sub)
+        else:
+            lay.addItem(it)
+
+
+def _hook(dlg, tabs, tab: MaterialTab) -> None:
+    """The Material tab's ties to its window: back on the same tab / part
+    when «Apply» reopens it, and «Apply» on it commits at once."""
     # reopened by «Apply» (the Element tab): back on the tab and the part it
     # was on — it went back to «Element» every time (his test, 2026-10-07)
     key = type(dlg).__name__
@@ -606,13 +716,4 @@ def with_tab(dlg, tab: MaterialTab) -> None:
         b.clicked.connect(lambda: tab.apply_now()
                           if tabs.currentWidget() is tab.widget
                           and tab.on_apply is not None else b._axq_go())
-    for it in keep:
-        if it.widget() is not None:
-            lay.addWidget(it.widget())
-        elif it.layout() is not None:
-            sub = it.layout()
-            sub.setParent(None)
-            lay.addLayout(sub)
-        else:
-            lay.addItem(it)
     dlg._mat_tab = tab

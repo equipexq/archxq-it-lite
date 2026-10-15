@@ -34,10 +34,29 @@ class _Row(QFrame):
     """One level. A click anywhere but the buttons makes it current; the ✎
     or a double-click opens the level's own window."""
 
+    def sync_ghost(self) -> None:
+        """The ghost button by the row's state: off on the level worked on
+        (its ghost shows from another one), else on — also after
+        ``mark_current`` lit another row (it kept the old row's button off:
+        Basement 2's ghost could not be clicked any more, his file,
+        2026-10-08)."""
+        g = getattr(self, "ghost", None)
+        if g is None:
+            return
+        on = bool(self.row.get("ghost"))
+        g.setEnabled(not self.row["current"])
+        g.setToolTip("The level you work on — its ghost shows when you "
+                     "work on another one" if self.row["current"] else
+                     "Ghost ON — this level shows in light blue in the plan "
+                     "(click: off)" if on else
+                     "Ghost — show this level in light blue in the plan of "
+                     "the level you work on")
+
     def __init__(self, strip, row: dict) -> None:
         super().__init__()
         self.strip = strip
         self.row = row
+        self.ghost = None
         self.setProperty("axq", "level")
         self.setProperty("current", "true" if row["current"] else "false")
         self.setProperty("kind", row["kind"])
@@ -75,15 +94,8 @@ class _Row(QFrame):
             if on:                         # lit: a blue chip behind it
                 g.setStyleSheet("QToolButton { background: "
                                 "rgba(111, 168, 220, 70); border-radius: 4px; }")
-            if row["current"]:
-                g.setEnabled(False)
-                g.setToolTip("The level you work on — its ghost shows when "
-                             "you work on another one")
-            else:
-                g.setToolTip("Ghost ON — this level shows in light blue in "
-                             "the plan (click: off)" if on else
-                             "Ghost — show this level in light blue in the "
-                             "plan of the level you work on")
+            self.ghost = g
+            self.sync_ghost()
             g.clicked.connect(lambda: strip.owner.toggle_ghost(row["key"]))
             lay.addWidget(g)
         else:
@@ -200,6 +212,7 @@ class LevelStrip(QFrame):
                 on = row.row["key"] == key
                 row.row["current"] = on
                 row.setProperty("current", "true" if on else "false")
+                row.sync_ghost()
                 for w in (row, row.name):
                     w.style().unpolish(w)
                     w.style().polish(w)

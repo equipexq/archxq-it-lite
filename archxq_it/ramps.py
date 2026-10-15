@@ -47,7 +47,8 @@ COLOR = (0.74, 0.74, 0.73)       # concrete, as the slabs
 DEFAULT = {"start": "level", "to": "", "to_z": -3.0, "w": 3.0,
            "slope": 20.0, "fix": "slope", "L": 15.0, "t": 0.15,
            "shape": "straight", "turn": "right", "landing": 3.0,
-           "anchor": "centre"}
+           "anchor": "centre",
+           "cut": True}            # its opening in the slab (False: none)
 SLOPE_MIN, SLOPE_MAX = 1.0, 50.0  # % (a car ramp ~20, people ~8)
 
 
@@ -195,12 +196,14 @@ def pieces(r: dict, zs: float, ze: float, L: float, l1=None, l2=None,
                                                             n[1] * sg),
                  "l": l2, "w": w, "z0": zm, "z1": ze, "run": True}]
     # U: the landing across both lanes, the second run back beside the first
+    # — «gap» apart (a stair's well between its flights; 0: side by side)
     ld = max(float(r.get("landing", 3.0)), 0.5)
+    gap = max(float(r.get("gap", 0.0) or 0.0), 0.0)
     return [run1,
-            {"c": P(l1, sg * w / 2), "d": u, "l": ld, "w": 2 * w, "z0": zm,
-             "z1": zm, "run": False},
-            {"c": P(l1, sg * w), "d": (-u[0], -u[1]), "l": l2, "w": w,
-             "z0": zm, "z1": ze, "run": True}]
+            {"c": P(l1, sg * (w + gap) / 2), "d": u, "l": ld,
+             "w": 2 * w + gap, "z0": zm, "z1": zm, "run": False},
+            {"c": P(l1, sg * (w + gap)), "d": (-u[0], -u[1]), "l": l2,
+             "w": w, "z0": zm, "z1": ze, "run": True}]
 
 
 def piece_corners(p: dict) -> list:
@@ -252,7 +255,15 @@ def faces(r: dict, doc: dict, elevations) -> list:
         return []
     t = float(r["t"])
     out = []
-    for p in pieces(r, zs, ze, L):
+    ps = pieces(r, zs, ze, L)
+    try:
+        from . import railings as RL       # its guards (Pro only)
+    except ImportError:
+        RL = None
+    # a low wall keeps to the ramp's edge: the slab gives way 1 cm there
+    lt, rt = RL.body_trim(r, ps, ze > zs, False, doc)[:2] if RL else (0, 0)
+    walls = RL.wall_plan(r, ps, ze > zs, False, doc) if RL else None
+    for p in ps:
         (cx, cy), (dx, dy) = p["c"], p["d"]
         rx, ry = dy, -dx
 
@@ -261,8 +272,18 @@ def faces(r: dict, doc: dict, elevations) -> list:
         # its top 1 mm under the floor it leaves: never the same plane
         # (black squares — the 1 mm rule)
         z0, z1, l = p["z0"] - 0.001, p["z1"] - 0.001, p["l"]
-        prof = [(0.0, z0 - t + 0.001), (l, z1 - t + 0.001), (l, z1), (0.0, z0)]
-        out += _sweep(prof, -p["w"] / 2, p["w"] / 2, P, COLOR + (1.0,))
+        if p.get("run", True):
+            a0, a1 = -p["w"] / 2 + lt, p["w"] / 2 - rt
+        elif walls is not None:           # a landing: it gives way to them
+            from .stairs import landing_round
+            out += landing_round(p, walls, z0 - t + 0.001, z0, COLOR + (1.0,))
+            continue
+        else:
+            a0, a1 = -p["w"] / 2, p["w"] / 2
+        prof =[(0.0, z0 - t + 0.001), (l, z1 - t + 0.001), (l, z1), (0.0, z0)]
+        out += _sweep(prof, a0, a1, P, COLOR + (1.0,))
+    if RL is not None:
+        out += RL.faces(r, ps, ze > zs, False, doc)
     return out
 
 
@@ -319,7 +340,10 @@ class _Ends:
     call, 2026-10-05: «From / To» followed the drawing and read upside
     down). Stored as before: start / from (the clicked end), to, to_z."""
 
-    def __init__(self, doc: dict, elevations, rec: dict, form, metres):
+    def __init__(self, doc: dict, elevations, rec: dict, form, metres,
+                 choice=None):
+        """``choice``: «Starts at» as chips (look.Chips — the windows of
+        0.10.0) instead of a list."""
         self.doc, self.elevations = doc, elevations
         zs_of = level_z(doc, elevations)
         self.f_top = QComboBox()
@@ -338,9 +362,13 @@ class _Ends:
                             lv["id"])
             box.addItem("An elevation", "z")
         self.f_z = metres(float(rec.get("to_z", -3.0)), -100.0, 100.0)
-        self.f_start = QComboBox()
-        self.f_start.addItem("Bottom step — going up", "bottom")
-        self.f_start.addItem("Top step — going down", "top")
+        self.f_start = (choice or QComboBox)()
+        if choice is None:
+            self.f_start.addItem("Bottom step — going up", "bottom")
+            self.f_start.addItem("Top step — going down", "top")
+        else:
+            self.f_start.addItem("↑ Bottom step", "bottom")
+            self.f_start.addItem("↓ Top step", "top")
         self.f_start.setToolTip("Where your click is on the plan: at its "
                                 "bottom (the usual way) or at its top (a "
                                 "ramp from the street, a slab's edge)")
@@ -411,11 +439,35 @@ class _Ends:
         return None
 
 
-def _anchor_box(rec: dict) -> QComboBox:
-    """«Insert at»: where the click is on its first edge (stairs.py too)."""
-    box = QComboBox()
-    for k, text in ANCHORS:
-        box.addItem(text, k)
+def _pic_anchor(k):
+    """«Insert at» as a picture: the flight, the click's dot on its first
+    edge."""
+    def draw(p, r, _on):
+        from . import look as L
+        L.poly(p, [(20, 4), (40, 4), (40, 40), (20, 40)], L.INK, 1.5, close=True)
+        p.setPen(L.pen(L.DIM, 1.0))
+        from PySide6.QtCore import QPointF
+        for y in (12, 20, 28):
+            p.drawLine(QPointF(20, y), QPointF(40, y))
+        x = {"left": 20, "centre": 30, "right": 40}[k]
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(L.ACCENT))
+        p.drawEllipse(QPointF(x, 40), 4, 4)
+    return draw
+
+
+def _anchor_box(rec: dict, chips: bool = False) -> QComboBox:
+    """«Insert at»: where the click is on its first edge (stairs.py too) —
+    ``chips``: pictures (the windows of 0.10.0)."""
+    if chips:
+        from . import look as L
+        box = L.Chips()
+        for k, text in ANCHORS:
+            box.addItem(text, k, pic=_pic_anchor(k))
+    else:
+        box = QComboBox()
+        for k, text in ANCHORS:
+            box.addItem(text, k)
     box.setCurrentIndex(max(box.findData(rec.get("anchor", "centre")), 0))
     box.setToolTip("Where the click sits on its first edge, walking it: a "
                    "corner puts it in a corner (a stair shaft, a wall's end)")
@@ -535,15 +587,492 @@ class _Profile(QWidget):
                    + (" (runs)" if land else ""))
 
 
+#: a railing's own sizes (railings.DEFAULT — that module is the Pro's)
+RAIL_DEFAULT = {"railing": "none", "rail_h": 0.90, "rail_d": 0.045,
+                "rail_low": False, "rail_ext": 0.30, "rail_inset": 0.05,
+                "rail_gap": 1.20, "rail_post": 0.04, "rail_wall_t": 0.15}
+RAIL_KINDS = (("none", "None"), ("handrail", "Handrail"), ("steel", "Steel"),
+              ("glass", "Glass"), ("wall", "Low wall"))
+
+
+class _RailFields:
+    """A stair's / ramp's railing in its window (plan PLANO_GUARDA_CORPO
+    A2): its kind and its sizes — the chips (sides, infill…) stay in the
+    library. Pro: greyed in the Lite."""
+
+    def __init__(self, rec: dict, metres, on_change) -> None:
+        from PySide6.QtWidgets import QCheckBox
+
+        from . import edition
+        self.box = QWidget()
+        form = QFormLayout(self.box)
+        form.setContentsMargins(0, 8, 0, 0)
+        # its way through the slab above (a customer's ask, 2026-10-13)
+        self.f_cut = QCheckBox("Opens the slab it passes through")
+        self.f_cut.setChecked(bool(rec.get("cut", True)))
+        self.f_cut.setToolTip("Off: the slab stays whole — draw an opening "
+                              "of your own (Structure › Slab › Opening)")
+        self.f_cut.toggled.connect(on_change)
+        form.addRow("<b>Slab</b>", self.f_cut)
+        head = QLabel("<b>Railing</b>" + (" — ArchXQ IT Pro"
+                                          if edition.lite() else ""))
+        form.addRow(head)
+
+        def get(k):
+            v = rec.get(k)
+            return RAIL_DEFAULT[k] if v is None else v
+        self.f_kind = QComboBox()
+        for key, text in RAIL_KINDS:
+            self.f_kind.addItem(text, key)
+        self.f_kind.setCurrentIndex(max(0, self.f_kind.findData(
+            get("railing"))))
+        form.addRow("Kind", self.f_kind)
+        self.f = {}
+        for key, label, lo, hi, step, tip in (
+                ("rail_h", "Height", 0.80, 1.20, 0.01,
+                 "Its top over the nosings / the floor (NBR 9077: 0.80–0.92 "
+                 "for a handrail)"),
+                ("rail_d", "Handrail size", 0.03, 0.08, 0.005,
+                 "The tube's diameter (or side, square)"),
+                ("rail_ext", "Run on at the ends", 0.0, 0.60, 0.05,
+                 "The handrail goes on past the first and the last step "
+                 "(NBR 9050: 30 cm)"),
+                ("rail_inset", "In from the edge", 0.02, 0.20, 0.01,
+                 "How far inside the flight's edge it runs"),
+                ("rail_gap", "Post spacing (max)", 0.60, 2.00, 0.05,
+                 "Posts never further apart — on a stair, each on a tread"),
+                ("rail_post", "Post size", 0.02, 0.10, 0.005, ""),
+                ("rail_wall_t", "Low wall thickness", 0.08, 0.30, 0.01, "")):
+            w = metres(float(get(key)), lo, hi, step)
+            if step < 0.01:
+                w.setDecimals(3)
+                w.setValue(float(get(key)))   # again: 2 decimals rounded it
+            if tip:
+                w.setToolTip(tip)
+            form.addRow(label, w)
+            self.f[key] = w
+            w.valueChanged.connect(on_change)
+        self.f_low = QCheckBox("A second, lower handrail (0.70 m)")
+        self.f_low.setChecked(bool(get("rail_low")))
+        self.f_low.setToolTip("Ramps and accessible stairs: two heights "
+                              "(NBR 9050)")
+        form.addRow("", self.f_low)
+        self.f_kind.currentIndexChanged.connect(self.sync)
+        self.f_kind.currentIndexChanged.connect(on_change)
+        self.f_low.toggled.connect(on_change)
+        self.box.setEnabled(not edition.lite())
+        self.sync()
+
+    def sync(self, *_a) -> None:
+        k = self.f_kind.currentData()
+        on = k != "none"
+        for key, w in self.f.items():
+            w.setEnabled(on and (key != "rail_wall_t" or k == "wall")
+                         and (key not in ("rail_gap", "rail_post")
+                              or k in ("steel", "glass", "handrail")))
+        self.f_low.setEnabled(on and k != "wall")
+
+    def write(self, r: dict) -> None:
+        r["railing"] = self.f_kind.currentData()
+        for key, w in self.f.items():
+            r[key] = round(w.value(), 3)
+        r["rail_low"] = self.f_low.isChecked()
+        r["cut"] = self.f_cut.isChecked()
+
+
+#: the railing's sizes: (key, label, lo, hi, step, tip) — _RailFields' and
+#: RailTab's
+RAIL_SIZES = (
+    ("rail_h", "Height", 0.80, 1.20, 0.01,
+     "Its top over the nosings / the floor (NBR 9077: 0.80–0.92 for a "
+     "handrail)"),
+    ("rail_d", "Handrail size", 0.03, 0.08, 0.005,
+     "The tube's diameter (or side, square)"),
+    ("rail_ext", "Run on at the ends", 0.0, 0.60, 0.05,
+     "The handrail goes on past the first and the last step (NBR 9050: "
+     "30 cm)"),
+    ("rail_inset", "In from the edge", 0.02, 0.20, 0.01,
+     "How far inside the flight's edge it runs"),
+    ("rail_gap", "Post spacing (max)", 0.60, 2.00, 0.05,
+     "Posts never further apart — on a stair, each on a tread"),
+    ("rail_post", "Post size", 0.02, 0.10, 0.005, ""),
+    ("rail_wall_t", "Low wall thickness", 0.08, 0.30, 0.01, ""))
+
+
+def _pic_rail(kind):
+    """A railing kind as a small picture (the Railing tab's chips)."""
+    def draw(p, r, _on):
+        from . import look as L
+        p.setPen(L.pen(L.DIM, 2.0))
+        p.drawLine(QPointF(6, 36), QPointF(54, 36))
+        if kind == "none":
+            p.setPen(L.pen("#ff8a80", 1.5))
+            p.drawLine(QPointF(22, 14), QPointF(38, 28))
+            p.drawLine(QPointF(38, 14), QPointF(22, 28))
+            return
+        if kind == "wall":
+            L.poly(p, [(8, 14), (52, 14), (52, 36), (8, 36)], L.INK, 1.2,
+                   fill="#8a8f96")
+            return
+        if kind == "glass":
+            L.poly(p, [(9, 14), (51, 14), (51, 34), (9, 34)], L.BLUE, 1.0,
+                   fill="#5bc8e83a")
+        p.setPen(L.pen(L.BLUE, 2.6 if kind == "handrail" else 1.8))
+        p.drawLine(QPointF(6, 11), QPointF(54, 11))
+        p.setPen(L.pen(L.BLUE, 1.4))
+        if kind == "handrail":
+            for x in (12, 48):
+                p.drawLine(QPointF(x, 11), QPointF(x, 18))
+        else:
+            for x in (10, 30, 50):
+                p.drawLine(QPointF(x, 11), QPointF(x, 36))
+            if kind == "steel":
+                p.drawLine(QPointF(6, 23), QPointF(54, 23))
+    return draw
+
+
+def _draw_rail_sizes(p, r, hot, d):
+    """The railing over a flight, its sizes: H, run on, posts."""
+    from . import look as L
+    L.poly(p, [(8, 100), (38, 100), (38, 86), (68, 86), (68, 72), (98, 72),
+               (98, 58), (142, 58)], L.INK, 1.5)
+    p.setPen(L.pen(L.BLUE, 2.6 if hot == "rail_d" else 2.0))
+    if hot == "rail_d":
+        p.setPen(L.pen(L.GOLD, 3.0))
+    p.drawLine(QPointF(2, 52), QPointF(146, 24))
+    p.setPen(L.pen(L.GOLD if hot in ("rail_post", "rail_gap") else L.BLUE,
+                   1.6 if hot == "rail_post" else 1.1))
+    for x, y0 in ((23, 100), (53, 86), (83, 72), (113, 58)):
+        yt = 52 - (x - 2) * 28 / 144
+        p.drawLine(QPointF(x, yt), QPointF(x, y0))
+    L.dim(p, (132, 26), (132, 58), "H", hot == "rail_h", at=(136, 46))
+    L.dim(p, (23, 106), (53, 106), "", hot == "rail_gap")
+    L.text(p, 38, 118, "posts", L.GOLD if hot == "rail_gap" else L.BLUE,
+           align=Qt.AlignHCenter)
+    L.dim(p, (2, 60), (23, 60), "", hot == "rail_ext")
+    L.text(p, 2, 72, "run on", L.GOLD if hot == "rail_ext" else L.BLUE)
+
+
+class RailTab:
+    """A stair's / ramp's RAILING tab (the windows of 0.10.0): its kind as
+    pictures, its options as the library's chips (sides, infill, glass
+    fixing, handrail, …), its sizes beside a drawing. Writes the same keys
+    as the library and _RailFields. Pro: greyed in the Lite (its kinds)."""
+
+    def __init__(self, rec: dict, lay, metres, on_change, key: str) -> None:
+        from PySide6.QtWidgets import QCheckBox
+
+        from . import edition
+        from . import library as LB
+        from . import look as L
+        from . import railings as RL
+        self.on_change = on_change
+        lite = edition.lite()
+
+        def get(k):
+            v = rec.get(k)
+            return RL.DEFAULT.get(k, RAIL_DEFAULT.get(k)) if v is None else v
+        # its kind
+        self.fold_kind = L.Fold("Kind", f"{key}.rail.kind")
+        self.f_kind = L.Chips()
+        for k, text in RAIL_KINDS:
+            self.f_kind.addItem(text, k, pic=_pic_rail(k))
+        self.f_kind.setCurrentIndex(max(0, self.f_kind.findData(get("railing"))))
+        if lite:
+            for i in range(1, self.f_kind.count()):
+                self.f_kind.setItemEnabled(i, False)
+            self.f_kind.setToolTip("Railings are in ArchXQ IT Pro")
+        self.fold_kind.box.addWidget(self.f_kind)
+        lay.addWidget(self.fold_kind)
+        # its options — the library's chips, shown as they apply
+        self.fold_opts = L.Fold("Options", f"{key}.rail.options")
+        form = self.fold_opts.form()
+        self.opts = []
+        for part in LB.RAILING_PARTS:
+            if part.key == "railing" or part.kind != "chips":
+                continue
+            c = L.Chips()
+            for ch in part.choices:
+                c.addItem(ch[1], ch[0])
+            c.setCurrentIndex(max(0, c.findData(get(part.key))))
+            lab = QLabel(part.label)
+            form.addRow(lab, c)
+            c.currentIndexChanged.connect(self._sync)
+            self.opts.append((part, lab, c))
+        lay.addWidget(self.fold_opts)
+        # its sizes
+        self.fold_sizes = L.Fold("Sizes", f"{key}.rail.sizes")
+        self.drawing = L.Drawing(_draw_rail_sizes, 150, 124)
+        form = self.fold_sizes.form(self.drawing)
+        self.f = {}
+        self.rows = {}
+        for k, label, lo, hi, step, tip in RAIL_SIZES:
+            w = metres(float(get(k)), lo, hi, step)
+            if step < 0.01:
+                w.setDecimals(3)
+                w.setValue(float(get(k)))
+            if tip:
+                w.setToolTip(tip)
+            lab = QLabel(label)
+            form.addRow(lab, w)
+            self.f[k] = w
+            self.rows[k] = lab
+            self.drawing.link(w, k)
+            w.valueChanged.connect(self._sync)
+        self.f_low = QCheckBox("A second, lower handrail (0.70 m)")
+        self.f_low.setChecked(bool(get("rail_low")))
+        self.f_low.setToolTip("Ramps and accessible stairs: two heights "
+                              "(NBR 9050)")
+        form.addRow("", self.f_low)
+        self.f_low.toggled.connect(self._sync)
+        lay.addWidget(self.fold_sizes)
+        self.f_kind.currentIndexChanged.connect(self._sync)
+        if lite:
+            self.fold_opts.setEnabled(False)
+            self.fold_sizes.setEnabled(False)
+        self._sync(quiet=True)
+
+    def _record(self) -> dict:
+        r = {"railing": self.f_kind.currentData()}
+        for part, _lab, c in self.opts:
+            r[part.key] = c.currentData()
+        for k, w in self.f.items():
+            r[k] = round(w.value(), 3)
+        r["rail_low"] = self.f_low.isChecked()
+        return r
+
+    def _sync(self, *_a, quiet: bool = False) -> None:
+        r = self._record()
+        k = r["railing"]
+        on = k != "none"
+        self.fold_opts.setVisible(on)
+        self.fold_sizes.setVisible(on)
+        for part, lab, c in self.opts:
+            shown = part.show is None or bool(part.show(r))
+            lab.setVisible(shown)
+            c.setVisible(shown)
+        for key, w in self.f.items():
+            shown = (key != "rail_wall_t" or k == "wall") and (
+                key not in ("rail_gap", "rail_post")
+                or k in ("steel", "glass", "handrail"))
+            w.setVisible(shown)
+            self.rows[key].setVisible(shown)
+        self.f_low.setVisible(k != "wall")
+        self.fold_kind.set_pick(self.f_kind.currentText())
+        self.fold_sizes.set_pick(f"{r['rail_h']:.2f} high")
+        side = next((c.currentText() for part, _l, c in self.opts
+                     if part.key == "rail_sides"), "")
+        self.fold_opts.set_pick(f"Sides: {side}" if side else "")
+        if not quiet:
+            self.on_change()
+
+    def write(self, r: dict) -> None:
+        r.update(self._record())
+
+    def summary(self) -> str:
+        return ("no railing" if self.f_kind.currentData() == "none"
+                else self.f_kind.currentText().lower() + " railing")
+
+
+class FlightPlan(QWidget):
+    """A ramp / stair seen from above, live (the windows of 0.10.0): its
+    runs (a stair's treads), the landing, the way it goes from the click —
+    drawn upwards on the page, whatever its angle. ``pieces(r)`` gives its
+    plan pieces (ramps.pieces / stairs.layout)."""
+
+    EMPTY = "Same height at both ends"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setMinimumSize(280, 230)
+        self.r = None
+        self.zs = self.ze = 0.0
+        self.kw = {}
+
+    def set(self, r, zs, ze, known=True, **kw) -> None:
+        self.r, self.zs, self.ze, self.kw = r, zs, ze, kw
+        self.update()
+
+    def pieces(self, r) -> list:
+        raise NotImplementedError
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        from . import look as L
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(L.FIELD))
+        try:
+            self._paint(p, L)
+        except Exception:  # noqa: BLE001 — a preview never breaks the window
+            import traceback
+            traceback.print_exc()
+        finally:
+            p.end()
+
+    def _paint(self, p, L) -> None:
+        if self.r is None or abs(self.zs - self.ze) < 0.05:
+            p.setPen(QColor(L.MUTED))
+            p.drawText(self.rect(), Qt.AlignCenter, self.EMPTY)
+            return
+        r = dict(self.r, x=0.0, y=0.0, angle=90.0)
+        ps = self.pieces(r)
+        polys = [piece_corners(pc) for pc in ps]
+        xs = [q[0] for pg in polys for q in pg]
+        ys = [q[1] for pg in polys for q in pg]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        rr = QRectF(self.rect()).adjusted(18, 16, -18, -26)
+        k = min(rr.width() / max(x1 - x0, 0.5), rr.height() / max(y1 - y0, 0.5))
+        ox = rr.left() + (rr.width() - (x1 - x0) * k) / 2
+        oy = rr.top() + (rr.height() - (y1 - y0) * k) / 2
+
+        def q(x, y):
+            return QPointF(ox + (x - x0) * k, oy + (y1 - y) * k)
+        for pc, pg in zip(ps, polys):
+            run = pc.get("run", True)
+            p.setPen(L.pen(L.INK, 1.5))
+            p.setBrush(QColor("#34373c" if run else "#2a2c30"))
+            p.drawPolygon(QPolygonF([q(*a) for a in pg]))
+            p.setBrush(Qt.NoBrush)
+            if run and pc.get("m", 0) >= 2:       # a stair's treads
+                (cx, cy), (dx, dy) = pc["c"], pc["d"]
+                rx, ry = dy, -dx
+                h = pc["w"] / 2
+                p.setPen(L.pen(L.DIM, 1.0))
+                for j in range(1, pc["m"] - 1):
+                    s = j * pc["p"]
+                    p.drawLine(q(cx + dx * s + rx * h, cy + dy * s + ry * h),
+                               q(cx + dx * s - rx * h, cy + dy * s - ry * h))
+        # the way: along the runs' middles, through the landing
+        runs = [pc for pc in ps if pc.get("run", True)]
+        a = runs[0]
+        (cx, cy), (dx, dy) = a["c"], a["d"]
+        path = [(cx, cy), (cx + dx * a["l"], cy + dy * a["l"])]
+        if len(runs) > 1:
+            b = runs[1]
+            (bx, by), (ex, ey) = b["c"], b["d"]
+            land = next((pc for pc in ps if not pc.get("run", True)), None)
+            if r.get("shape") == "U" and land is not None:
+                m = land["l"] / 2
+                path += [(path[-1][0] + dx * m, path[-1][1] + dy * m),
+                         (bx - ex * m, by - ey * m)]
+            else:
+                back = b["w"] / 2
+                path += [(bx - ex * back, by - ey * back)]
+            path += [(bx, by), (bx + ex * b["l"], by + ey * b["l"])]
+        up = (self.ze - self.zs) > 0
+        L.poly(p, [(q(*a_).x(), q(*a_).y()) for a_ in path], L.BLUE, 2.0)
+        e, f = q(*path[-1]), q(*path[-2])
+        ang = math.atan2(e.y() - f.y(), e.x() - f.x())
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(L.BLUE))
+        p.drawPolygon(QPolygonF([
+            e, QPointF(e.x() - 9 * math.cos(ang - 0.45),
+                       e.y() - 9 * math.sin(ang - 0.45)),
+            QPointF(e.x() - 9 * math.cos(ang + 0.45),
+                    e.y() - 9 * math.sin(ang + 0.45))]))
+        s0 = q(*path[0])
+        p.setBrush(QColor(L.ACCENT))
+        p.drawEllipse(s0, 5, 5)
+        p.setBrush(Qt.NoBrush)
+        L.text(p, s0.x(), s0.y() + 19, "UP" if up else "DOWN", L.MUTED, 8,
+               False, align=Qt.AlignHCenter)
+
+
+def _ic_ramp(p, r, _on):
+    from . import look as L
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#3a2f1c"))
+    p.drawRoundedRect(r, 8, 8)
+    L.poly(p, [(6, 31), (34, 31), (34, 12), (6, 31)], L.GOLD, 2.4)
+
+
+def _draw_ramp_levels(p, r, hot, d):
+    """Its two ends, the height between them."""
+    from . import look as L
+    p.setPen(L.pen("#8a8f96", 3.0))
+    p.drawLine(QPointF(8, 78), QPointF(50, 78))
+    p.drawLine(QPointF(100, 22), QPointF(142, 22))
+    p.setPen(L.pen(L.INK, 1.6, dash=True))
+    p.drawLine(QPointF(50, 78), QPointF(100, 22))
+    L.dim(p, (144, 22), (144, 78), "", hot == "z")
+    L.text(p, 139, 54, d.get("h", ""), L.GOLD if hot == "z" else L.BLUE,
+           align=Qt.AlignRight)
+    L.text(p, 8, 72, d.get("lo", ""), L.MUTED, 7, False)
+    L.text(p, 100, 16, d.get("hi", ""), L.MUTED, 7, False)
+
+
+def _draw_slope(p, r, hot, d):
+    """The ramp from its side: its slope (%), its length, its thickness."""
+    from . import look as L
+    L.poly(p, [(10, 86), (138, 30), (138, 42), (10, 98)], L.INK, 1.4,
+           fill="#4a4d52")
+    p.setPen(L.pen(L.DIM, 1.0, dash=True))
+    p.drawLine(QPointF(10, 86), QPointF(138, 86))
+    L.dim(p, (138, 30), (138, 86), "", hot == "slope", ticks=False)
+    L.text(p, 100, 74, d.get("slope", "%"), L.GOLD if hot == "slope"
+           else L.BLUE)
+    L.dim(p, (10, 104), (138, 104), "", hot == "L")
+    L.text(p, 74, 117, d.get("L", "length"), L.GOLD if hot == "L" else L.BLUE,
+           align=Qt.AlignHCenter)
+    L.dim(p, (40, 73), (45, 85), "", hot == "t", ticks=False)
+    L.text(p, 26, 70, "t", L.GOLD if hot == "t" else L.BLUE)
+
+
+def _pic_ramp_shape(shape):
+    def draw(p, r, _on):
+        from . import look as L
+        if shape == "straight":
+            L.poly(p, [(20, 2), (40, 2), (40, 42), (20, 42)], L.INK, 1.5,
+                   close=True)
+            L.poly(p, [(30, 40), (30, 6)], L.BLUE, 1.4)
+            L.poly(p, [(27, 10), (30, 6), (33, 10)], L.BLUE, 1.4)
+        elif shape == "L":
+            L.poly(p, [(14, 42), (14, 2), (46, 2), (46, 18), (30, 18), (30, 42)],
+                   L.INK, 1.5, close=True)
+            p.setPen(L.pen(L.DIM, 1.0))
+            p.drawLine(QPointF(14, 18), QPointF(30, 18))
+            p.drawLine(QPointF(30, 2), QPointF(30, 18))
+            L.poly(p, [(22, 40), (22, 10), (43, 10)], L.BLUE, 1.4)
+        else:
+            L.poly(p, [(12, 42), (12, 2), (48, 2), (48, 42), (32, 42), (32, 16),
+                       (28, 16), (28, 42)], L.INK, 1.5, close=True)
+            p.setPen(L.pen(L.DIM, 1.0))
+            p.drawLine(QPointF(12, 16), QPointF(48, 16))
+            L.poly(p, [(20, 40), (20, 9), (40, 9), (40, 39)], L.BLUE, 1.4)
+    return draw
+
+
+class _RampPlan(FlightPlan):
+    EMPTY = "Same height at both ends —\nnothing to ramp"
+
+    def pieces(self, r) -> list:
+        return pieces(r, self.zs, self.ze, float(self.kw.get("L", 1.0)))
+
+
+#: the usual slopes, a click each (NBR 9050: 8.33 % for people)
+SLOPES = ((8.33, "8.33 % people", "NBR 9050: the most for an accessible "
+                                  "ramp"),
+          (12.5, "12.5 %", "A short ramp for people (NBR 9050 allows it "
+                           "only in a few cases)"),
+          (20.0, "20 % cars", "Usual for a garage ramp"))
+
+
 class RampDialog(QDialog):
     """Set a ramp up (``edit`` False: before drawing it) or change one
     (``edit`` True: its name, where it is, delete). ``result_data()`` →
-    (action, record) — action "apply" | "delete"."""
+    (action, record) — action "apply" | "delete".
+
+    The window of 0.10.0 (look.py, as the stair's): tabs Geometry · Build ·
+    Railing · Position (+ Material), folds with drawings, picture chips, a
+    live plan / side preview with its numbers and the slope's check. The
+    fields and the record are the old window's."""
 
     def __init__(self, rec: dict, doc: dict, elevations, edit: bool = False,
                  parent=None) -> None:
+        from PySide6.QtWidgets import QToolButton
+
+        from . import look as L
         from .dialogs import _metres, ok_apply
-        from .help import help_button
         super().__init__(parent)
         self.rec = dict(rec)
         self.doc = doc
@@ -551,90 +1080,129 @@ class RampDialog(QDialog):
         self.edit = edit
         self.action = "apply"
         self.setWindowTitle("Ramp")
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(900)
+        L.dress(self)
         lay = QVBoxLayout(self)
-        head = QHBoxLayout()
-        title = QLabel(rec.get("name") or "Ramp")
-        f = title.font()
-        f.setPointSize(f.pointSize() + 4)
-        f.setBold(True)
-        title.setFont(f)
-        head.addWidget(title)
-        head.addStretch()
-        head.addWidget(help_button("ramp"))
-        lay.addLayout(head)
+        lay.setContentsMargins(14, 10, 14, 12)
+        lay.setSpacing(6)
+        self.head = L.Header(_ic_ramp, rec.get("name") or "Ramp", "ramp",
+                             editable=edit)
+        self.f_name = self.head.name if edit else None
+        lay.addWidget(self.head)
+        self.tabs = L.Tabs()
+        self._axq_tabs = self.tabs            # materials.with_tab: «Material»
+        lay.addWidget(self.tabs.bar)
+        lay.addWidget(L.rule())
 
-        body = QHBoxLayout()
-        form = QFormLayout()
-        levels = doc["levels"]
-        self.f_name = None
-        if edit:
-            self.f_name = QLineEdit(rec.get("name", ""))
-            form.addRow("Name", self.f_name)
+        # ---- Geometry ------------------------------------------------------------
+        geo, gl = L.page()
+        self.fold_lv = L.Fold("Levels", "ramp.levels")
+        self.d_lv = L.Drawing(_draw_ramp_levels, 150, 90)
+        form = self.fold_lv.form(self.d_lv)
         # WHERE — its top over its bottom, and where the click is
-        self.ends = _Ends(doc, elevations, rec, form, _metres)
-        # SIZE
-        self.f_w = _metres(float(rec.get("w", 3.0)), 0.5, 30.0)
+        self.ends = _Ends(doc, elevations, rec, form, _metres, choice=L.Chips)
+        self.d_lv.link(self.ends.f_z, "z")
+        gl.addWidget(self.fold_lv)
+
+        self.fold_size = L.Fold("Slope & size", "ramp.size")
+        self.d_size = L.Drawing(_draw_slope, 150, 124)
+        form = self.fold_size.form(self.d_size)
+        self.f_w = L.metres(float(rec.get("w", 3.0)), 0.5, 30.0)
         form.addRow("Width", self.f_w)
-        self.f_slope = QDoubleSpinBox()
-        self.f_slope.setRange(SLOPE_MIN, SLOPE_MAX)
-        self.f_slope.setDecimals(1)
+        self.f_slope = L.Measure(float(rec.get("slope", 20.0)), SLOPE_MIN,
+                                 SLOPE_MAX, 0.1, suffix=" %")
         self.f_slope.setSingleStep(1.0)
-        self.f_slope.setSuffix(" %")
-        self.f_slope.setValue(float(rec.get("slope", 20.0)))
-        self.f_slope.setToolTip("How steep: 20 % is usual for cars, 8 % for "
-                                "people — the length follows from it")
+        self.f_slope.setToolTip("How steep: 20 % is usual for cars, 8.33 % "
+                                "for people — the length follows from it")
         form.addRow("Slope", self.f_slope)
+        presets = QWidget()
+        pl_ = QHBoxLayout(presets)
+        pl_.setContentsMargins(0, 0, 0, 0)
+        pl_.setSpacing(6)
+        for v, text, tip in SLOPES:
+            b = QToolButton()
+            b.setObjectName("axqChip")
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, v=v: self.f_slope.setValue(v))
+            pl_.addWidget(b)
+        pl_.addStretch(1)
+        form.addRow("", presets)
         # the length too, for special cases: type it and the slope follows
         self.fix = rec.get("fix", "slope")
         self._quiet = False
-        self.f_len = _metres(float(rec.get("L", 15.0)), 0.5, 500.0, 0.10)
+        self.f_len = L.metres(float(rec.get("L", 15.0)), 0.5, 500.0, 0.10)
         self.f_len.setToolTip("Type a length for a special case: the slope "
                               "then follows from it")
         form.addRow("Length", self.f_len)
-        self.f_hint = QLabel()
-        self.f_hint.setEnabled(False)
+        self.f_hint = L.hint("")
         form.addRow("", self.f_hint)
-        self.f_t = _metres(float(rec.get("t", 0.15)), 0.05, 1.0, 0.01)
+        self.f_t = L.metres(float(rec.get("t", 0.15)), 0.05, 1.0, 0.01)
         form.addRow("Thickness", self.f_t)
+        for w, key in ((self.f_slope, "slope"), (self.f_len, "L"),
+                       (self.f_t, "t")):
+            self.d_size.link(w, key)
+        gl.addWidget(self.fold_size)
+
         # SHAPE — straight, or turning on a level landing (L: 90°, U: back)
-        from PySide6.QtWidgets import QButtonGroup
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        self.g_shape = QButtonGroup(self)
+        self.fold_shape = L.Fold("Shape", "ramp.shape")
+        self.f_shape = L.Chips()
         for key, text, tip in (("straight", "Straight", "One run"),
                                ("L", "L", "Two runs, a landing, a 90° turn"),
                                ("U", "U", "Two runs side by side, a landing "
                                           "across both")):
-            b = QPushButton(text)
-            b.setCheckable(True)
-            b.setToolTip(tip)
-            b.setProperty("shape", key)
-            b.setChecked(rec.get("shape", "straight") == key)
-            self.g_shape.addButton(b)
-            rl.addWidget(b)
-        rl.addStretch()
-        # the shape picked has to be seen at a glance
-        row.setStyleSheet(
-            f"QPushButton {{ padding: 4px 16px; min-width: 70px; }}"
-            f"QPushButton:checked {{ border: 1px solid {ACCENT}; "
-            "background: #4a3324; color: white; font-weight: bold; }")
-        form.addRow("Shape", row)
-        self.f_turn = QComboBox()
-        self.f_turn.addItem("Turning right", "right")
-        self.f_turn.addItem("Turning left", "left")
+            self.f_shape.addItem(text, key, tip, pic=_pic_ramp_shape(key))
+        self.f_shape.setCurrentIndex(max(0, self.f_shape.findData(
+            rec.get("shape", "straight"))))
+        self.fold_shape.box.addWidget(self.f_shape)
+        form = self.fold_shape.form()
+        self.f_turn = L.Chips(width=70)
+        self.f_turn.addItem("Right", "right")
+        self.f_turn.addItem("Left", "left")
         self.f_turn.setCurrentIndex(1 if rec.get("turn") == "left" else 0)
         self.f_turn.setToolTip("The side the second run goes to (Tab, while "
                                "placing it, swaps it)")
         form.addRow("Turn", self.f_turn)
-        self.f_land = _metres(float(rec.get("landing", 3.0)), 0.5, 50.0)
+        self.f_land = L.metres(float(rec.get("landing", 3.0)), 0.5, 50.0)
         self.f_land.setToolTip("The level landing between the two runs (an "
                                "L's is never shorter than the ramp is wide)")
         form.addRow("Landing", self.f_land)
-        self.f_anchor = _anchor_box(rec)
-        form.addRow("Insert at", self.f_anchor)
+        gl.addWidget(self.fold_shape)
+        gl.addStretch(1)
+        self.tabs.addTab(geo, "Geometry", "geometry")
+
+        # ---- Build ---------------------------------------------------------------
+        bld, bl = L.page()
+        self.fold_cut = L.Fold("Opening in the slab", "ramp.cut")
+        self.f_cut = L.Chips()
+        self.f_cut.addItem("Auto — it opens the slab it passes through", True)
+        self.f_cut.addItem("None", False)
+        self.f_cut.setCurrentIndex(0 if rec.get("cut", True) else 1)
+        self.fold_cut.box.addWidget(self.f_cut)
+        self.fold_cut.box.addWidget(L.hint(
+            "None: the slab stays whole — draw an opening of your own "
+            "(Structure › Slab › Opening, any shape)."))
+        bl.addWidget(self.fold_cut)
+        bl.addStretch(1)
+        self.tabs.addTab(bld, "Build", "build")
+
+        # ---- Railing -------------------------------------------------------------
+        rail, rl_ = L.page()
+        self.rails = RailTab(rec, rl_, L.metres, self._sync, "ramp")
+        rl_.addStretch(1)
+        self.tabs.addTab(rail, "Railing", "railing")
+
+        # ---- Position ------------------------------------------------------------
+        pos, pl = L.page()
+        self.fold_anchor = L.Fold("Insert at", "ramp.anchor")
+        self.f_anchor = _anchor_box(rec, chips=True)
+        self.fold_anchor.box.addWidget(self.f_anchor)
+        pl.addWidget(self.fold_anchor)
         if edit:                          # where it is (the tool set it)
+            self.fold_place = L.Fold("Placement", "ramp.place")
+            self.d_dial = L.Drawing(L.draw_dial, 150, 104)
+            form = self.fold_place.form(self.d_dial)
             self.f_x = _metres(float(rec["x"]), -10000.0, 10000.0)
             self.f_y = _metres(float(rec["y"]), -10000.0, 10000.0)
             self.f_a = QDoubleSpinBox()
@@ -646,47 +1214,78 @@ class RampDialog(QDialog):
             form.addRow("Start X", self.f_x)
             form.addRow("Start Y", self.f_y)
             form.addRow("Direction", self.f_a)
-        body.addLayout(form, 1)
+            self.d_dial.link(self.f_a, "a")
+            pl.addWidget(self.fold_place)
+        else:
+            pl.addWidget(L.hint(
+                "OK: back to the plan — click where it starts (its bottom "
+                "or its top — «Starts at»; a corner or the middle — «Insert "
+                "at»), then the way it goes."))
+        pl.addStretch(1)
+        self.tabs.addTab(pos, "Position", "position")
+        self._own = self.tabs.count()
+
+        # ---- the pages + the preview beside them ---------------------------------
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        body.addWidget(self.tabs.stack, 5)
+        self.view_pick = L.Chips()
+        self.view_pick.addItem("Plan", "plan")
+        self.view_pick.addItem("Side", "side")
+        card = L.Card("Preview", self.view_pick)
+        self.plan = _RampPlan()
         self.profile = _Profile()
-        body.addWidget(self.profile, 1)
-        lay.addLayout(body)
-        if not edit:
-            note = QLabel("OK opens the plan: click where it starts (its "
-                          "bottom or its top — «Starts at»; a corner or the "
-                          "middle — «Insert at»), then the way it goes.")
-            note.setWordWrap(True)
-            note.setEnabled(False)
-            lay.addWidget(note)
+        self.profile.hide()
+        card.box.addWidget(self.plan, 1)
+        card.box.addWidget(self.profile, 1)
+        self.stats = L.Stats(4)
+        card.box.addWidget(self.stats)
+        self.badge = L.Badge()
+        card.box.addWidget(self.badge)
+        self.side = card
+        body.addWidget(card, 4)
+        lay.addLayout(body, 1)
+        self.view_pick.currentIndexChanged.connect(self._pick_view)
+        self.tabs.currentChanged.connect(
+            lambda i: self.side.setVisible(i < self._own))
+
+        # ---- the buttons ---------------------------------------------------------
+        lay.addWidget(L.rule())
         acts = QHBoxLayout()
-        acts.addStretch()
         if edit:
             from .dialogs import hide_button
             acts.addWidget(_repeat_button(self, "ramp"))
             acts.addWidget(hide_button(self))
             b_del = QPushButton("Delete ramp")
+            b_del.setObjectName("axqDanger")
             b_del.clicked.connect(self._delete)
             acts.addWidget(b_del)
-        lay.addLayout(acts)
+        acts.addStretch(1)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         if edit:
             ok_apply(self, bb)
-        else:
-            bb.button(QDialogButtonBox.Ok).setText("OK — place it")
+        L.ok_button(bb)
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
-        for w in self.ends.widgets():
+        acts.addWidget(bb)
+        lay.addLayout(acts)
+
+        for w in self.ends.widgets() + (self.f_turn, self.f_shape,
+                                        self.f_cut, self.f_anchor):
             w.currentIndexChanged.connect(self._sync)
         for w in (self.ends.f_z, self.f_w, self.f_t, self.f_land):
             w.valueChanged.connect(self._sync)
-        self.f_turn.currentIndexChanged.connect(self._sync)
-        self.g_shape.buttonClicked.connect(self._sync)
         self.f_slope.valueChanged.connect(lambda _v: self._given("slope"))
         self.f_len.valueChanged.connect(lambda _v: self._given("length"))
         if edit:
-            for w in (self.f_x, self.f_y):
+            for w in (self.f_x, self.f_y, self.f_a):
                 w.valueChanged.connect(self._sync)
         self._sync()
+
+    def _pick_view(self, *_a) -> None:
+        side = self.view_pick.currentData() == "side"
+        self.profile.setVisible(side)
+        self.plan.setVisible(not side)
 
     def _record(self) -> dict:
         r = dict(self.rec)
@@ -698,11 +1297,12 @@ class RampDialog(QDialog):
         r["fix"] = self.fix
         r["L"] = round(self.f_len.value(), 3)
         r["t"] = round(self.f_t.value(), 3)
-        b = self.g_shape.checkedButton()
-        r["shape"] = b.property("shape") if b is not None else "straight"
+        r["shape"] = self.f_shape.currentData() or "straight"
         r["turn"] = self.f_turn.currentData()
         r["landing"] = round(self.f_land.value(), 3)
         r["anchor"] = self.f_anchor.currentData()
+        self.rails.write(r)
+        r["cut"] = bool(self.f_cut.currentData())
         if self.edit:
             r["x"] = round(self.f_x.value(), 4)
             r["y"] = round(self.f_y.value(), 4)
@@ -760,6 +1360,41 @@ class RampDialog(QDialog):
             land = max(r["landing"], r["w"]) if r["shape"] == "L" \
                 else r["landing"]
         self.profile.set(zs, ze, L, round(slope, 1), known, land, r["shape"])
+        self.plan.set(r, zs, ze, known, L=L)
+        drop = abs(ze - zs)
+
+        def name(box):
+            return box.currentText().split("  (")[0].strip()
+        lo, hi = name(self.ends.f_bottom), name(self.ends.f_top)
+        shape = {"L": "L", "U": "U"}.get(r["shape"], "Straight")
+        if turning:
+            shape += f", turning {r['turn']}"
+        self.head.set_summary([
+            f"{lo} → {hi}", "{" + f"{drop:.2f} m" + "}",
+            "{" + f"{slope:.1f} %" + "}", "{" + f"{L:.2f} m" + "} long",
+            shape, self.rails.summary()])
+        self.fold_lv.set_pick(f"{lo} → {hi}")
+        self.fold_size.set_pick(f"{r['w']:.2f} wide · {slope:.1f} %")
+        self.fold_shape.set_pick(shape)
+        self.fold_cut.set_pick("Auto" if r["cut"] else "None")
+        self.fold_anchor.set_pick(self.f_anchor.currentText())
+        self.d_lv.set(h=f"{drop:.2f}", lo=lo, hi=hi)
+        self.d_size.set(slope=f"{slope:.1f} %", L=f"{L:.2f} m")
+        if self.edit:
+            self.fold_place.set_pick(f"{r['x']:.2f}, {r['y']:.2f} · "
+                                     f"{r['angle'] % 360:.0f}°")
+            self.d_dial.set(a=r["angle"])
+        self.stats.set([(f"{slope:.1f} %", "slope"), (f"{L:.2f} m", "length"),
+                        (f"{drop:.2f} m", "height"),
+                        (f"{land:.2f} m", "landing") if turning
+                        else (f"{r['w']:.2f} m", "wide")])
+        if slope <= 8.335:
+            self.badge.set(True, "Accessible: NBR 9050 ≤ 8.33 %")
+        elif slope <= 20.0:
+            self.badge.set(True, "Vehicle ramp (≤ 20 %) — steeper than "
+                                 "NBR 9050's 8.33 % for people")
+        else:
+            self.badge.set(False, "Steeper than 20 % — check it")
 
     def _ok(self) -> None:
         r = self._record()

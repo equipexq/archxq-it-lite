@@ -599,6 +599,16 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
     # -- the block: sides down to a flat bottom under everything ---------------------
     if thick > 0:
         zb = z0 + min(p[2] for p in TP) - thick
+        # the footings and the columns' feet are under the ground too (a
+        # customer's report, 2026-10-13: they poked out under its bottom)
+        try:
+            from . import model
+            from . import structure
+            deep = structure.deepest_below(doc, model.elevations)
+        except Exception:  # noqa: BLE001 — the ground as before
+            deep = None
+        if deep is not None:
+            lowest = deep if lowest is None else min(lowest, deep)
         if lowest is not None:
             zb = min(zb, lowest - MIN_THICK)
         bot = [(p[0], p[1], zb) for p in pts]

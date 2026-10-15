@@ -52,18 +52,23 @@ def symbol_lines(o: dict, wall: dict, seg) -> list:
     def P(s, c):
         return (p0[0] + u[0] * s + n[0] * c, p0[1] + u[1] * s + n[1] * c)
     lines = [(P(s0, -t), P(s0, t)), (P(s1, -t), P(s1, t))]
-    if o["kind"] == "window":
+    if o.get("op") == "shop" and o["kind"] in ("door", "window"):
+        from .shopfront import plan_lines
+        return plan_lines(o, wall, P, s0, s1, t)
+    if o["kind"] == "window" and o.get("op") in S.WIN_KINDS:
+        lines += _window_lines(o, wall, P, s0, s1, t, u, n)
+    elif o["kind"] == "window":
         for c in (-t / 3, t / 3):
             lines.append((P(s0, c), P(s1, c)))
     elif o["kind"] == "door" and o.get("op") == "sliding":
         lines += _sliding_lines(o, wall, P, s0, s1, t)
     elif o["kind"] == "door" and int(o.get("leaves", 1) or 1) == 2:
-        inside = 1.0 if float(wall.get("side", 1)) >= 0 else -1.0
+        inside = S.door_side(o, wall)
         m = (s0 + s1) / 2
         for hinge, away in ((s0, 1.0), (s1, -1.0)):   # a pair, each half
             lines += _swing_lines(P, hinge, away, inside, t, m - s0, u, n)
     elif o["kind"] == "door":
-        inside = 1.0 if float(wall.get("side", 1)) >= 0 else -1.0
+        inside = S.door_side(o, wall)
         hinge = s0 if o.get("swing", "left") == "left" else s1
         away = 1.0 if hinge == s0 else -1.0
         h = P(hinge, inside * t)
@@ -77,6 +82,42 @@ def symbol_lines(o: dict, wall: dict, seg) -> list:
                 h[1] + r * math.sin(a0 + da * k / 12)) for k in range(13)]
         lines += list(zip(pts, pts[1:]))               # the swing
     return lines
+
+
+def _window_lines(o, wall, P, s0, s1, t, u, n) -> list:
+    """A window with leaves in plan: SLIDING — its leaves in two tracks
+    and an arrow; CASEMENT — each leaf's swing, thin, open 90°; AWNING —
+    dashes outward from its line (it tilts out)."""
+    op, k = o.get("op"), S.window_leaves(o)
+    if op == "sliding":
+        d, lap = 0.03, 0.05
+        lw = (s1 - s0 + (k - 1) * lap) / k
+        tracks = S.WIN_TRACKS[k]
+        out = []
+        for i in range(k):
+            a = s0 + i * (lw - lap)
+            c0, c1 = (0.0, d) if tracks[i] == "F" else (-d, 0.0)
+            out += [(P(a, c0), P(a + lw, c0)), (P(a + lw, c0), P(a + lw, c1)),
+                    (P(a + lw, c1), P(a, c1)), (P(a, c1), P(a, c0))]
+        m = (s0 + s1) / 2
+        return out + _arrow(P, m - 0.15, m + 0.15, t + 0.08)
+    if op == "casement":
+        inside = S.door_side(o, wall)
+        if k == 1:
+            left = o.get("swing", "left") == "left"
+            hinge = s0 if left else s1
+            return _swing_lines(P, hinge, 1.0 if left else -1.0, inside, t,
+                                s1 - s0, u, n)
+        m = (s0 + s1) / 2
+        return (_swing_lines(P, s0, 1.0, inside, t, m - s0, u, n)
+                + _swing_lines(P, s1, -1.0, inside, t, m - s0, u, n))
+    # awning: three short dashes outward, the way it opens
+    so = -S.door_side(dict(o, out=False), wall)
+    out = [(P(s0, 0.0), P(s1, 0.0))]
+    for f in (0.25, 0.5, 0.75):
+        s = s0 + (s1 - s0) * f
+        out.append((P(s, so * (t + 0.03)), P(s, so * (t + 0.15))))
+    return out
 
 
 def _swing_lines(P, hinge, away, inside, t, r, u, n) -> list:
@@ -118,7 +159,7 @@ def _sliding_lines(o, wall, P, s0, s1, t) -> list:
         for a, b, c in arrows:
             out += _arrow(P, a, b, c)
         return out
-    inside = 1.0 if float(wall.get("side", 1)) >= 0 else -1.0
+    inside = S.door_side(o, wall)
     c0, c1 = inside * (t + 0.01), inside * (t + 0.05)
     out = box(s0 - 0.05, s1 + 0.05, c0, c1)
     w = s1 - s0
@@ -134,6 +175,47 @@ def _arrow(P, a, b, c) -> list:
     tip = P(b, c)
     return [(P(a, c), tip), (P(b - k, c - 0.05), tip),
             (P(b - k, c + 0.05), tip)]
+
+
+PLAN_CUT = 1.20       # m over the floor: where a plan cuts (as the sheets)
+
+
+def cut_in_plan(o: dict) -> bool:
+    """Does a plan cut through it? A door always; a window when the cut
+    height falls between its sill and its head — a high window stays
+    under the wall, as plans draw it."""
+    if o["kind"] != "window":
+        return True
+    sill = float(o.get("sill", 0.0) or 0.0)
+    return sill <= PLAN_CUT < sill + float(o["h"])
+
+
+def cut_quad(o: dict, wall: dict, seg) -> list:
+    """The wall's stretch an opening takes, in plan: 4 (x, y) points —
+    painted over in the wall's own colour, the wall reads cut there."""
+    p0, u = seg.p0, seg.u
+    n = (-u[1], u[0])
+    t = float(wall["t"]) / 2
+    s0, s1 = o["pos"] - o["w"] / 2, o["pos"] + o["w"] / 2
+    return [(p0[0] + u[0] * s + n[0] * c, p0[1] + u[1] * s + n[1] * c)
+            for s, c in ((s0, -t), (s1, -t), (s1, t), (s0, t))]
+
+
+def fill_quads(viewport, painter, quads, z, colour) -> None:
+    """Fill each quad and stroke it in the same colour (2 px): the wall's
+    face lines, right on its edge, go under it too."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QPen, QPolygonF
+    painter.save()
+    painter.setRenderHint(painter.RenderHint.Antialiasing, False)
+    c = QColor(colour)
+    painter.setPen(QPen(c, 2.0))
+    painter.setBrush(c)
+    for q in quads:
+        pts = [compat.to_pixel(viewport, x, y, z) for x, y in q]
+        if all(pts):
+            painter.drawPolygon(QPolygonF([QPointF(p[0], p[1]) for p in pts]))
+    painter.restore()
 
 
 def draw_lines(viewport, painter, lines, z, ink, width=1.6) -> None:
@@ -202,6 +284,18 @@ class OpeningTool(_PlotTool):
             rec["leaves"] = int(o.get("leaves", 1) or 1)
             rec["leaf"] = o.get("leaf", "solid")
             rec["open"] = o.get("open", 0.0)
+            rec["out"] = bool(o.get("out", False))   # opens to the outside
+        if self.kind == "window" and o.get("op") in S.WIN_KINDS:
+            rec["op"] = o["op"]                      # a window with leaves
+            rec["leaves"] = S.window_leaves(o)
+            rec["out"] = bool(o.get("out", False))
+            rec["open"] = o.get("open", 0.0)
+        if o.get("op") == "shop" and self.kind in ("door", "window"):
+            from .shopfront import DEFAULTS          # a shopfront's own
+            rec["op"] = "shop"
+            rec.update({k: o.get(k, v) for k, v in DEFAULTS.items()})
+        if o.get("glass") == "opaque":               # opaque panes
+            rec["glass"] = "opaque"
         return wall, seg, rec
 
     def on_hover(self, ctx) -> None:
@@ -240,8 +334,14 @@ class OpeningTool(_PlotTool):
     def value_label(self):
         if self.here is None:
             return None
-        o = self.here[2]
-        return (f"{o['w']:.2f} × {o['h']:.2f} m", None)
+        wall, _seg, o = self.here
+        text = f"{o['w']:.2f} × {o['h']:.2f} m"
+        try:            # red: why, at the cursor (the flash went unseen)
+            why = S.opening_room(o, wall, self.openings(),
+                                 self.wall_height(wall))
+        except Exception:  # noqa: BLE001
+            why = None
+        return (text + (f"  —  {why}" if why else ""), None)
 
     def status_clause(self) -> str:
         tail = "  ·  Tab = hinge on the other side" if self.kind == "door" \

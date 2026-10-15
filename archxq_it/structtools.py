@@ -498,13 +498,59 @@ class BeamTool(WallChainTool):
         return [round(best[1][0], 4), round(best[1][1], 4)]
 
     def line_records(self, pts, closed):
+        # «Insert» (a customer's ask, 2026-10-10): the line drawn is its
+        # left or right face — the line is moved half its width over, and
+        # the beam is kept by its axis as ever (Tab swaps the sides)
+        o = self.opts()
+        side = {"left": 1.0, "right": -1.0}.get(o.get("insert"), 0.0)
+        if side and len(pts) >= 2:
+            pts = offset_chain(pts, (-side if self.flip else side)
+                               * float(o["t"]) / 2, closed)
         recs = super().line_records(pts, closed)
         for r in recs:
             r["align"] = "centre"           # a beam sits on its line
         return recs
 
     def status_clause(self) -> str:
-        return super().status_clause().replace("Wall:", "Beam:")
+        s = super().status_clause().replace("Wall:", "Beam:")
+        if self.opts().get("insert") in ("left", "right"):
+            s = s.replace("Tab = other side", "Tab = other face")
+        return s
+
+
+def offset_chain(pts, d: float, closed: bool) -> list:
+    """The polyline ``pts`` moved ``d`` to its LEFT (negative: right): each
+    corner where the two moved lines cross — the run keeps its joints."""
+    n = len(pts)
+    segs = list(zip(pts, pts[1:])) + ([(pts[-1], pts[0])] if closed else [])
+
+    def moved(a, b):
+        L = math.dist(a, b)
+        if L < 1e-9:
+            return None
+        ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+        return (a[0] - uy * d, a[1] + ux * d), (ux, uy)
+    lines = [moved(a, b) for a, b in segs]
+    out = []
+    for i in range(n):
+        before = lines[i - 1] if (i > 0 or closed) else None
+        after = lines[i] if i < len(lines) else None
+        p = None
+        if before and after:
+            (p1, u1), (p2, u2) = before, after
+            cr = u1[0] * u2[1] - u1[1] * u2[0]
+            if abs(cr) > 1e-6:              # a real corner: where they cross
+                t = ((p2[0] - p1[0]) * u2[1] - (p2[1] - p1[1]) * u2[0]) / cr
+                p = (p1[0] + u1[0] * t, p1[1] + u1[1] * t)
+        if p is None:                       # an end, or a straight joint
+            near = after or before
+            if near is None:                # a point on its own: as it is
+                p = tuple(pts[i])
+            else:
+                u = near[1]
+                p = (pts[i][0] - u[1] * d, pts[i][1] + u[0] * d)
+        out.append([round(p[0], 4), round(p[1], 4)])
+    return out
 
 
 def slab_tool(base):
@@ -534,7 +580,13 @@ def slab_tool(base):
 SLAB_TOOLS = {"rect": slab_tool(plottools.PlotRectTool),
               "rect_c": slab_tool(plottools.PlotCentreRectTool),
               "rect_r": slab_tool(plottools.PlotRotRectTool),
-              "chain": slab_tool(plottools.PlotPolyTool)}
+              "chain": slab_tool(plottools.PlotPolyTool),
+              # a slab OPENING may be round too (a customer's ask,
+              # 2026-10-13: «of any shape, not only rectangular»)
+              "circle": slab_tool(plottools.PlotCircleTool)}
+#: how a slab OPENING is drawn — the options bar's «Drawn» (shape «hole»)
+HOLE_DRAWN = (("rect", "Rectangle"), ("rect_r", "Rotated"),
+              ("chain", "Points"), ("circle", "Circle"))
 
 
 def beams_as_walls(beams: list[dict]) -> list[dict]:

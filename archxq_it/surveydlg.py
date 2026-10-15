@@ -54,15 +54,11 @@ class SurveyDialog(QDialog):
         self.setMinimumSize(620, 520)
 
         lay = QVBoxLayout(self)
-        head = QHBoxLayout()
-        title = QLabel("Survey points")
-        f = title.font()
-        f.setPointSize(f.pointSize() + 4)
-        f.setBold(True)
-        title.setFont(f)
-        head.addWidget(title, 1)
-        head.addWidget(help_button("survey"))
-        lay.addLayout(head)
+        lay.setContentsMargins(14, 10, 14, 12)
+        from .dialogs import look_head
+        look_head(self, lay, "survey", "Survey points", "survey",
+                  "Every point measured on the ground — typed, added, or "
+                  "read from a surveyor's file.")
         show = _show_row(view, [
             ("plot_elev_dims", "Plot elevations",
              "The ground's elevation at every corner of the plot"),
@@ -304,6 +300,10 @@ class ImportDialog(QDialog):
         raw = self.read["points"]
 
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 12)
+        from .dialogs import look_head
+        look_head(self, lay, "import", "Import survey points", "survey",
+                  name)
         self.found = QLabel()
         self.found.setWordWrap(True)
         lay.addWidget(self.found)
@@ -351,6 +351,7 @@ class ImportDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.ok = bb.button(QDialogButtonBox.Ok)
         self.ok.setText("Import")
+        self.ok.setObjectName("axqOk")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)

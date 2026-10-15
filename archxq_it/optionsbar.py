@@ -150,7 +150,12 @@ class OptionsBar(QFrame):
         """A plain button: a click says ``on_change(key, True)``."""
         from PySide6.QtWidgets import QPushButton
         b = QPushButton(o["text"])
-        b.setProperty("axq", "chip")
+        if o.get("outline"):
+            # «More…»: an orange outline, to be seen (his call, 2026-10-14)
+            from .library import ACTION_CSS
+            b.setStyleSheet(ACTION_CSS)
+        else:
+            b.setProperty("axq", "chip")
         b.setFocusPolicy(Qt.NoFocus)
         b.setToolTip(o.get("tip", ""))
         b.clicked.connect(lambda _=False, key=o["key"]: self.on_change(key,
@@ -283,6 +288,16 @@ class OptionsBar(QFrame):
         if event.type() == QEvent.ShortcutOverride:
             event.accept()
             return True
+        if event.type() == QEvent.Wheel:
+            # the wheel changes a field only once it was clicked (has the
+            # keyboard) — scrolling over the bar changed sizes unseen (his
+            # test, 2026-10-11)
+            w = obj.parentWidget() if obj.parentWidget() is not None \
+                and not hasattr(obj, "setRange") \
+                and not hasattr(obj, "addItem") else obj
+            if not w.hasFocus() and not obj.hasFocus():
+                event.ignore()
+                return True
         return False
 
 

@@ -12,7 +12,12 @@ DEFAULTS: dict[str, tuple[object, type]] = {
     "diag_pull": (True, bool),           # 45° pull while drawing
     "plan_on_tool": (True, bool),        # a drawing tool starts in plan view
     "plan_hidden_line": (True, bool),    # the plan seen in hidden line
+    "radial_menu": (True, bool),         # the ring at the mouse (F9)
+    "grips": (True, bool),               # on-screen grips on the selection
+    "quick_help": (True, bool),          # the quick-help cards (F1)
     "plan_grid": (True, bool),           # a grid + the axes in the plan
+    "plan_dims": (True, bool),           # the walls' dimension chains
+    "room_tint": (True, bool),           # the rooms' floors tinted (plan)
     "grid_snap": (False, bool),          # the cursor on the plan's grid
     # Warnings
     "warn_setbacks": (True, bool),       # an excavation into the setbacks

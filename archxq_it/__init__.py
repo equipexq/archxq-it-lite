@@ -9,12 +9,20 @@ from __future__ import annotations
 import importlib
 import sys
 
-__version__ = "0.9.5-lite"
+__version__ = "0.10.2-lite"
 
 _instance = None
 
 
 def setup(app) -> None:
+    # ONE ArchXQ in the window: the Pro sets an older copy / the Lite
+    # aside (onecopy.py — IngeTrazo 0.5.8's Extension Manager)
+    from .onecopy import claim
+    if claim(app):
+        _start(app)
+
+
+def _start(app) -> None:
     global _instance
     from .ui import ArchXQ
     _instance = ArchXQ(app)
@@ -43,7 +51,7 @@ def reload(window) -> None:
                   "doctools", "docsdxf", "importdxf",
                   "demo",
                   "hub", "panels", "levelstrip", "outliner", "optionsbar",
-                  "ui"):
+                  "wallmove", "grips", "ui"):
         name = f"{__name__}.{short}"
         if importlib.util.find_spec(name) is None:
             continue                    # the Lite ships without it
@@ -52,4 +60,4 @@ def reload(window) -> None:
         else:
             importlib.import_module(name)
     from . import compat
-    setup(compat.make_app(window))
+    _start(compat.make_app(window))       # (its own menu may linger: no claim)

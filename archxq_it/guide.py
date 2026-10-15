@@ -521,12 +521,23 @@ GUIDES.update({
     "door": {
         "image": "door.jpg",
         "what": "A door sits in a straight wall: move along the wall and "
-                "click. The wall is cut for it and a frame and a leaf go in; "
-                "in plan it shows its leaf open and its swing.",
-        "steps": [("On a wall", "Move along a wall, click where it goes. "
-                   "<b>Tab</b> puts the hinge on the other side.")],
+                "click. The wall is cut for it and a frame and its leaves go "
+                "in. Its type comes from the <b>Library</b> on the right: "
+                "<b>Swing</b>, <b>Sliding</b> or <b>Glass sliding</b>, with "
+                "1 or 2 leaves.",
+        "steps": [("Pick its type", "In the <b>Library</b> (the strip on the "
+                   "right): a card for the type, the chips for its leaves "
+                   "and the hinge — or the side it slides to."),
+                  ("On a wall", "Move along a wall, click where it goes. "
+                   "<b>Tab</b> puts the hinge (or the slide) on the other "
+                   "side."),
+                  ("Change it", "Select doors: the Library and the bar show "
+                   "theirs — another card, another width, and they change. "
+                   "<b>Open</b> shows them open in 3D as you drag it.")],
         "tips": ["Width and Height in the options bar; <b>Hinge</b>: the "
-                 "jamb it hangs on. It opens to the wall's inside."],
+                 "jamb it hangs on. A swing door opens to the wall's inside.",
+                 "In plan a swing door shows its leaf open and its swing; a "
+                 "sliding one its leaves and an arrow."],
         "keys": [("Tab", "hinge on the other side"), ("Ctrl+Z", "undo")],
     },
     "window": {
@@ -551,7 +562,9 @@ GUIDES.update({
         "what": "A roof rests on the <b>top of its level's walls</b> — put "
                 "it on the top floor. <b>Gable</b>: two slopes and a "
                 "triangle of wall at each end; <b>Hip</b>: four slopes; "
-                "<b>Flat</b>: a slab with a parapet if you like.",
+                "<b>Flat</b>: a slab with a parapet if you like; "
+                "<b>Shed</b>: one slope; <b>Hidden</b>: low slopes behind "
+                "a parapet, with a gutter. Pick it in the library.",
         "steps": [
             ("Over the walls", "One click: a roof over this level's walls "
              "(a pitched one over the rectangle round them)."),
@@ -638,28 +651,34 @@ GUIDES["ramp"] = {
             "<b>length follows from the drop and the slope</b>: you never "
             "work it out.",
     "steps": [
-        ("Its window", "Click <b>Ramp</b> under «Building elements». Choose "
-         "its <b>Top level</b> (a level, or <b>the terrain</b>: the ground's "
+        ("Set it up", "Click <b>Ramp</b> under «Building elements»: the "
+         "<b>library</b> on the right opens on ramps — its type on top, its "
+         "side drawing and what it will be below — and the tool is already "
+         "out (the last ramp's sizes). To change them: <b>Sizes & "
+         "levels…</b>, its window. There, choose its <b>Top "
+         "level</b> (a level, or <b>the terrain</b>: the ground's "
          "height at its top) over its <b>Bottom level</b> (a level or an "
          "elevation), and <b>Starts at</b> — where your click is: its bottom "
          "(going up) or its top (going down — a ramp from the street). Then "
          "the <b>width</b>, the <b>slope</b> and the <b>thickness</b>. The "
          "side view shows it live. For a special case, type the "
          "<b>Length</b> instead: the slope then follows from it."),
-        ("Its shape", "<b>Straight</b>; <b>L</b>: two runs and a level "
-         "landing, the second run turned 90°; <b>U</b>: the second run comes "
-         "back beside the first, the landing across both. <b>Turn</b>: the "
+        ("Its shape", "The library's cards: <b>Straight</b>; <b>L</b>: two "
+         "runs and a level landing, the second run turned 90°; <b>U</b>: the "
+         "second run comes back beside the first, the landing across both. "
+         "<b>Turns</b>: the "
          "side it turns to; <b>Landing</b>: its length. The length (or "
          "slope) is the two runs together — the landing apart; the drop is "
          "split evenly between them."),
-        ("Where it starts", "OK opens the plan. Click its <b>first edge</b> "
+        ("Where it starts", "On the plan, click its <b>first edge</b> "
          "(bottom or top, as «Starts at» says)."),
         ("The way it goes", "Move the mouse: the ramp turns with it, at its "
          "length. Click to build it. The tool stays out for the next one; "
          "<b>Esc</b> ends."),
-        ("Change it", "A <b>double-click</b> on a ramp opens its window: "
-         "top / bottom, sizes, where it starts and its direction, Hide, "
-         "Delete."),
+        ("Change it", "Select it: the library shows its type and drawing — "
+         "a card changes it at once. <b>Sizes & levels…</b> (or a "
+         "<b>double-click</b>) opens its window: levels, sizes, its "
+         "material, Repeat, Hide, Delete."),
         ("Insert at / stacked", "<b>Insert at</b>: the click on its first "
          "edge's left corner, middle or right corner. <b>Repeat above ▲ / "
          "below ▼</b> (its window): the same ramp, in the same place, one "
@@ -695,8 +714,12 @@ GUIDES["stair"] = {
             "count of risers from the highest riser you allow, the tread "
             "from <b>Blondel's rule</b> (2 risers + 1 tread = 63 cm).",
     "steps": [
-        ("Its window", "Click <b>Stair</b> under «Building elements». "
-         "Choose its <b>Top level</b> over its <b>Bottom level</b>, "
+        ("Set it up", "Click <b>Stair</b> under «Building elements»: the "
+         "<b>library</b> on the right opens on stairs — its type on top, its "
+         "steps drawn and what it will be below — and the tool is already "
+         "out (the last stair's sizes). To change them: <b>Sizes & "
+         "levels…</b>, its window. There, choose its <b>Top "
+         "level</b> over its <b>Bottom level</b>, "
          "<b>Starts at</b> (the bottom step — usual — or the top), the "
          "<b>width</b> and the <b>riser "
          "(max)</b> — 18 cm is usual. The line under it says what you get: "
@@ -704,18 +727,20 @@ GUIDES["stair"] = {
          "4.43 m». The side view draws the steps."),
         ("The tread", "<b>Blondel</b> on: worked out (kept between 25 and "
          "32 cm). Type a tread and it stays (Blondel off)."),
-        ("Its shape", "<b>Straight</b>; <b>L</b>: two flights and a landing, "
+        ("Its shape", "The library's cards: <b>Straight</b>; <b>L</b>: two "
+         "flights and a landing, "
          "turned 90°; <b>U</b>: the second flight back beside the first. "
          "The risers are split between the two flights."),
-        ("Where it starts", "OK opens the plan: click its first step's edge "
+        ("Where it starts", "On the plan, click its first step's edge "
          "(bottom or top, as «Starts at» says), then the way it goes — the "
          "treads are drawn as you turn it."),
         ("Insert at", "Where your click sits on its first step's edge, "
          "walking it: the <b>left corner</b>, the <b>middle</b> or the "
          "<b>right corner</b> — a corner puts it straight into a stair "
          "shaft's corner."),
-        ("Change it", "A <b>double-click</b> on a stair opens its window "
-         "again."),
+        ("Change it", "Select it: the library shows its type and steps — "
+         "a card changes it at once. <b>Sizes & levels…</b> (or a "
+         "<b>double-click</b>) opens its window."),
         ("Stacked flights", "In a stair's window, <b>Repeat above ▲</b> / "
          "<b>Repeat below ▼</b> make the same stair, in the same place, one "
          "level up / down — a fire stair is one click per floor."),

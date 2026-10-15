@@ -47,7 +47,11 @@ class Outliner(QWidget):
     def __init__(self, owner) -> None:
         super().__init__()
         self.owner = owner
-        self.setStyleSheet(CSS)
+        from .style import host_light
+        # light theme: the tree is dark (CSS) but its text came from the
+        # host's light palette — near black on dark (a customer's review)
+        self.setStyleSheet(CSS + ("QTreeWidget { color: #e0e0e0; }"
+                                  if host_light() else ""))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 2)
         lay.setSpacing(4)

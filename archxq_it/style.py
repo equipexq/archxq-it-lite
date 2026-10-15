@@ -1,5 +1,12 @@
 """ArchXQ look: one stylesheet for every piece (hub, submenu, left strip,
-view bar), plus the band used when a piece sits in a host toolbar."""
+view bar), plus the band used when a piece sits in a host toolbar.
+
+LIGHT THEME (a customer's review, 2026-10-12: «black background with black
+letters»): ArchXQ's pieces are dark; text that carries no colour of its
+own took the host's light-theme palette — black. With the host in its
+light theme, every ArchXQ widget is made a DARK ISLAND as it shows (the
+host's own dark palette: ``install_theme_guard``). In the dark theme
+nothing is touched."""
 from __future__ import annotations
 
 BLUE = "#2f6fb3"
@@ -90,6 +97,124 @@ QToolButton#axq_lvadd:hover {{ color: white; background: rgba(255,255,255,30); }
 QLineEdit[axq="lvedit"] {{ background: #2c3238; color: white;
     border: 1px solid {BLUE}; border-radius: 3px; padding: 1px 4px; }}
 """
+
+#: the host's DARK palette (read from it, 2026-10-12) — what ArchXQ's pieces
+#: are drawn for
+DARK = {"Window": "#26292e", "WindowText": "#e0e0e0", "Base": "#2c3238",
+        "AlternateBase": "#30353b", "Text": "#e0e0e0", "Button": "#3a3f45",
+        "ButtonText": "#e0e0e0", "BrightText": "#ffffff",
+        "ToolTipBase": "#2c3238", "ToolTipText": "#e0e0e0",
+        "PlaceholderText": "#9aa5b1", "Highlight": BLUE,
+        "HighlightedText": "#ffffff", "Light": "#4a5058", "Midlight": "#3f454c",
+        "Mid": "#33383e", "Dark": "#1d2025", "Shadow": "#121417"}
+#: pieces in the host's tray / windows: their background painted too (the
+#: floating bars paint their own, rounded)
+FILLED = {"LibraryPanel", "PropsPanel", "Outliner"}
+
+
+def host_light() -> bool:
+    """The host in its LIGHT theme (its palette's window is light)."""
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    return app is not None and app.palette().window().color().lightness() > 140
+
+
+def dark_island(w, fill: bool = False) -> None:
+    """``w`` (and what it holds) drawn with the dark palette."""
+    from PySide6.QtGui import QColor, QPalette
+    pal = QPalette(w.palette())
+    for role, col in DARK.items():
+        r = getattr(QPalette.ColorRole, role, None)
+        if r is not None:
+            for grp in (QPalette.Active, QPalette.Inactive):
+                pal.setColor(grp, r, QColor(col))
+            pal.setColor(QPalette.Disabled, r, QColor(
+                "#6b7178" if role in ("WindowText", "Text", "ButtonText")
+                else col))
+    w.setPalette(pal)
+    if fill:
+        w.setAutoFillBackground(True)
+
+
+_guard = None
+#: more to darken when the host turns light (``fn()`` each) — pieces that
+#: are not ArchXQ classes (ui's library scroll box)
+EXTRA: list = []
+
+
+def _ours(w) -> bool:
+    # by the package's own name, not «archxq_it»: a buyer's copy loads as
+    # «ingetrazo_plugin_<folder>» (see compat.ours)
+    return (type(w).__module__ or "").split(".")[0] == __name__.split(".")[0]
+
+
+def island_all() -> None:
+    """Every ArchXQ widget made a dark island NOW (the host just turned
+    light, ArchXQ's pieces already shown)."""
+    from PySide6.QtWidgets import QApplication
+    if not host_light():
+        return
+    for w in QApplication.allWidgets():
+        if _ours(w):
+            w.setProperty("axq_dark", True)
+            try:
+                dark_island(w, fill=w.isWindow() or type(w).__name__ in FILLED)
+            except Exception:  # noqa: BLE001
+                pass
+    for fn in list(EXTRA):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def install_theme_guard() -> None:
+    """Every ArchXQ widget made a dark island as it first shows while the
+    host is LIGHT — bars, panels, windows, pop-ups, the ones still to come.
+    Installed in either theme: the host's theme switched while ArchXQ runs
+    (dark → light) darkens what is already shown too (his screen,
+    2026-10-13: the library «embaçada» after the switch — the guard was
+    only put in when IngeTrazo started light)."""
+    global _guard
+    from PySide6.QtCore import QEvent, QObject, QTimer
+    from PySide6.QtWidgets import QApplication, QWidget
+    if _guard is not None:
+        return
+
+    class _Guard(QObject):
+        pending = False
+
+        def eventFilter(self, obj, ev) -> bool:
+            t = ev.type()
+            if t == QEvent.Show and isinstance(obj, QWidget) \
+                    and _ours(obj) and not obj.property("axq_dark") \
+                    and host_light():
+                obj.setProperty("axq_dark", True)
+                try:
+                    dark_island(obj, fill=obj.isWindow()
+                                or type(obj).__name__ in FILLED)
+                except Exception:  # noqa: BLE001 — never break a show
+                    pass
+            elif t == QEvent.ApplicationPaletteChange and not self.pending:
+                # sent to every widget: one pass, once things settle
+                self.pending = True
+
+                def go() -> None:
+                    self.pending = False
+                    island_all()
+                QTimer.singleShot(150, go)
+            return False
+    _guard = _Guard()
+    QApplication.instance().installEventFilter(_guard)
+
+
+def remove_theme_guard() -> None:
+    global _guard
+    from PySide6.QtWidgets import QApplication
+    if _guard is not None and QApplication.instance() is not None:
+        QApplication.instance().removeEventFilter(_guard)
+    _guard = None
+
 
 #: A piece sitting in a host toolbar: a soft band with a thin blue rule,
 #: the pill inside a little lighter — serious, but not flat.

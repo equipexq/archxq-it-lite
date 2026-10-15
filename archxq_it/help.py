@@ -8,6 +8,17 @@ from PySide6.QtWidgets import QFrame, QLabel, QToolButton, QVBoxLayout
 
 from .style import BLUE
 
+#: a stair's / ramp's railing (Pro) — said in both their topics
+RAILING_HELP = (
+    "<b>Railing</b> (Pro), in the library: <b>Handrail</b> (a tube on "
+    "brackets), <b>Steel</b> (posts + balusters, bars or cables — never "
+    "more than 11 cm open), <b>Glass</b> (on posts or frameless) or a "
+    "<b>Low wall</b>. <b>Sides</b>: <b>Auto</b> gives a side along a wall "
+    "a wall handrail, the free sides the railing. It follows the flight, "
+    "goes round the landing and stays open where you step off; the hole "
+    "in the floor above gets its own guard (1.05 m). Heights, the second "
+    "handrail (0.70 m), posts: «Sizes & levels…».")
+
 HELP: dict[str, tuple[str, str]] = {
     "project": (
         "Project",
@@ -44,7 +55,10 @@ HELP: dict[str, tuple[str, str]] = {
         "with the slab's top, the rest hangs under it (a 20×60 beam under a "
         "20 cm slab shows 40 cm below it). Beams join one another "
         "like walls (corners, T, crossings).<br><br>A beam over a wall of "
-        "the same width hides inside it; a wider one shows."),
+        "the same width hides inside it; a wider one shows.<br><br>"
+        "<b>Insert</b>: the line you draw is the beam's axis (Centre), or "
+        "its left or right face, looking the way you draw — Tab swaps the "
+        "faces while drawing."),
     "slab": (
         "Slab",
         "A slab's <b>top</b> is its level's floor (or the offset you give "
@@ -55,8 +69,10 @@ HELP: dict[str, tuple[str, str]] = {
         "<br><br>An <b>excavation</b> makes its own slabs: on every basement "
         "it holds and on the ground floor over them, following its outline. "
         "Delete one you do not want — it stays away.<br><br>An "
-        "<b>opening</b> drawn in a slab is closed from the slab's window: "
-        "double-click it ▸ «Close its opening(s)» ▸ OK."),
+        "<b>opening</b> (the last icon) is drawn inside a slab — "
+        "<b>Drawn</b>: a rectangle, a rotated one, point by point or a "
+        "circle. It is closed from the slab's window: double-click it ▸ "
+        "«Close its opening(s)» ▸ OK."),
     "footing": (
         "Footing",
         "Footings hang under their level's slab: a <b>pad</b> under each "
@@ -77,7 +93,7 @@ HELP: dict[str, tuple[str, str]] = {
         "click where it starts and the way it "
         "goes; <b>Tab</b> turns an L / U the other way.<br><br>The slab it "
         "goes through gets its hole by itself. A double-click on a ramp "
-        "opens this window again."),
+        "opens this window again.<br><br>" + RAILING_HELP),
     "stair": (
         "Stair",
         "A stair between two levels, defined from the bottom up. Set its "
@@ -89,7 +105,14 @@ HELP: dict[str, tuple[str, str]] = {
         "it. <b>Straight</b>, <b>L</b> or <b>U</b>, with a landing; then "
         "click where it starts and the way it goes (<b>Tab</b> turns an L / "
         "U the other way).<br><br>The slab it goes through gets its hole by "
-        "itself."),
+        "itself — or not: <b>Opening in the slab</b> (library) <b>None</b> "
+        "keeps the slab whole, to draw an opening of your own.<br><br>"
+        "<b>Build</b> (library): <b>Concrete</b> (a slab "
+        "under the steps) or <b>Open treads</b> (boards on two steel "
+        "stringers). In «Sizes & levels…»: the <b>landing after riser N</b> "
+        "(Auto: halfway), a U's <b>gap between flights</b> (its well — the "
+        "floor above opens over it too) and the <b>nosing</b> (2–3 cm).<br>"
+        "<br>" + RAILING_HELP),
     "sheets": (
         "Drawings & sheets",
         "One click makes the building's drawings on IngeTrazo's own "
@@ -103,17 +126,25 @@ HELP: dict[str, tuple[str, str]] = {
         "(what you added on them goes with them); your own sheets stay."),
     "wall_import": (
         "Walls from DXF",
-        "Raise the walls of an existing plan. <b>Load</b> a DXF onto the "
-        "current level: it is drawn over the view as a reference (the "
-        "model doesn't change; you can trace over it by hand too).<br><br>"
-        "<b>Make walls</b>: every pair of <b>parallel lines</b> between "
-        "<b>Min</b> and <b>Max</b> apart is a wall — its thickness their "
-        "distance, its line between them; walls are carried to the walls "
-        "they meet and joined. A <b>gap</b> in a wall's lines is an "
-        "opening: up to 1.00 m a door, wider a window (change them after). "
-        "Pick the drawing's <b>layer</b> of the walls when it has one.<br>"
-        "<br>Curved walls are not found yet (draw them by hand). DWG: "
-        "later — save it as DXF."),
+        "<b>Import CAD</b> (the first icon): pick a DXF plan and the "
+        "current level is <b>built from it</b>, in one click and one "
+        "Ctrl+Z — walls from the double lines, doors and windows from the "
+        "drawing's blocks (their type, size and swing side; sliding and "
+        "glass doors too), columns, stairs from their tread lines, and the "
+        "rooms named from the drawing's texts. Layers are read by their "
+        "names, in English (A-WALL, A-DOOR…) and in Portuguese / Spanish "
+        "(PAREDE, PORTA, JANELA, PILAR, ESCADA…). One plan per level: "
+        "set the levels in the Project first, pick a level, import its "
+        "plan.<br><br>"
+        "Step by step instead: <b>Load</b> a DXF onto the current level — "
+        "it is drawn in the plan as a reference (the model doesn't change; "
+        "you can trace over it by hand too) — then <b>Make walls</b>: "
+        "every pair of <b>parallel lines</b> between <b>Min</b> and "
+        "<b>Max</b> apart is a wall, its thickness their distance; walls "
+        "are carried to the walls they meet and joined. A <b>gap</b> in a "
+        "wall's lines is an opening. Pick the drawing's <b>layer</b> of "
+        "the walls when it has one.<br><br>Curved walls are not found yet "
+        "(draw them by hand). DWG: save it as DXF first."),
     "rooms": (
         "Rooms",
         "Rooms are <b>found from the walls</b> by themselves: every space "
@@ -149,8 +180,15 @@ HELP: dict[str, tuple[str, str]] = {
         "short), a triangle of wall closing each end. <b>Hip</b>: four "
         "slopes. A pitched roof covers the <b>rectangle</b> round what you "
         "draw. <b>Flat</b>: a slab as drawn, with a <b>parapet</b> round "
-        "it (0 = none).<br><br><b>Slope</b> in degrees; <b>overhang</b>: "
-        "how far the eaves reach past the walls."),
+        "it (0 = none). <b>Shed</b>: one slope; the end walls and the high "
+        "wall rise to it. <b>Hidden</b>: the walls go on up as a parapet; "
+        "inside, a slab, one or two low slopes of sheets (10°) and a "
+        "<b>gutter</b> along each low side — the parapet's height is "
+        "<b>Auto</b> (just over the ridge) or typed.<br><br>Pick the type "
+        "in the <b>library</b> on the right (with roofs selected, they "
+        "change). <b>Slope</b> in degrees; <b>Eaves</b>: how far the "
+        "eaves reach past the walls; <b>Gable ends</b>: how far past the "
+        "end walls."),
     "door": (
         "Door",
         "A door sits in a straight wall: move along the wall and click. "
@@ -165,16 +203,80 @@ HELP: dict[str, tuple[str, str]] = {
         "selected and they open as you go. In the plan a swing door is "
         "drawn with its leaf open and its swing; a sliding one with its "
         "leaves and an arrow."),
+    "radial": (
+        "Radial menu",
+        "A click (Select tool) on a column, beam, footing, slab, ramp or "
+        "stair opens this ring round it. <b>Move</b> · <b>Copy</b> (Move "
+        "with Ctrl) · <b>Array</b>: place ONE copy, then type <b>x3</b> + "
+        "Enter — with the <b>x</b> (3x and *3 too): three more, same step; "
+        "<b>/3</b>: three between; «3» alone is a distance · <b>Rotate</b> "
+        "· its <b>window</b> — IngeTrazo's own "
+        "gestures: the element's record follows.<br><br>It goes with "
+        "<b>Esc</b>, a click elsewhere or the pointer going away.<br><br>"
+        "<b>F9</b> switches it off / on — also in <b>Settings › "
+        "Display › Radial menu</b>."),
+    "grips": (
+        "On-screen grips",
+        "Select ONE element with IngeTrazo's Select tool: small grips stand "
+        "on it. <b>Squares</b> change a size, <b>arrows</b> move a side or "
+        "the element across, a <b>circle</b> moves it freely.<br><br>"
+        "<b>Drag</b> one: it changes live; let go — stored, one Ctrl+Z. "
+        "Or <b>click</b> it: it follows the mouse, click again to put it "
+        "down — easy to <b>type a size + Enter</b> (0.85 · 85 cm · 2'6\"). "
+        "Steps of 5 cm, <b>Shift</b> = 1 cm; <b>Esc</b> puts it back.<br><br>"
+        "<b>Magnets and guides</b>: near something to line up with, the grip "
+        "sticks to it and a <b>magenta dashed guide</b> shows from what — "
+        "«lined up»; onto a point, «joins».<br><br>"
+        "<b>Walls</b>: the ends (the walls at that corner follow; one in "
+        "line keeps its line) and an arrow across (the walls joined to it "
+        "stretch). <b>Doors / windows</b>: sides = width, top = height, "
+        "bottom = sill, centre = along the wall — lined up with the others "
+        "in the same wall plane, on this floor and the ones above / below. "
+        "<b>Columns</b>: the circle moves it (<b>↑</b> = up / down, "
+        "<b>→ / ←</b> = one way only), a square on each face, its top and "
+        "its foot. <b>Beams</b>: the ends (free: onto a column or another "
+        "beam), an arrow across, its depth underneath. <b>Slabs</b>: the "
+        "corners (free), an arrow on each side, up / down, its thickness. "
+        "<b>Stairs / ramps</b>: the circle at its start moves it, a square "
+        "on its side its width (the other side stays), the landing's far "
+        "edge (L / U), a straight ramp's end its length (the slope "
+        "follows). <b>Roofs</b>: a square outside each side — the eaves' "
+        "overhang; on a gable roof the gable ends have their own."
+        "<br><br>Off / on: <b>Settings › Display › On-screen grips</b>."),
+    "views": (
+        "Plan and elevations",
+        "Beside <b>Plan view</b>: the plan and the four <b>elevations</b> "
+        "(left, back, right, front — clockwise), square with the building, "
+        "level and parallel; each keeps its own pan and zoom. The terrain "
+        "in front? «Terrain» in the bar below hides it.<br><br>"
+        "<b>X-ray</b> (the last icon): see through the faces. In an "
+        "elevation — or the plan with X-ray — a click picks <b>through</b>: "
+        "the details first (stairs, columns, beams, doors…), then walls "
+        "and slabs; <b>click again on the same spot</b> for the next one "
+        "behind; Shift adds. Then move it from the library's bars."),
     "library": (
         "Library",
         "What you draw, in pictures: pick a <b>type</b> (the cards) and its "
         "<b>parts</b> (the chips under them), then draw — the sizes stay in "
-        "the bar on the left. The last type you used is already marked: "
+        "the options bar on top. The last type you used is already marked: "
         "just draw if it is the one.<br><br>With elements <b>selected</b>, "
         "their type is marked: click another card or chip and they change "
-        "(one Ctrl+Z). The bar on the left shows their sizes too — change "
-        "one and they follow.<br><br>Greyed items are on the way: they "
-        "switch on with the coming updates.<br><br>IngeTrazo's own "
+        "(one Ctrl+Z). The options bar shows their sizes too — change "
+        "one and they follow.<br><br><b>Size bars</b> (doors, windows, "
+        "stairs, ramps): drag — the selected ones follow live, the bar pulls "
+        "to the usual sizes (a door's 0.80, 0.90…), <b>Shift</b> = "
+        "centimetre by centimetre; it stops where the wall has no more "
+        "room. The field beside it takes an exact one (0.85 · 85 cm · "
+        "850 mm + Enter). Double click on a bar: its default. Let go: one "
+        "Ctrl+Z.<br><br><b>Move bars</b>, for what is selected: one door or "
+        "window — <b>Along the wall</b> (its edge from the wall's start; it "
+        "slides with its hole and stops at the next opening; double click: "
+        "centred); a stair or ramp — <b>Move along</b> / <b>Move across</b> "
+        "its own way (up to 1 m a go; the bar comes back to 0).<br><br>"
+        "Greyed items are on the way: they "
+        "switch on with the coming updates.<br><br><b>On-screen grips</b>: "
+        "one element selected shows grips on it — drag them (see «On-screen "
+        "grips» in the Help).<br><br>IngeTrazo's own "
         "<b>Move</b> (M), <b>Copy</b> (Ctrl + Move, arrays ×3 / 3), "
         "<b>Rotate</b> (Q) and <b>Scale</b> (S) work on ArchXQ's columns, "
         "beams, footings, slabs, ramps and stairs: their records follow — "
@@ -183,7 +285,13 @@ HELP: dict[str, tuple[str, str]] = {
         "Window",
         "A window sits in a straight wall, its <b>sill</b> measured from "
         "the level's floor: the wall is cut for it (with its sill and "
-        "lintel), and a frame with glass goes in."),
+        "lintel), and a frame with glass goes in.<br><br>Its <b>type</b>, "
+        "in the library: <b>Fixed</b> · <b>Sliding</b> (2, 3 or 4 glazed "
+        "leaves in two tracks) · <b>Casement</b> (1 or 2 hinged leaves, "
+        "opening <b>In</b> or <b>Out</b>; one leaf: its hinge Left / Right) "
+        "· <b>Awning</b> (maxim-ar: one leaf hinged at its top, pushed out) "
+        "· <b>Shop window</b>. <b>Open</b> shows it open in 3D. White "
+        "aluminium by default — the Material tab changes it."),
     "void": (
         "Opening",
         "An opening with nothing in it — a passage, an arch without a "
@@ -348,12 +456,6 @@ HELP: dict[str, tuple[str, str]] = {
         "Height",
         "Floor to floor: from this level's finished floor to the next "
         "one's. The levels above move with it."),
-    "phase_done": (
-        "Phase status",
-        "A phase is complete when what it needs exists. <b>Project</b> "
-        "completes itself when the project is started. Later phases will "
-        "check the model the same way; until then this button stands in "
-        "for those checks."),
 }
 
 
