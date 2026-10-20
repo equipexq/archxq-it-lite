@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 #: IngeTrazo version this prototype was written against.
 TESTED_WITH = "0.5.7"      # (0.3.x → 0.5.6.1 → 0.5.7, 2026-09-30: no changes needed)
@@ -112,8 +112,7 @@ def add_ext_menu(app, title: str, entries):
         # its popup state could leave it unable to open File on the first
         # click (a Pro buyer's report, 2026-10-07)
         a.triggered.connect(
-            lambda _=False, f=fn: __import__(
-                "PySide6.QtCore", fromlist=["QTimer"]).QTimer.singleShot(0, f))
+            lambda _=False, f=fn: QTimer.singleShot(0, f))
         acts[text] = a
     return menu, acts
 
@@ -263,6 +262,11 @@ def show_host_properties(window) -> None:
 
 # ---- Tools ------------------------------------------------------------------------
 def activate_tool(viewport, tool) -> None:
+    try:                                  # its status line in the language
+        from .i18n import wrap_status
+        wrap_status(tool)
+    except Exception:  # noqa: BLE001
+        pass
     viewport.set_active_tool(tool)
     viewport.setFocus()
 
@@ -320,14 +324,169 @@ def typed_value(viewport) -> str:
     return str(getattr(viewport, "_value_buffer", "") or "")
 
 
+#: tests only: a unit to answer instead of the document's (tests/test_units)
+UNIT_OVERRIDE = None
+
+
 def doc_length_unit() -> str:
     """The open document's length unit (IngeTrazo 0.5.8+: «m», «mm»,
     «ft-in-frac»…); «m» on an older host."""
+    if UNIT_OVERRIDE:
+        return UNIT_OVERRIDE
     try:
         from core import units
         return str(units.model_unit())
     except Exception:  # noqa: BLE001 — before 0.5.8: metres
         return "m"
+
+
+#: the document's length units shown in feet / inches (his ask, 2026-10-16:
+#: American viewers' comments — metres only kept them out)
+IMPERIAL = ("in", "ft", "ft-in", "in-frac", "ft-in-frac")
+
+
+def imperial() -> bool:
+    """The open document is in feet / inches."""
+    return doc_length_unit() in IMPERIAL
+
+
+#: the decimals a unit is shown with when chosen from ArchXQ's Settings
+#: (IngeTrazo's own profiles: metres 2, millimetres 0, feet-inches 2)
+_UNIT_PRECISION = {"m": 2, "cm": 1, "mm": 0}
+
+
+def length_units() -> list:
+    """[(code, label)] of the lengths a document can be in — IngeTrazo's
+    own list; [] on a host without units (before 0.5.8)."""
+    try:
+        from core import units
+        return [(c, str(units.unit_label(c))) for c in units.UNIT_CHOICES]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def set_doc_length_unit(viewport, code: str, for_new: bool = False) -> None:
+    """The open document's length unit, set as IngeTrazo's Preferences ▸
+    Units does (his ask, 2026-10-20: people look for it in ArchXQ's
+    Settings) — the same setting, saved in the file; its other choices
+    (area, angles, decimal mark) stay. ``for_new``: new documents too."""
+    from core import units
+    scene = getattr(viewport, "scene", None)
+    if scene is None:
+        return
+    cur = units.model_units_of(scene)
+    if cur["length"] != code:
+        chosen = dict(cur, length=code, precision=_UNIT_PRECISION.get(
+            code, units.PROFILES["imperial"]["precision"]))
+        units.apply_units(scene, chosen)
+        scene.version += 1
+        viewport.update()
+    if for_new:
+        units.remember_new_document_units(units.model_units_of(scene))
+
+
+def fmt_len(m: float, decimals: int = 2, group: bool = False) -> str:
+    """A length (metres) as the DOCUMENT shows it: «1.10 m» (as always, in
+    a metres document), «3'7 5/16"» in feet-inches, «1100 mm»… — inside,
+    everything stays in metres."""
+    g = "," if group else ""
+    u = doc_length_unit()
+    if u == "m":
+        return f"{m:{g}.{decimals}f} m"
+    try:
+        from core import units
+        if UNIT_OVERRIDE:                # (tests: that unit, not the doc's)
+            return str(units.format_length(float(m), u,
+                                           int(units.model_precision())))
+        return str(units.fmt_len(float(m)))
+    except Exception:  # noqa: BLE001 — an older host: metres
+        return f"{m:{g}.{decimals}f} m"
+
+
+def fmt_wh(w: float, h: float, decimals: int = 2) -> str:
+    """Two lengths: «1.20 × 2.10 m» / «3'11 1/4" × 6'10 11/16"»."""
+    if doc_length_unit() == "m":
+        return f"{w:.{decimals}f} × {h:.{decimals}f} m"
+    return f"{fmt_len(w)} × {fmt_len(h)}"
+
+
+def fmt_cm(m: float, decimals: int = 1) -> str:
+    """A SMALL length shown in cm in a metres document («17.5 cm»: a
+    riser, a frame) — in inches in a feet / inches one («6 7/8"»)."""
+    u = doc_length_unit()
+    if u == "m":
+        return f"{m * 100:.{decimals}f} cm"
+    if u in IMPERIAL:
+        try:
+            from core import units
+            return str(units.format_length(
+                float(m), "in-frac", int(units.model_precision())))
+        except Exception:  # noqa: BLE001
+            pass
+    return fmt_len(m)
+
+
+def fmt_cm2(a: float, b: float, decimals: int = 1) -> str:
+    """Two small lengths: «5.0 × 7.0 cm» / «1 15/16" × 2 3/4"»."""
+    if doc_length_unit() == "m":
+        return f"{a * 100:.{decimals}f} × {b * 100:.{decimals}f} cm"
+    return f"{fmt_cm(a)} × {fmt_cm(b)}"
+
+
+def fmt_num(m: float, decimals: int = 2) -> str:
+    """A length WITHOUT its unit (a label beside a dimension line, «1.10»):
+    in feet / inches, «3'7 5/16"» (the marks say it)."""
+    if doc_length_unit() == "m":
+        return f"{m:.{decimals}f}"
+    return fmt_len(m)
+
+
+def fmt_level(m: float, decimals: int = 2, unit: bool = True) -> str:
+    """A level / height, signed: «+3.20 m» / «+10'6"» (``unit`` False:
+    «+3.20» — a metres document's label without its «m»)."""
+    u = doc_length_unit()
+    tail = " m" if unit else ""
+    if u == "m":
+        return f"{m:+.{decimals}f}{tail}"
+    try:
+        from core import units
+        return str(units.format_signed_level(
+            float(m), u, int(units.model_precision())))
+    except Exception:  # noqa: BLE001
+        return f"{m:+.{decimals}f}{tail}"
+
+
+def fmt_volume(m3: float, decimals: int = 1, group: bool = True) -> str:
+    """A volume (m³) as the document shows it: «12.5 m³» / «441.4 ft³»."""
+    g = "," if group else ""
+    u = doc_length_unit()
+    if u == "m":
+        return f"{m3:{g}.{decimals}f} m³"
+    try:
+        from core import units
+        if UNIT_OVERRIDE:
+            return str(units.format_volume(float(m3),
+                                           units.volume_unit_for(u), 1))
+        return str(units.fmt_volume(float(m3)))
+    except Exception:  # noqa: BLE001
+        return f"{m3:{g}.{decimals}f} m³"
+
+
+def fmt_area(m2: float, decimals: int = 2, group: bool = False) -> str:
+    """An area (m²) as the document shows it: «12.50 m²» / «134.55 ft²»
+    (``group``: thousands with a comma, as some rows had)."""
+    g = "," if group else ""
+    u = doc_length_unit()
+    if u == "m":
+        return f"{m2:{g}.{decimals}f} m²"
+    try:
+        from core import units
+        if UNIT_OVERRIDE:
+            return str(units.format_area(float(m2), units.area_unit_for(u),
+                                         2))
+        return str(units.fmt_area(float(m2)))
+    except Exception:  # noqa: BLE001
+        return f"{m2:{g}.{decimals}f} m²"
 
 
 def parse_host_length(text: str):
@@ -882,7 +1041,7 @@ WALL_COLOR = (0.88, 0.86, 0.82)     # a plain wall: warm light grey
 
 #: what the building is made of — every one rebuilt together
 BUILT_KINDS = ("wall", "column", "beam", "slab", "footing", "opening",
-               "roof", "ramp", "stair")
+               "roof", "ramp", "stair", "guard", "glazing")
 KIND_COLOR = {
     "roof": (0.66, 0.36, 0.27),        # tiles (each face has its own)
     "opening": (0.94, 0.94, 0.92),     # frames (each face has its own)
@@ -893,6 +1052,10 @@ KIND_COLOR = {
     "footing": (0.58, 0.58, 0.57),
     "ramp": (0.74, 0.74, 0.73),        # concrete, as the slabs (ramps.py)
     "stair": (0.76, 0.76, 0.75),       # concrete (stairs.py)
+    "guard": (0.93, 0.92, 0.88),       # a low wall (guards.py: each part
+    #                                    has its own colour)
+    "glazing": (0.05, 0.05, 0.06),     # a glass grid (glazing.py: each
+    #                                    part has its own colour)
 }
 
 
@@ -1033,6 +1196,68 @@ def commit_build(viewport, key: str, doc: dict, elevations,
     return doc
 
 
+def commit_some(viewport, key: str, doc: dict, elevations, level_layer_of,
+                ids) -> dict:
+    """``commit_build`` for elements nothing else depends on (a low wall,
+    a glass grid): ONLY their groups are made again — the rest of the
+    building stays as it is — and ``doc`` is stored: ONE undo step. (The
+    whole building took ~0.7 s on his test file at every chip and bar —
+    his test, 2026-10-15.) ``ids``: the elements changed, added or gone."""
+    from core.group import Group
+    from core.history import Command, CompoundCommand, SetPluginDataCommand
+
+    from . import edits
+    from . import materials
+    from . import structure as S
+    ids = set(ids)
+    recs = {e["id"]: e for e in doc.get("structure") or []
+            if e["id"] in ids}
+    made = S.elements_live(doc, elevations, set(recs)) if recs else {}
+    layers = {lv["id"]: level_layer_of(lv["name"]) for lv in doc["levels"]}
+    ensure_layers(viewport, list(layers.values()))
+    new = []
+    for eid, faces in made.items():
+        e = recs[eid]
+        if not faces or e["level"] not in layers:
+            continue
+        g = Group(mesh_of(faces), name=e["name"])
+        g.material = {"color": KIND_COLOR.get(e["type"], WALL_COLOR),
+                      "opacity": 1.0}
+        g.layer = layers[e["level"]]
+        tag(g, e["type"], id=eid, level=e["level"])
+        edits.stamp(g, 0)
+        materials.paint(viewport.scene, g, e["type"], eid, doc)
+        new.append(g)
+    old = [g for g in viewport.scene.groups
+           if kind_of(g) in BUILT_KINDS and _rec(g).get("id") in ids]
+
+    class _SwapSome(Command):
+        def do(self, scene) -> None:
+            self._at = {id(g): scene.groups.index(g) for g in old
+                        if g in scene.groups}
+            for g in old:
+                if g in scene.groups:
+                    scene.groups.remove(g)
+            scene.groups.extend(new)
+            _unselect(scene, old)
+
+        def undo(self, scene) -> None:
+            for g in new:
+                if g in scene.groups:
+                    scene.groups.remove(g)
+            for g in sorted(old, key=lambda g: self._at.get(id(g), 1e9)):
+                if g not in scene.groups:
+                    scene.groups.insert(min(self._at.get(id(g),
+                                                         len(scene.groups)),
+                                            len(scene.groups)), g)
+            _unselect(scene, new)
+
+    viewport.history.execute(CompoundCommand(
+        [_SwapSome(), SetPluginDataCommand(key, doc)]))
+    viewport.update()
+    return doc
+
+
 def mesh_of(faces):
     """A host mesh from ArchXQ's faces (plain loops, or {loop, holes,
     color} dicts)."""
@@ -1076,9 +1301,37 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
 
     layers = {lv["id"]: level_layer_of(lv["name"]) for lv in doc["levels"]}
     ensure_layers(viewport, list(layers.values()))
+    # ONLY what changed is swapped (his recording, 2026-10-19: the full
+    # building — 394 groups — was replaced at every edit, the undo history
+    # keeping every old copy: ~80 MB an edit, until IngeTrazo hung). A group
+    # built from the same faces, name, layer, tags and materials as one in
+    # the scene stays as it is.
+    import hashlib
+    mats = repr(sorted((doc.get("materials") or {}).items()))
+    have: dict = {}
+    for g in wall_groups(viewport, None, BUILT_KINDS):
+        sig = _rec(g).get("sig")
+        if sig is None:
+            continue
+        try:                       # moved / turned in the host: built anew
+            if edits.motion(g) is not None:
+                continue
+        except Exception:  # noqa: BLE001 — unsure: built anew
+            continue
+        have.setdefault(sig, []).append(g)
+    kept = set()
     new = []
     nth: dict = {}               # the groups of one element: 0, 1…
     for e in S.build(doc, elevations):
+        k = nth[e["id"]] = nth.get(e["id"], -1) + 1
+        sig = hashlib.blake2b(repr((
+            e["faces"], e["name"], e["kind"], e["id"], e["level"],
+            layers.get(e["level"]), bool(e.get("inwall")), e.get("okind"),
+            k, mats)).encode(), digest_size=16).hexdigest()
+        same = have.get(sig)
+        if same:
+            kept.add(id(same.pop()))          # unchanged: left in place
+            continue
         g = Group(mesh_of(e["faces"]), name=e["name"])
         g.material = {"color": KIND_COLOR[e["kind"]], "opacity": 1.0}
         g.layer = layers[e["level"]]
@@ -1087,14 +1340,15 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
             extra["inwall"] = True
         if e.get("okind"):               # door | window
             extra["okind"] = e["okind"]
-        tag(g, e["kind"], id=e["id"], level=e["level"], **extra)
+        # (its build's fingerprint: kept in its tag — saved with the file)
+        tag(g, e["kind"], id=e["id"], level=e["level"], sig=sig, **extra)
         # where it was built: the host's Move / Rotate / Copy is read from
         # it (edits.py)
-        k = nth[e["id"]] = nth.get(e["id"], -1) + 1
         edits.stamp(g, k)
         materials.paint(viewport.scene, g, e["kind"], e["id"], doc)
         new.append(g)
-    old = wall_groups(viewport, None, BUILT_KINDS)
+    old = [g for g in wall_groups(viewport, None, BUILT_KINDS)
+           if id(g) not in kept]
 
     class _SwapWalls(Command):
         def do(self, scene) -> None:
@@ -1274,6 +1528,11 @@ def document_path(window) -> str:
 
 
 def flash(viewport, text: str, ms: int = 4000) -> None:
+    try:
+        from .i18n import tr_parts      # (the host's status bar: not ours)
+        text = tr_parts(text)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         viewport.flash_status(text, ms)
     except Exception:  # noqa: BLE001 — status text is cosmetic

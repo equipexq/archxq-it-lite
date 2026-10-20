@@ -285,7 +285,7 @@ class WallChainTool(_WallShape, _PlotTool):
     def value_label(self):
         if not self.pts or self.hover is None:
             return None
-        return (f"{math.dist(self.pts[-1], self.hover):.2f} m", None)
+        return (compat.fmt_len(math.dist(self.pts[-1], self.hover)), None)
 
     def status_clause(self) -> str:
         if not self.pts:
@@ -447,9 +447,9 @@ class WallArc3Tool(_WallShape, _PlotTool):
         if self.a is None or self.hover is None:
             return None
         if self.b is None:
-            return (f"{math.dist(self.a, self.hover):.2f} m", None)
+            return (compat.fmt_len(math.dist(self.a, self.hover)), None)
         got = W._circle3(tuple(self.a), tuple(self.hover), tuple(self.b))
-        return ((f"R {got[1]:.2f} m" if got else "straight"), None)
+        return ((f"R {compat.fmt_len(got[1])}" if got else "straight"), None)
 
     def status_clause(self) -> str:
         if self.a is None:
@@ -561,7 +561,7 @@ class WallArcCentreTool(_WallShape, _PlotTool):
         if self.c is None or self.hover is None:
             return None
         if self.a is None:
-            return (f"R {math.dist(self.c, self.hover):.2f} m", None)
+            return (f"R {compat.fmt_len(math.dist(self.c, self.hover))}", None)
         return (f"{math.degrees(abs(self.sweep)):.1f}°", None)
 
     def status_clause(self) -> str:
@@ -633,7 +633,7 @@ class WallCircleTool(_WallShape, _PlotTool):
         if self.c is None or self.hover is None:
             return None
         r = math.dist(self.c, self.hover)
-        return (f"R {r:.2f} m   (Ø {2 * r:.2f} m)", None)
+        return (f"R {compat.fmt_len(r)}   (Ø {compat.fmt_len(2 * r)})", None)
 
     def status_clause(self) -> str:
         return ("Round wall: click its centre  ·  Esc = done"

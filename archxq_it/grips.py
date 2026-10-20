@@ -29,9 +29,15 @@ from PySide6.QtCore import QEvent, QObject, Qt
 
 from . import walls as W
 
-HALF_PX = 4.5           # a grip's half side (px)
-HOT_HALF_PX = 6.0
-HIT_PX = 9              # a press this close to a grip takes it
+# (bigger, his ask 2026-10-15: while recording he missed them too often —
+# the square ~45 % bigger, the arrow longer and much thicker, and both
+# taken from further away)
+HALF_PX = 6.5           # a grip's half side (px)
+HOT_HALF_PX = 8.5
+HIT_PX = 13             # a press this close to a grip takes it
+ARROW_ARM = 16          # the arrow: half its shaft (px) …
+ARROW_HEAD = 9          # … its heads' length
+ARROW_HIT = 10          # a press this close to ANY part of an arrow takes it
 MIN_PX_PER_M = 1.0      # under this on screen the axis can't be read
 DRAG_PX = 4             # moved this far with the button down = a drag
 STEP, FINE = 0.05, 0.01
@@ -219,6 +225,318 @@ def slab_grips(s: dict, z: float) -> list[Grip]:
                     "Up / down — onto the floors and the other slabs"))
     out.append(Grip("t", (cx, cy, z - t), (0.0, 0.0, -1.0), t,
                     tip="Its thickness — its top stays"))
+    for j, h in enumerate(s.get("holes") or []):
+        out += hole_grips(j, [tuple(p) for p in h], z)
+    return out
+
+
+def round_hole(h) -> tuple | None:
+    """(cx, cy, r) when an opening is a circle (drawn round: many points,
+    all as far from the middle) — None otherwise."""
+    if len(h) < 12:
+        return None
+    cx = sum(p[0] for p in h) / len(h)
+    cy = sum(p[1] for p in h) / len(h)
+    rs = [math.hypot(p[0] - cx, p[1] - cy) for p in h]
+    r = sum(rs) / len(rs)
+    if r < 1e-3 or max(abs(x - r) for x in rs) > 0.02 * r:
+        return None
+    return cx, cy, r
+
+
+def hole_grips(j: int, h: list, z: float) -> list[Grip]:
+    """A slab OPENING's grips (Badis's ask, 2026-10-14 — the hole round a
+    stair): each corner (free on the plane), each side's middle (parallel),
+    its middle (MOVE it whole); a round one: its middle and its radius."""
+    if len(h) < 3:
+        return []
+    rnd = round_hole(h)
+    if rnd:
+        cx, cy, r = rnd
+        return [Grip(f"h{j}m", (cx, cy, z), (1.0, 0.0, 0.0), 0.0, "point",
+                     tip="Move the opening", extra={"shape": "circle"}),
+                Grip(f"h{j}r", (cx + r, cy, z), (1.0, 0.0, 0.0), r,
+                     tip="The opening's radius")]
+    out = []
+    for i, p in enumerate(h):
+        out.append(Grip(f"h{j}v{i}", (p[0], p[1], z), (1.0, 0.0, 0.0), 0.0,
+                        "point", tip="The opening's corner — drag it anywhere"))
+    for i, p in enumerate(h):
+        q = h[(i + 1) % len(h)]
+        n = _outward(h, i)                  # out of the hole: into the slab
+        out.append(Grip(f"h{j}s{i}", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, z),
+                        (n[0], n[1], 0.0), 0.0, "move", True,
+                        "Move this side of the opening, parallel"))
+    cx = sum(p[0] for p in h) / len(h)
+    cy = sum(p[1] for p in h) / len(h)
+    out.append(Grip(f"h{j}m", (cx, cy, z), (1.0, 0.0, 0.0), 0.0, "point",
+                    tip="Move the opening", extra={"shape": "circle"}))
+    return out
+
+
+def hole_changed(h: list, key: str, v) -> list:
+    """An opening's outline with its grip ``key`` (after «h<j>») at ``v``."""
+    pts = [list(p) for p in h]
+    if key == "m":                                  # moved, whole
+        return [[round(p[0] + v[0], 4), round(p[1] + v[1], 4)] for p in pts]
+    if key == "r":                                  # its radius
+        cx, cy, r = round_hole(h)
+        k = float(v) / r
+        return [[round(cx + (p[0] - cx) * k, 4), round(cy + (p[1] - cy) * k, 4)]
+                for p in pts]
+    i = int(key[1:])
+    if key[0] == "v":
+        pts[i] = [round(pts[i][0] + v[0], 4), round(pts[i][1] + v[1], 4)]
+        return pts
+    n = _outward([tuple(p) for p in h], i)
+    for k in (i, (i + 1) % len(pts)):
+        pts[k] = [round(pts[k][0] + n[0] * v, 4), round(pts[k][1] + n[1] * v, 4)]
+    return pts
+
+
+def _hole_key(key: str):
+    """«h3v1» → (3, "v1"); «h0m» → (0, "m")."""
+    k = key[1:]
+    i = 0
+    while i < len(k) and k[i].isdigit():
+        i += 1
+    return int(k[:i]), k[i:]
+
+
+def _guard_sides(pts, closed) -> list:
+    n = len(pts)
+    return [(i, (i + 1) % n) for i in range(n if closed and n > 2 else n - 1)]
+
+
+def guard_grips(g: dict, z: float, foot=None) -> list[Grip]:
+    """A low wall's / guard's (guards.py): each point (free on the plane),
+    each side's middle (it moves parallel — its two points with it) and
+    its height, over the middle of its first side. On its TOP — over
+    ``foot(x, y)`` (``guards.support``: the slab / ground under it), else
+    over ``z``."""
+    pts = [tuple(p) for p in g.get("pts") or []]
+    if len(pts) < 2:
+        return []
+    H = float(g.get("h", 1.10))
+
+    def top(x, y):
+        return (foot(x, y) if foot is not None else z) + H
+    out = [Grip(f"v{i}", (p[0], p[1], top(*p)), (1.0, 0.0, 0.0), 0.0,
+                "point", tip="Its point — drag it anywhere")
+           for i, p in enumerate(pts)]
+    closed = bool(g.get("closed"))
+    for i, j in _guard_sides(pts, closed):
+        a, b = pts[i], pts[j]
+        u = _unit2((b[0] - a[0], b[1] - a[1]))
+        if u == (0.0, 0.0):
+            continue
+        m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        out.append(Grip(f"s{i}", (m[0], m[1], top(*m)),
+                        (-u[1], u[0], 0.0), 0.0, "move", True,
+                        "Move this side, parallel"))
+    a, b = pts[0], pts[1]
+    u = _unit2((b[0] - a[0], b[1] - a[1]))
+    off = 0.25                          # beside the side's own grip
+    m = ((a[0] + b[0]) / 2 + u[0] * off, (a[1] + b[1]) / 2 + u[1] * off)
+    out.append(Grip("h", (m[0], m[1], top(*m)), (0.0, 0.0, 1.0), H,
+                    tip="Its height"))
+    # its gaps: each edge slides along its line (closed up: gone)
+    try:
+        from . import guards as GD
+    except ImportError:                  # (the Lite has no guards.py)
+        return out
+    for k, (s0, s1) in enumerate(GD._normal(g)):
+        for key, s in ((f"ga{k}", s0), (f"gb{k}", s1)):
+            (x, y), u = GD.point_at(g, s)
+            out.append(Grip(key, (x, y, top(x, y) - H / 2),
+                            (u[0], u[1], 0.0), 0.0, "move",
+                            tip="The gap's edge — drag it shut and it is "
+                                "gone"))
+    return out
+
+
+def glazing_grips(g: dict, z0: float) -> list[Grip]:
+    """A FREE glass grid's (glazing.py): its two ends (free on the plane),
+    its top (its height) and its foot (its sill — the top stays), at its
+    middle. (One in an Opening has its opening's grips — ui.)"""
+    a, b = tuple(g["a"]), tuple(g["b"])
+    if math.dist(a, b) < 1e-6:
+        return []
+    base, H = float(g.get("base", 0.0)), float(g.get("h", 2.10))
+    zb = z0 + base
+    zm = zb + H / 2
+    m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    return [Grip("a", (a[0], a[1], zm), (1.0, 0.0, 0.0), 0.0, "point",
+                 tip="Its end — drag it anywhere"),
+            Grip("b", (b[0], b[1], zm), (1.0, 0.0, 0.0), 0.0, "point",
+                 tip="Its end — drag it anywhere"),
+            Grip("h", (m[0], m[1], zb + H), (0.0, 0.0, 1.0), H,
+                 tip="Its height"),
+            Grip("base", (m[0], m[1], zb), (0.0, 0.0, 1.0), base,
+                 tip="Its sill — the top stays", extra={"top": base + H})]
+
+
+def glazing_changed(doc: dict, e: dict, key: str, v, grip=None):
+    """(the document with a free glass grid's grip at ``v``, why not)."""
+    from . import structure as S
+    r = dict(e)
+    if key in ("a", "b"):
+        r[key] = [round(e[key][0] + v[0], 4), round(e[key][1] + v[1], 4)]
+    elif key == "h":
+        r["h"] = round(v, 4)
+    elif key == "base":
+        top = float(e.get("base", 0.0)) + float(e.get("h", 2.10))
+        if top - v < 0.2:
+            return doc, "Too low for a glass grid"
+        r["base"], r["h"] = round(v, 4), round(top - v, 4)
+    why = S.why_not(r)
+    if why:
+        return doc, why
+    return _struct_set(doc, r), None
+
+
+def guard_changed(doc: dict, e: dict, key: str, v):
+    """(the document with a guard's grip at ``v``, why not or None)."""
+    from . import structure as S
+    r = dict(e)
+    pts = [list(p) for p in e["pts"]]
+    if key[:2] in ("ga", "gb"):                # a gap's edge, along it
+        from . import guards as GD
+        gs = [list(x) for x in GD._normal(e)]
+        k = int(key[2:])
+        if k >= len(gs):
+            return doc, None
+        L = GD.length(e)
+        s0, s1 = gs[k]
+        if key[1] == "a":
+            s0 = min(s0 + v, s1)
+            if not e.get("closed"):
+                s0 = max(s0, 0.0)
+        else:
+            s1 = max(s1 + v, s0)
+            if not e.get("closed"):
+                s1 = min(s1, L)
+        if s1 - s0 > L - GD.MIN_PIECE:
+            return doc, "A gap as long as the whole of it"
+        gs[k] = [round(s0, 4), round(s1, 4)]
+        gs = [x for x in gs if x[1] - x[0] >= GD.MIN_GAP]
+        r["gaps"] = gs
+        if not gs:
+            r.pop("gaps")
+        return _struct_set(doc, r), None
+    if key == "h":
+        if not 0.3 <= v <= 3.0:
+            return doc, "A low wall / guard goes from 0.30 to 3.00 m high"
+        r["h"] = round(v, 4)
+    elif key.startswith("v"):
+        i = int(key[1:])
+        pts[i] = [round(pts[i][0] + v[0], 4), round(pts[i][1] + v[1], 4)]
+        r["pts"] = pts
+    else:
+        i = int(key[1:])
+        j = (i + 1) % len(pts)
+        a, b = pts[i], pts[j]
+        u = _unit2((b[0] - a[0], b[1] - a[1]))
+        n = (-u[1], u[0])
+        for k in (i, j):
+            pts[k] = [round(pts[k][0] + n[0] * v, 4),
+                      round(pts[k][1] + n[1] * v, 4)]
+        r["pts"] = pts
+    if r.get("closed") and len(pts) > 2:
+        try:
+            from shapely.geometry import Polygon
+            if not Polygon(pts).is_valid:
+                return doc, "The sides would cross"
+        except Exception:  # noqa: BLE001
+            pass
+    why = S.why_not(r)
+    if why:
+        return doc, why
+    return _struct_set(doc, r), None
+
+
+def guard_deleted(e: dict, key: str):
+    """(the guard with Delete on its grip ``key``, why not or None) — a
+    side's grip: that whole side a gap; a gap's edge: the gap closed
+    (his ask, 2026-10-15). None, None: not a grip Delete is for."""
+    from . import guards as GD
+    pts = [tuple(p[:2]) for p in e.get("pts") or []]
+    if key[:2] in ("ga", "gb"):
+        gs = GD._normal(e)
+        k = int(key[2:])
+        if k >= len(gs):
+            return None, None
+        return dict(e, gaps=[list(x) for i, x in enumerate(gs) if i != k]), \
+            None
+    if not key.startswith("s") or not key[1:].isdigit():
+        return None, None
+    i = int(key[1:])
+    sides = dict(_guard_sides(pts, bool(e.get("closed"))))
+    if i not in sides:
+        return None, None
+    a, b = pts[i], pts[sides[i]]
+    s0 = GD.along(e, a)[0] if i else 0.0
+    d = math.dist(a, b)
+    if d < GD.MIN_GAP:
+        return None, "That side is too short"
+    r = GD.with_gap(e, s0 + d / 2, d)
+    L = GD.length(e)
+    if sum(s1 - s0 for s0, s1 in GD.gaps_of(r)) >= L - GD.MIN_PIECE:
+        return None, "Nothing would be left — select it and Delete it all"
+    return r, None
+
+
+def guard_magnets(doc: dict, gid: str, key: str, z: float) -> list:
+    """A guard's point: onto the walls' ends, the slabs' corners, the other
+    guards' points — ("pt", …); lined up with them and its own points —
+    ("x" | "y", …). Its side: onto the walls' faces and the slabs' edges
+    running parallel near it — (d, anchor)."""
+    st = doc.get("structure") or []
+    g = next((x for x in st if x["id"] == gid), None)
+    if g is None or key == "h" or key[:2] in ("ga", "gb"):
+        return []
+    lid = g["level"]
+    pts = [tuple(p) for p in g["pts"]]
+    walls = [w for w in doc.get("walls") or [] if straight(w)]
+    slabs = [[tuple(p) for p in x["corners"]] for x in st
+             if x.get("type") == "slab" and x["level"] == lid]
+    slabs += [[tuple(p) for p in h] for x in st if x.get("type") == "slab"
+              and x["level"] == lid for h in x.get("holes") or []]
+    others = [tuple(p) for x in st if x.get("type") == "guard"
+              and x["level"] == lid and x["id"] != gid for p in x["pts"]]
+    if key.startswith("v"):
+        i = int(key[1:])
+        P = pts[i]
+        cand = [p for o in slabs for p in o] + others + \
+            [tuple(w[e]) for w in walls for e in ("a", "b")]
+        out = [("pt", (Q[0] - P[0], Q[1] - P[1]), (Q[0], Q[1], z))
+               for Q in cand]
+        for Q in [q for n, q in enumerate(pts) if n != i] + cand:
+            out.append(("x", Q[0] - P[0], (Q[0], Q[1], z)))
+            out.append(("y", Q[1] - P[1], (Q[0], Q[1], z)))
+        return out
+    i = int(key[1:])
+    a, b = pts[i], pts[(i + 1) % len(pts)]
+    su = _unit2((b[0] - a[0], b[1] - a[1]))
+    n = (-su[1], su[0])
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    segs = [(o[m], o[(m + 1) % len(o)]) for o in slabs for m in range(len(o))]
+    for w in walls:
+        cs = W.centre(w)
+        wu = _unit2((w["b"][0] - w["a"][0], w["b"][1] - w["a"][1]))
+        wn = (-wu[1], wu[0])
+        for sg in (1.0, -1.0):
+            off = sg * float(w["t"]) / 2
+            segs.append(((cs.p0[0] + wn[0] * off, cs.p0[1] + wn[1] * off),
+                         (cs.p1[0] + wn[0] * off, cs.p1[1] + wn[1] * off)))
+    out = []
+    for p, q in segs:
+        ou = _unit2((q[0] - p[0], q[1] - p[1]))
+        if abs(ou[0] * su[1] - ou[1] * su[0]) > 0.02:
+            continue
+        d = (p[0] - mid[0]) * n[0] + (p[1] - mid[1]) * n[1]
+        if abs(d) <= 2.0:
+            out.append((d, (mid[0] + n[0] * d, mid[1] + n[1] * d, z)))
     return out
 
 
@@ -298,6 +616,25 @@ def flight_grips(r: dict, ps: list, zs: float, ze: float) -> list[Grip]:
         out.append(Grip("len", (sx + u[0] * L, sy + u[1] * L, ze),
                         (u[0], u[1], 0.0), L,
                         tip="Its length — the slope follows"))
+    # its LANDING AT THE TOP (his idea, 2026-10-18): a grip on the front
+    # face of its top — none yet: on its last step's edge — pushed out, the
+    # platform grows (typed: that long; back to 0: none)
+    top = R.top_piece(dict(r, top_landing=max(float(
+        r.get("top_landing", 0.0) or 0.0), 0.02)), ps, zs, ze)
+    if top is not None:
+        (cx, cy), (dx, dy) = top["c"], top["d"]
+        tl = float(r.get("top_landing", 0.0) or 0.0)
+        if ze >= zs:                      # up: its far face, out along d
+            p, ax = (cx + dx * top["l"], cy + dy * top["l"]), (dx, dy)
+            if tl < 0.01:
+                p = (cx, cy)              # (none: the last step's edge)
+        else:                             # down: behind the click
+            p, ax = (cx, cy), (-dx, -dy)
+            if tl < 0.01:
+                p = (cx + dx * top["l"], cy + dy * top["l"])
+        out.append(Grip("top", (p[0], p[1], max(zs, ze)),
+                        (ax[0], ax[1], 0.0), tl,
+                        tip="Its landing at the top — push it out (0: none)"))
     return out
 
 
@@ -400,6 +737,24 @@ def flight_magnets(doc: dict, r: dict, key: str, grip, ps: list) -> list:
             if v >= 0.5:
                 out.append((round(v, 4), anchor(p0, wu, L, P)))
         return out
+    if key == "top":
+        # its landing at the top onto a face ACROSS its way, ahead (the
+        # façade it reaches, a slab's edge): that long
+        a = (grip.axis[0], grip.axis[1])
+        P = grip.p
+        for p0, wu, L in faces:
+            if not para(wu, (-a[1], a[0])):
+                continue
+            d = (p0[0] - P[0]) * a[0] + (p0[1] - P[1]) * a[1]
+            if abs(d) > 6.0:
+                continue
+            tp = (P[0] - p0[0]) * wu[0] + (P[1] - p0[1]) * wu[1]
+            if not -1.0 <= tp <= L + 1.0:
+                continue
+            v = grip.base + d
+            if v >= 0.0:
+                out.append((round(v, 4), anchor(p0, wu, L, P)))
+        return out
     if key != "m":
         return out
     # its outline in its own axes (u along, n across) — every piece
@@ -461,6 +816,9 @@ def roof_grips(r: dict, z: float) -> list[Grip]:
         long_ = [i for i in range(4) if i not in short]
         # the ridge along the long sides: the gable ends are the short ones
         gable = set(short if r.get("ridge", "long") == "long" else long_)
+    elif kind == "gable":                 # an L / any plan: its gable ends
+        from . import structure as S
+        gable = S.roof_gable_sides(r)
     ov = float(r.get("overhang", 0.5))
     go = float(r.get("go", ov))
     out = []
@@ -472,9 +830,16 @@ def roof_grips(r: dict, z: float) -> list[Grip]:
         m = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
         out.append(Grip(f"e{i}", (m[0] + nn[0] * d, m[1] + nn[1] * d, z),
                         (nn[0], nn[1], 0.0), d,
-                        tip="The gable end's overhang" if g
-                        else "The eaves' overhang — all round",
+                        tip="Overhang of the gable ends" if g
+                        else "Overhang of the eaves — all round",
                         extra={"go": g}))
+        # the SIDE itself, on the walls' line: it moves parallel and the
+        # overhang stays (his project, 2026-10-18: he pulled the roof's side
+        # out 3 m with the eaves' grip and got a 3 m overhang all round)
+        if kind == "flat" or len(pts) == 4:
+            out.append(Grip(f"s{i}", (m[0], m[1], z), (nn[0], nn[1], 0.0),
+                            0.0, "move", True,
+                            "Move this side, parallel — the overhang stays"))
     return out
 
 
@@ -519,6 +884,9 @@ def flight_changed(doc: dict, e: dict, key: str, v, grip=None):
         if v < 0.5:
             return doc, "Too short"
         r.update(L=round(v, 4), fix="length")
+    elif key == "top":                    # its landing at the top
+        r["top_landing"] = round(max(float(v), 0.0), 4) \
+            if float(v) >= 0.05 else 0.0
     else:
         return doc, None
     why = R.why_not(r) if e["type"] == "ramp" else None
@@ -548,6 +916,10 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
     lv = getattr(grip, "extra", None) or {}
     if t in ("stair", "ramp"):
         return flight_changed(doc, e, key, v, grip)
+    if t == "guard":
+        return guard_changed(doc, e, key, v)
+    if t == "glazing":
+        return glazing_changed(doc, e, key, v, grip)
     if t == "roof" and key.startswith("e"):   # an eave's overhang
         if not 0.0 <= v <= 3.0:
             return doc, "An overhang goes from 0 to 3 m"
@@ -555,6 +927,24 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         if not lv.get("go") and "go" not in e:
             r["go"] = float(e.get("overhang", 0.5))   # the gable ends stay
         return _struct_set(doc, r), None
+    if t == "roof" and key.startswith("s"):   # a side, moved parallel
+        pts = [list(p) for p in e["corners"]]
+        i = int(key[1:])
+        if i >= len(pts):
+            return doc, "Gone"
+        n = _outward([tuple(p) for p in e["corners"]], i)
+        for j in (i, (i + 1) % len(pts)):
+            pts[j] = [round(pts[j][0] + n[0] * v, 4),
+                      round(pts[j][1] + n[1] * v, 4)]
+        try:
+            from shapely.geometry import Polygon
+            if not Polygon(pts).is_valid or Polygon(pts).area < 0.5:
+                return doc, "The sides would cross"
+        except Exception:  # noqa: BLE001
+            return doc, "Not a roof outline"
+        r["corners"] = pts
+        why = S.why_not(r)
+        return (doc, why) if why else (_struct_set(doc, r), None)
     if t == "column":
         cx, cy = S.column_centre(e)
         u, vv = _col_axes(e)
@@ -606,6 +996,15 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         if v < 0.02:
             return doc, "Too thin for a slab"
         r["t"] = round(v, 4)
+    elif t == "slab" and key.startswith("h"):   # one of its openings
+        j, k = _hole_key(key)
+        holes = [list(h) for h in e.get("holes") or []]
+        if j >= len(holes) or (k == "r" and not round_hole(holes[j])):
+            return doc, "Gone"
+        if k == "r" and float(v) < 0.05:
+            return doc, "Too small for an opening"
+        holes[j] = hole_changed(holes[j], k, v)
+        r["holes"] = holes
     elif t == "slab":
         pts = [list(p) for p in e["corners"]]
         if key.startswith("v"):
@@ -624,6 +1023,10 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         except Exception:  # noqa: BLE001
             return doc, "Not a slab outline"
         r["corners"] = pts
+    if t == "slab":                 # its openings stay inside it, apart
+        why = S.holes_fit(r, e)
+        if why:
+            return doc, why
     why = S.why_not(r)
     if why:
         return doc, why
@@ -943,6 +1346,77 @@ def column_magnets(doc: dict, cid: str, key: str, z: float) -> list:
     return [(round(v, 4), A) for v, A in out if v >= 0.05]
 
 
+def _flight_outlines(doc: dict, lid) -> list:
+    """The outlines the ramps / stairs open in level ``lid``'s slab."""
+    try:
+        from . import model
+        from . import structure as S
+        return [[tuple(p) for p in c] for c in
+                S.flight_cuts(doc, model.elevations).get(lid, [])]
+    except Exception:  # noqa: BLE001 — nothing to stick to
+        return []
+
+
+def hole_magnets(doc: dict, s: dict, key: str, z: float, walls: list) -> list:
+    """A slab OPENING's corner: onto the corners of the stairs' / ramps'
+    openings, the walls' ends, the columns' corners, the slab's and the
+    other openings' corners — ("pt", …); lined up with them, each way —
+    ("x" | "y", …). Its side: onto the parallel sides of those outlines
+    and the walls' faces near it — (d, anchor). Moved whole: nothing."""
+    from . import structure as S
+    j, k = _hole_key(key)
+    holes = [[tuple(p) for p in h] for h in s.get("holes") or []]
+    if j >= len(holes) or k in ("m", "r"):
+        return []
+    h = holes[j]
+    lid = s["level"]
+    st = doc.get("structure") or []
+    outlines = _flight_outlines(doc, lid) + [pts for i, pts in
+                                             enumerate(holes) if i != j]
+    outlines.append([tuple(p) for p in s["corners"]])
+    cols = [S.column_outline(c, 0.0) for c in st if c.get("type") == "column"
+            and c["level"] == lid and c.get("shape") != "round"]
+    if k[0] == "v":
+        i = int(k[1:])
+        P = h[i]
+        others = [p for o in outlines + cols for p in o]
+        others += [tuple(w[e]) for w in walls for e in ("a", "b")]
+        out = [("pt", (Q[0] - P[0], Q[1] - P[1]), (Q[0], Q[1], z))
+               for Q in others]
+        for Q in [q for n, q in enumerate(h) if n != i] + others:
+            out.append(("x", Q[0] - P[0], (Q[0], Q[1], z)))
+            out.append(("y", Q[1] - P[1], (Q[0], Q[1], z)))
+        return out
+    i = int(k[1:])
+    a, b = h[i], h[(i + 1) % len(h)]
+    n = _outward(h, i)
+    su = _unit2((b[0] - a[0], b[1] - a[1]))
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    segs = [(o[m], o[(m + 1) % len(o)]) for o in outlines + cols
+            for m in range(len(o))]
+    for w in walls:                       # a wall's two faces
+        cs = W.centre(w)
+        wu = _unit2((w["b"][0] - w["a"][0], w["b"][1] - w["a"][1]))
+        wn = (-wu[1], wu[0])
+        for sg in (1.0, -1.0):
+            off = sg * float(w["t"]) / 2
+            segs.append(((cs.p0[0] + wn[0] * off, cs.p0[1] + wn[1] * off),
+                         (cs.p1[0] + wn[0] * off, cs.p1[1] + wn[1] * off)))
+    out = []
+    for p, q in segs:
+        ou = _unit2((q[0] - p[0], q[1] - p[1]))
+        if abs(ou[0] * su[1] - ou[1] * su[0]) > 0.02:
+            continue                          # not parallel
+        d = (p[0] - mid[0]) * n[0] + (p[1] - mid[1]) * n[1]
+        if abs(d) <= 2.0:
+            t0 = (p[0] - mid[0]) * su[0] + (p[1] - mid[1]) * su[1]
+            t1 = (q[0] - mid[0]) * su[0] + (q[1] - mid[1]) * su[1]
+            tt = min(max((t0 + t1) / 2, -1.0), 1.0)
+            out.append((d, (mid[0] + n[0] * d + su[0] * tt,
+                            mid[1] + n[1] * d + su[1] * tt, z)))
+    return out
+
+
 def slab_magnets(doc: dict, sid: str, key: str, z: float) -> list:
     """A slab's corner: onto the points of its level (another slab's
     corner, a wall's end, a column's corner) — ("pt", (dx, dy), anchor);
@@ -959,6 +1433,8 @@ def slab_magnets(doc: dict, sid: str, key: str, z: float) -> list:
     # the walls of EVERY level (a line seen over another level pulls too —
     # his test, 2026-10-13)
     walls = [w for w in doc.get("walls") or [] if straight(w)]
+    if key.startswith("h"):
+        return hole_magnets(doc, s, key, z, walls)
     if key.startswith("v"):
         i = int(key[1:])
         P = pts[i]
@@ -1461,10 +1937,37 @@ class GripControl(QObject):
             if not seen(self._px, g):
                 continue
             q = self._px(*g.p)
-            d = math.dist(q, (x, y))
-            if d <= HIT_PX and (best is None or d < best[0]):
+            if g.arrow:
+                # the whole arrow takes it, shaft and heads — a square near
+                # it still wins (+3 px)
+                e = self._arrow_way(g, q[0], q[1])
+                if e is None:
+                    continue
+                reach = ARROW_ARM + ARROW_HEAD
+                f = min(max((x - q[0]) * e[0] + (y - q[1]) * e[1], -reach),
+                        reach)
+                d = math.dist((q[0] + e[0] * f, q[1] + e[1] * f), (x, y)) + 3
+                if d - 3 > ARROW_HIT:
+                    continue
+            else:
+                d = math.dist(q, (x, y))
+                if d > HIT_PX:
+                    continue
+            if best is None or d < best[0]:
                 best = (d, g)
         return t, (best[1] if best else None)
+
+    def _arrow_way(self, g, x, y):
+        """The arrow's way on the screen (a unit 2-D vector), or None."""
+        q = self._px(g.p[0] + g.axis[0] * 0.1, g.p[1] + g.axis[1] * 0.1,
+                     g.p[2] + g.axis[2] * 0.1)
+        if not q:
+            return None
+        dx, dy = q[0] - x, q[1] - y
+        L = math.hypot(dx, dy)
+        if L < 1e-6:
+            return None
+        return dx / L, dy / L
 
     # -- the drag ---------------------------------------------------------------------
     def _start(self, t, g, x, y) -> None:
@@ -1585,10 +2088,42 @@ class GripControl(QObject):
         doc, why = self.owner.grip_value(d["kind"], d["id"], d["g"], v)
         if why:
             d["why"] = why               # it stops at the last good place
+            got = None if isinstance(v, tuple) else self._limit(v)
+            if got is not None and (got[0] != d["v"] or d["doc"] is None):
+                d["v"], d["doc"] = got   # … the LAST one: right at the limit
+                self.owner.grip_live(got[1])
         else:
             d["why"], d["v"], d["doc"] = None, v, doc
             self.owner.grip_live(doc)
         self.owner.viewport.update()
+
+    def _limit(self, v: float):
+        """(value, doc) — the furthest good value from the last good one
+        towards a refused ``v``, to the step; None: no step further. Found
+        once each way (≈ 7 tries) and kept: the mouse went past the limit
+        fast and it stayed where it started, «+0.00 m» and the why (his
+        test, 2026-10-15: Wall 15 stopped by «Door 1» 4.5 m on)."""
+        d = self.drag
+        good = d["v"]
+        way = 1 if v > good else -1
+        lims = d.setdefault("lims", {})
+        if way in lims:
+            lv, ldoc = lims[way]
+            if (v - lv) * way >= 0:
+                return None if ldoc is None else (lv, ldoc)
+        step = FINE if d.get("fine") else STEP
+        lo, hi, ldoc = good, v, None
+        for _i in range(9):
+            mid = round(round((lo + hi) / 2 / step) * step, 4)
+            if mid in (lo, hi):
+                break
+            doc, why = self.owner.grip_value(d["kind"], d["id"], d["g"], mid)
+            if why:
+                hi = mid
+            else:
+                lo, ldoc = mid, doc
+        lims[way] = (lo, ldoc)           # (ldoc None: already at it)
+        return None if ldoc is None else (lo, ldoc)
 
     def _drop(self) -> None:
         d, self.drag = self.drag, None
@@ -1662,6 +2197,20 @@ class GripControl(QObject):
             if t == QEvent.ShortcutOverride and self.drag is not None:
                 event.accept()       # its keys (digits, «c», «m»): ours
                 return True
+            if t in (QEvent.ShortcutOverride, QEvent.KeyPress) \
+                    and self.drag is None and self.hot \
+                    and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+                # Delete with the pointer on a grip: that grip's own
+                # (a guard's side → a gap) — not the whole element
+                from PySide6.QtGui import QCursor
+                p = self.owner.viewport.mapFromGlobal(QCursor.pos())
+                tg, g = self._grip_at(p.x(), p.y())   # still on it
+                fn = getattr(self.owner, "grip_delete", None)
+                if tg and g is not None and g.key == self.hot \
+                        and fn is not None \
+                        and fn(tg[0], tg[1], g.key, t == QEvent.KeyPress):
+                    event.accept()
+                    return True
             if t == QEvent.KeyPress and self.drag is not None:
                 return self._key(event)
         except Exception:  # noqa: BLE001 — never break the host's mouse
@@ -1845,38 +2394,52 @@ class GripControl(QObject):
             QPointF(a[0], a[1] + r), QPointF(a[0] - r, a[1])]))
 
     def _arrow(self, painter, g, x, y, ink, hot) -> None:
-        """A move across: a short double arrow along its axis."""
+        """A move across: a FAT double arrow along its axis, outlined in
+        white (seen on any face — his ask, 2026-10-15)."""
         from PySide6.QtCore import QPointF
-        from PySide6.QtGui import QPen, QPolygonF
-        q = self._px(g.p[0] + g.axis[0] * 0.1, g.p[1] + g.axis[1] * 0.1,
-                     g.p[2] + g.axis[2] * 0.1)
-        if not q:
+        from PySide6.QtGui import QColor, QPen, QPolygonF
+        e = self._arrow_way(g, x, y)
+        if e is None:
             return
-        dx, dy = q[0] - x, q[1] - y
-        L = math.hypot(dx, dy) or 1.0
-        ex, ey = dx / L, dy / L
+        ex, ey = e
         nx, ny = -ey, ex
-        arm = 13 if hot else 11
-        head = 6 if hot else 5
-        painter.setPen(QPen(ink, 3.0 if hot else 2.4, Qt.SolidLine,
-                            Qt.RoundCap))
-        painter.drawLine(QPointF(x - ex * arm, y - ey * arm),
-                         QPointF(x + ex * arm, y + ey * arm))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(ink)
+        arm = ARROW_ARM + (2 if hot else 0)
+        head = ARROW_HEAD + (1 if hot else 0)
+        wide = head * 0.85                 # the head's half width
+        shaft = 6.0 if hot else 5.0
+        heads = []
         for s in (1, -1):
             tx, ty = x + s * ex * (arm + head), y + s * ey * (arm + head)
             bx, by = x + s * ex * arm, y + s * ey * arm
-            painter.drawPolygon(QPolygonF([
-                QPointF(tx, ty), QPointF(bx + nx * head, by + ny * head),
-                QPointF(bx - nx * head, by - ny * head)]))
+            heads.append(QPolygonF([
+                QPointF(tx, ty), QPointF(bx + nx * wide, by + ny * wide),
+                QPointF(bx - nx * wide, by - ny * wide)]))
+        a = QPointF(x - ex * arm, y - ey * arm)
+        b = QPointF(x + ex * arm, y + ey * arm)
+        # the white outline first, then the colour over it
+        out = QColor(OUTLINE)
+        painter.setPen(QPen(out, shaft + 2.4, Qt.SolidLine, Qt.FlatCap))
+        painter.drawLine(a, b)
+        painter.setPen(QPen(out, 2.4, Qt.SolidLine, Qt.SquareCap,
+                            Qt.MiterJoin))
+        painter.setBrush(out)
+        for h in heads:
+            painter.drawPolygon(h)
+        painter.setPen(QPen(ink, shaft, Qt.SolidLine, Qt.FlatCap))
+        painter.drawLine(a, b)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(ink)
+        for h in heads:
+            painter.drawPolygon(h)
 
 
 def label(g: Grip, v) -> str:
+    """(In the document's unit — feet / inches too: compat.fmt_len.)"""
+    from . import compat
     if g.mode == "point":
         if len(v) > 2 and v[2]:
-            return f"{v[2]:+.2f} m ↑"
-        return f"{math.hypot(*v):.2f} m"
+            return f"{compat.fmt_level(v[2])} ↑"
+        return compat.fmt_len(math.hypot(*v))
     if g.mode == "move":
-        return f"{v:+.2f} m"
-    return f"{v:.2f} m"
+        return compat.fmt_level(v)
+    return compat.fmt_len(v)

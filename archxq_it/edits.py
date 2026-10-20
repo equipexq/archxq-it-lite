@@ -28,7 +28,7 @@ from . import model
 #: the record kinds a host Move / Rotate / Copy is adopted for — a wall
 #: moved stretches the walls joined to it (wallmove.py, 2026-10-10)
 ADOPT = ("column", "beam", "footing", "slab", "roof", "ramp", "stair",
-         "wall")
+         "wall", "guard", "glazing")
 TOL = 0.002                     # m — a vertex «still there»
 
 
@@ -134,6 +134,8 @@ def moved(rec: dict, m) -> dict:
         r["corners"] = [pt(p) for p in r["corners"]]
     if "holes" in r:
         r["holes"] = [[pt(p) for p in h] for h in r["holes"]]
+    if "pts" in r:                       # a low wall's / guard's line
+        r["pts"] = [pt(p) for p in r["pts"]]
     if "angle" in r:
         r["angle"] = _angle(float(r["angle"]) + th)
     return r

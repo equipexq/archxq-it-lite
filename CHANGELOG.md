@@ -1,5 +1,47 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.10.3
+
+Everything since 0.10.2, for what the Lite draws (the plot and its
+excavations, walls, columns, levels). Tested with IngeTrazo 0.5.8 and
+0.5.9 (its experimental Rust engine too).
+
+- **NEW: ArchXQ in Portuguese and German** — **Settings ▸ Language**:
+  Auto (as IngeTrazo), English, Português (Brasil) or Deutsch; it takes
+  effect when IngeTrazo is restarted. The phases, the bars, the library,
+  the windows, the panels, the right-click menu, the status messages and
+  the help (the «?» cards, the quick help and every tool's guide). The
+  names you gave (levels, rooms) stay as they are.
+- **NEW: Units in ArchXQ's Settings** — **Settings ▸ Units ▸ Lengths in**:
+  metres, centimetres, millimetres, inches, feet, or feet and inches. It
+  is the document's own unit (the same setting as IngeTrazo's
+  **Preferences ▸ Units**); with **New documents too**, new documents
+  start in it.
+- **NEW: pan with Space, without leaving the tool** — drawing a wall or a
+  column, hold **Space** and move the mouse: the view pans and the tool
+  stays where it was. With IngeTrazo's own tools Space is still «Select».
+- **NEW: the ArchXQ panel can float** — drag its tab out of the side tray
+  (or double-click its title): on a second monitor, out of the model's
+  way. ArchXQ remembers where it was.
+- **Feet and inches** — in a document kept in feet / inches, every
+  measure shows that way (fields, bars, grips, levels, areas); type
+  3'7", 43" or 110 cm. A metres document reads exactly as before.
+- **Faster on big projects** — a change swaps only what changed, and the
+  undo history no longer keeps a copy of the whole building each time;
+  orbiting no longer stutters.
+- **Bigger grips**, easier to take; a grip dragged too far stops right at
+  the limit and says why.
+- **Setback outline off by default** — it shows in **Terrain ›
+  Setbacks**; **Setback outline** turns it on for good.
+- Fix: in a level's window, **Repeat & copy** — choosing a level and
+  pressing **OK** saved only the name and height. Now OK asks.
+- Fix: a column fitted inside a wall (**Fit inside**) that was moved off
+  it, or whose wall was moved or deleted, disappeared while the walls
+  were shown.
+- Fix: after **⏻ ArchXQ** off and on, the **Levels** box stayed hidden
+  until N was pressed; the quick help card no longer shrinks to its
+  title; **Tab / Shift+Tab** reach the tools again.
+
 ## 0.10.2
 
 Everything since 0.9.5, for what the Lite draws (the plot and its

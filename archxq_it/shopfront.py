@@ -43,6 +43,9 @@ SIGN_H = 0.60            # m, the sign band
 SIGN_D = 0.05            # m, its depth off the wall face
 HANDLE_H = 0.80          # m, a pull handle's length
 OFF = 0.002              # m, off the wall face (never its plane)
+#: a solid panel (over a door, a base) this far in from the frame's faces —
+#: thick enough that its back never shows through from afar
+PANEL_IN = 0.010
 
 ALU_COLOR = (0.18, 0.19, 0.21, 1.0)      # dark anodised aluminium
 GLASS_COLOR = (0.55, 0.72, 0.80, 0.30)
@@ -132,16 +135,20 @@ def parts(o: dict, box, s0: float, s1: float, zs: float, zt: float,
                 out.append(box(d0, d1, -0.004, 0.004, zd + f, zt - f,
                                GLASS_COLOR))
             else:
-                out.append(box(d0, d1, -0.01, 0.01, zd + f, zt - f,
-                               BASE_COLOR))
+                # 5 cm, 1 cm in from the frame's faces: 2 cm let its back
+                # face show through from afar (yellow streaks moving with
+                # the camera — the depth buffer's grain; his screen,
+                # 2026-10-16)
+                out.append(box(d0, d1, -(hd - PANEL_IN), hd - PANEL_IN,
+                               zd + f, zt - f, BASE_COLOR))
     # the fixed panes: mullions between them, a base, the transom bar
     for i, (pa, pb) in enumerate(panes):
         if i and abs(pa - panes[i - 1][1] - f) < 1e-6:
             out.append(box(pa - f, pa, -hd, hd, zs0, zt - f, ALU_COLOR))
         z = zs0
         if base > 0.02:
-            out.append(box(pa, pb, -0.015, 0.015, zs0, zs0 + base,
-                           BASE_COLOR))
+            out.append(box(pa, pb, -(hd - PANEL_IN), hd - PANEL_IN, zs0,
+                           zs0 + base, BASE_COLOR))
             out.append(box(pa, pb, -hd, hd, zs0 + base, zs0 + base + f,
                            ALU_COLOR))
             z = zs0 + base + f

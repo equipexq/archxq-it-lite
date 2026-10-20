@@ -60,6 +60,19 @@ def symbol_lines(o: dict, wall: dict, seg) -> list:
     elif o["kind"] == "window":
         for c in (-t / 3, t / 3):
             lines.append((P(s0, c), P(s1, c)))
+    elif o["kind"] == "door" and o.get("op") == "garage":
+        # a garage door: its leaf, closed, across the opening (2 lines);
+        # a roll-up's box on the inside face too
+        for c in (-0.02, 0.02):
+            lines.append((P(s0, c), P(s1, c)))
+        if S.garage_kind(o) == "rollup":
+            side = S.door_side(dict(o, out=False), wall)
+            c1 = side * (t + S.GARAGE_BOX)
+            lines += [(P(s0 - S.GARAGE_GUIDE, side * t),
+                       P(s0 - S.GARAGE_GUIDE, c1)),
+                      (P(s0 - S.GARAGE_GUIDE, c1), P(s1 + S.GARAGE_GUIDE, c1)),
+                      (P(s1 + S.GARAGE_GUIDE, c1),
+                       P(s1 + S.GARAGE_GUIDE, side * t))]
     elif o["kind"] == "door" and o.get("op") == "sliding":
         lines += _sliding_lines(o, wall, P, s0, s1, t)
     elif o["kind"] == "door" and int(o.get("leaves", 1) or 1) == 2:
@@ -237,7 +250,7 @@ class OpeningTool(_PlotTool):
     noun = "Opening"
     icon = "rectangle"
     vcb_label = ""
-    claimed_keys = frozenset({Qt.Key_Tab})
+    claimed_keys = frozenset({Qt.Key_Tab, Qt.Key_Backtab})
 
     def __init__(self, kind, on_done, on_cancelled, z, opts, walls,
                  openings, wall_height):
@@ -285,6 +298,11 @@ class OpeningTool(_PlotTool):
             rec["leaf"] = o.get("leaf", "solid")
             rec["open"] = o.get("open", 0.0)
             rec["out"] = bool(o.get("out", False))   # opens to the outside
+            if rec["op"] == "garage":                # a garage door's kind
+                rec["garage"] = S.garage_kind(o)
+                rec["gfinish"] = S.garage_finish(o)
+                rec["gwin"] = bool(o.get("gwin"))
+                rec["leaves"] = 1
         if self.kind == "window" and o.get("op") in S.WIN_KINDS:
             rec["op"] = o["op"]                      # a window with leaves
             rec["leaves"] = S.window_leaves(o)
@@ -296,6 +314,8 @@ class OpeningTool(_PlotTool):
             rec.update({k: o.get(k, v) for k, v in DEFAULTS.items()})
         if o.get("glass") == "opaque":               # opaque panes
             rec["glass"] = "opaque"
+        from .trim import keys_of                    # its trim and sill
+        rec.update(keys_of(dict(o, op=rec.get("op")), self.kind))
         return wall, seg, rec
 
     def on_hover(self, ctx) -> None:
@@ -318,12 +338,36 @@ class OpeningTool(_PlotTool):
         self.viewport.update()
         self.on_done(rec)               # the tool stays for the next
 
+    #: ui sets: the library shown again after a key changed the options
+    on_flip = staticmethod(lambda: None)
+
+    def _opens_both_ways(self) -> bool:
+        o = self.opts()
+        if self.kind == "door":
+            return o.get("op", "swing") == "swing"    # (not a garage door)
+        return self.kind == "window" and o.get("op") == "casement"
+
     def on_key(self, viewport, key, modifiers) -> bool:
+        backtab = key == Qt.Key_Backtab or (
+            key == Qt.Key_Tab and modifiers & Qt.ShiftModifier)
+        if backtab and self._opens_both_ways():
+            # Shift+Tab: it opens in ↔ out (his ask, 2026-10-15: «I don't
+            # remember how it opened in or out» — the library's «Opens»)
+            o = self.opts()
+            o["out"] = not o.get("out", False)
+            if self.hover:
+                self.here = self.record(self.hover)
+            compat.flash(viewport, "Opens " + ("OUT" if o["out"] else "IN")
+                         + " — Shift+Tab: the other way", 2500)
+            self.on_flip()
+            viewport.update()
+            return True
         if key == Qt.Key_Tab and self.kind == "door":
             o = self.opts()
             o["swing"] = "right" if o.get("swing") == "left" else "left"
             if self.hover:
                 self.here = self.record(self.hover)
+            self.on_flip()
             viewport.update()
             return True
         return super().on_key(viewport, key, modifiers)
@@ -335,7 +379,9 @@ class OpeningTool(_PlotTool):
         if self.here is None:
             return None
         wall, _seg, o = self.here
-        text = f"{o['w']:.2f} × {o['h']:.2f} m"
+        text = (f"{o['w']:.2f} × {o['h']:.2f} m"
+                if compat.doc_length_unit() == "m" else
+                f"{compat.fmt_len(o['w'])} × {compat.fmt_len(o['h'])}")
         try:            # red: why, at the cursor (the flash went unseen)
             why = S.opening_room(o, wall, self.openings(),
                                  self.wall_height(wall))
@@ -346,6 +392,9 @@ class OpeningTool(_PlotTool):
     def status_clause(self) -> str:
         tail = "  ·  Tab = hinge on the other side" if self.kind == "door" \
             else ""
+        if self._opens_both_ways():
+            tail += "  ·  Shift+Tab = opens " + (
+                "in" if self.opts().get("out") else "out")
         return (f"{self.noun}: move along a wall and click where it goes"
                 f"{tail}  ·  Esc = done")
 

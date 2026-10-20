@@ -218,7 +218,7 @@ class WallEditTool(_PlotTool):
     def value_label(self):
         if self.moving is None or self.hover is None:
             return None
-        return (f"{math.dist(self.origin, self.hover):.2f} m", None)
+        return (compat.fmt_len(math.dist(self.origin, self.hover)), None)
 
     def rubber_band_lines(self):
         if self.moving is None:

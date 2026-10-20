@@ -93,7 +93,66 @@ HELP: dict[str, tuple[str, str]] = {
         "click where it starts and the way it "
         "goes; <b>Tab</b> turns an L / U the other way.<br><br>The slab it "
         "goes through gets its hole by itself. A double-click on a ramp "
-        "opens this window again.<br><br>" + RAILING_HELP),
+        "opens this window again.<br><br><b>From</b> = <b>The terrain</b>: "
+        "it starts on the ground at its foot (read where you place it). "
+        "<b>Set by ▸ By heights</b>: just the two elevations it goes "
+        "between. <b>Build ▸ Solid</b>: filled down to the floor.<br><br>"
+        + RAILING_HELP),
+    "glazing": (
+        "Glass grid",
+        "Squared glass: a frame round it, a grid of muntins, a pane in "
+        "every cell held by a <b>glazing bead</b> on both faces — inside "
+        "or outside alike (Pro).<br><br>"
+        "<b>In an Opening</b>: draw an Opening (a void) in a wall "
+        "(Openings › Opening), then click it — the grid fills it, and "
+        "follows it when the opening changes (its grips are the "
+        "opening's). <b>Free</b>: two clicks — a partition, a screen "
+        "between columns.<br><br>"
+        "Pick its type in the library (Industrial, Aluminium, Partition), "
+        "the panes by their <b>size</b> or by <b>columns × rows</b>, and "
+        "<b>Glass from the outer face</b> to push the glass in or out "
+        "inside the frame. Double-click it: its window — frame and muntin "
+        "width / depth, the glass (tint, transparency, opaque), the beads."),
+    "guard": (
+        "Low walls & guards",
+        "A <b>low wall</b>, a <b>low wall with a railing</b> over it, "
+        "<b>glass</b> or <b>steel</b> — round a balcony, a void, an open "
+        "stair, along a terrace (Pro).<br><br>"
+        "Pick its type and height in the library on the right, then click "
+        "<b>point after point</b> on the plan, as walls — any angle; a "
+        "typed number lays the next point that far. <b>Enter</b> or a "
+        "double-click ends it open, <b>C</b> (or the first point) closes "
+        "it. <b>The line drawn is its</b> centre, or its left / right face "
+        "(<b>Tab</b> swaps it while drawing): draw along a slab's edge.<br>"
+        "<br><b>How</b> (library) — in one click: <b>Slab edge</b>: click a "
+        "slab, its free edges (where no wall stands) get one, its outer "
+        "face on the edge. <b>Round an opening</b>: click a slab's opening "
+        "— it goes round, 5 cm back; where a stair or ramp arrives stays "
+        "open. <b>Add a gap</b>: click on one — a passage that wide (drag "
+        "its edges after; dragged shut, it is gone).<br><br>"
+        "<b>Boundary wall</b>: the plot's wall — 2.00 m, a coping, "
+        "<b>piers</b> at its ends, bends, steps and gaps (<b>Piers "
+        "every</b>: at most that far apart; 0 = none).<br>"
+        "<b>Add a gate</b>: click a gap — or a wall, and a gap that wide "
+        "is opened with it. <b>Swing</b> (1 or 2 leaves, on hinges at the "
+        "gap's edges) or <b>Sliding</b> (on a rail along the inside face); "
+        "bars, a plate or slats; it opens into the plot (the side the "
+        "house is on). Other options and a click on it again: changed. "
+        "Shutting the gap takes its gate away.<br><br>"
+        "On sloping ground (<b>Stands on</b> Auto / Ground) a low wall's "
+        "<b>top</b> is <b>Stepped</b> — level steps, each one at most the "
+        "step's height — or <b>Follows the slope</b>. Railings always "
+        "follow it.<br><br>"
+        "On the building's roof: <b>Stands on</b> <b>Roof</b> — it stands "
+        "on top of its level's flat roof. <b>Bottom above it</b>: its "
+        "bottom face that high over what it stands on (with Floor: over "
+        "the level's zero).<br><br>"
+        "An open end that runs into a wall stops at the wall's face. "
+        "Select it: <b>grips</b> on its points, its sides, its height and "
+        "its gaps' edges — <b>Delete</b> with the mouse on a side's grip "
+        "opens that side (a gap), on a gap's edge shuts it; double-click: "
+        "its window (type, sizes, coping, "
+        "infill, material)."),
     "stair": (
         "Stair",
         "A stair between two levels, defined from the bottom up. Set its "
@@ -107,9 +166,12 @@ HELP: dict[str, tuple[str, str]] = {
         "U the other way).<br><br>The slab it goes through gets its hole by "
         "itself — or not: <b>Opening in the slab</b> (library) <b>None</b> "
         "keeps the slab whole, to draw an opening of your own.<br><br>"
+        "Entrance steps from the pavement: <b>From</b> = <b>The terrain</b> "
+        "(the ground at its foot), or <b>Set by ▸ By heights</b> with the "
+        "two elevations.<br><br>"
         "<b>Build</b> (library): <b>Concrete</b> (a slab "
-        "under the steps) or <b>Open treads</b> (boards on two steel "
-        "stringers). In «Sizes & levels…»: the <b>landing after riser N</b> "
+        "under the steps), <b>Open treads</b> (boards on two steel "
+        "stringers) or <b>Solid</b> (filled down to the floor). In «Sizes & levels…»: the <b>landing after riser N</b> "
         "(Auto: halfway), a U's <b>gap between flights</b> (its well — the "
         "floor above opens over it too) and the <b>nosing</b> (2–3 cm).<br>"
         "<br>" + RAILING_HELP),
@@ -179,7 +241,11 @@ HELP: dict[str, tuple[str, str]] = {
         "<b>Gable</b>: two slopes, the ridge along the long side (or the "
         "short), a triangle of wall closing each end. <b>Hip</b>: four "
         "slopes. A pitched roof covers the <b>rectangle</b> round what you "
-        "draw. <b>Flat</b>: a slab as drawn, with a <b>parapet</b> round "
+        "draw — but a <b>hip</b> or <b>gable</b> roof over an <b>L</b> (6 "
+        "corners at right angles) follows the L: hips at the outer corner, "
+        "a valley at the inner one. A gable L: <b>Main wing</b> (in its "
+        "window) keeps its gable at the corner, the other runs into it. "
+        "<b>Flat</b>: a slab as drawn, with a <b>parapet</b> round "
         "it (0 = none). <b>Shed</b>: one slope; the end walls and the high "
         "wall rise to it. <b>Hidden</b>: the walls go on up as a parapet; "
         "inside, a slab, one or two low slopes of sheets (10°) and a "
@@ -194,8 +260,10 @@ HELP: dict[str, tuple[str, str]] = {
         "A door sits in a straight wall: move along the wall and click. "
         "The wall is cut through for it (floor to its head) and a frame "
         "and its leaves go in.<br><br>Its <b>type</b> is picked in the "
-        "<b>Library</b> (the strip on the right): <b>Swing</b> (hinged, it "
-        "opens to the wall's inside), <b>Sliding</b> (a leaf on a rail along "
+        "<b>Library</b> (the strip on the right): <b>Swing</b> (hinged — "
+        "<b>Opens In</b> to the wall's inside or <b>Out</b>; while placing, "
+        "<b>Tab</b> swaps its hinge and <b>Shift+Tab</b> the way it opens), "
+        "<b>Sliding</b> (a leaf on a rail along "
         "the inside face) or <b>Glass sliding</b> (glazed leaves in a slim "
         "frame, in two tracks); <b>1 or 2 leaves</b>. <b>Hinge · slides "
         "to</b>: the jamb it hangs on, or the side it slides to.<br><br>"
@@ -288,7 +356,8 @@ HELP: dict[str, tuple[str, str]] = {
         "lintel), and a frame with glass goes in.<br><br>Its <b>type</b>, "
         "in the library: <b>Fixed</b> · <b>Sliding</b> (2, 3 or 4 glazed "
         "leaves in two tracks) · <b>Casement</b> (1 or 2 hinged leaves, "
-        "opening <b>In</b> or <b>Out</b>; one leaf: its hinge Left / Right) "
+        "opening <b>In</b> or <b>Out</b> — <b>Shift+Tab</b> while placing; "
+        "one leaf: its hinge Left / Right) "
         "· <b>Awning</b> (maxim-ar: one leaf hinged at its top, pushed out) "
         "· <b>Shop window</b>. <b>Open</b> shows it open in 3D. White "
         "aluminium by default — the Material tab changes it."),
@@ -482,8 +551,9 @@ class _Popup(QFrame):
 
 
 def show_help(topic: str, anchor) -> None:
+    from .i18n import tr, tr_long
     title, body = HELP.get(topic, (topic, "No help written yet."))
-    pop = _Popup(title, body, anchor)
+    pop = _Popup(tr(title), tr_long(body), anchor)
     pop.adjustSize()
     pos = anchor.mapToGlobal(QPoint(0, anchor.height() + 4))
     screen = anchor.screen().availableGeometry()

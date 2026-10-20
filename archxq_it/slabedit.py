@@ -121,7 +121,7 @@ class SlabEditTool(DigEditTool):
 
     def value_label(self):
         if self.side is not None:
-            return (f"{abs(self.dside):.2f} m", None)
+            return (compat.fmt_len(abs(self.dside)), None)
         return super().value_label()
 
     def rubber_band_lines(self):

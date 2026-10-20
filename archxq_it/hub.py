@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .i18n import tr
 from .phases import ELEMENTS, PHASES
 from .style import CSS
 
@@ -132,7 +133,7 @@ class Hub(QFrame):
         def _count() -> None:              # how many there are, when it opens
             from .guidetools import guides
             n = len(guides(owner.viewport))
-            a_all.setText(f"Delete all guides  ({n})")
+            a_all.setText(tr("Delete all guides") + f"  ({n})")
             a_one.setEnabled(n > 0)
             a_all.setEnabled(n > 0)
         gmenu.aboutToShow.connect(_count)
@@ -177,6 +178,27 @@ class Hub(QFrame):
         from .about import show_about
         show_about(self.owner, button)
 
+    def set_update(self, version: str) -> None:
+        """An orange dot on «⏻ ArchXQ» while a newer Pro waits (updater.py);
+        "" takes it away."""
+        dot = getattr(self, "_upd_dot", None)
+        if not version:
+            if dot is not None:
+                dot.hide()
+            self.power.setToolTip("Enter / leave the ArchXQ environment "
+                                  "(the model is not changed)")
+            return
+        if dot is None:
+            dot = self._upd_dot = QLabel(self.power)
+            dot.setFixedSize(8, 8)
+            dot.setStyleSheet("background: #e8742c; border-radius: 4px;")
+            dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        dot.move(self.power.width() - 10, 2)
+        dot.show()
+        dot.raise_()
+        self.power.setToolTip(f"ArchXQ IT {version} is available — "
+                              "About (the globe) ▸ Update")
+
     @staticmethod
     def _open_site() -> None:
         from PySide6.QtCore import QUrl
@@ -211,7 +233,7 @@ class Hub(QFrame):
                 sep = QLabel("›")
                 sep.setObjectName("axq_sep")
                 self.phases.addWidget(sep)
-            b = QPushButton(f"{MARK[state]}  {label}")
+            b = QPushButton(f"{MARK[state]}  {tr(label)}")
             b.setFlat(True)
             b.setProperty("axq", "phase")
             b.setProperty("state", state)
@@ -241,7 +263,7 @@ class Hub(QFrame):
                 if w is not None:
                     w.deleteLater()
             for ekey in PHASES[key].elements:
-                it = QPushButton(ELEMENTS[ekey].label + _pro_mark(ekey))
+                it = QPushButton(tr(ELEMENTS[ekey].label) + _pro_mark(ekey))
                 it.setFlat(True)
                 it.setCheckable(True)
                 it.setChecked(key == self.owner.current
@@ -306,6 +328,9 @@ class Hub(QFrame):
         self.row.layout().activate()
         self.row.adjustSize()
         self.row.move(0, 0)
+        dot = getattr(self, "_upd_dot", None)
+        if dot is not None and dot.isVisible():
+            dot.move(self.power.width() - 10, 2)
         w, h = self.row.width(), self.row.height()
         btn = self._anchor
         show_sub = self.sub.isVisible() and btn is not None

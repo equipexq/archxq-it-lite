@@ -72,6 +72,8 @@ class Shelf:
 def _one_leaf(o) -> bool:
     if _shop(o):
         return o.get("shop_door", "double") == "single"
+    if _garage(o):
+        return False
     return o.get("op") == "sliding" or int(o.get("leaves", 1) or 1) == 1
 
 
@@ -83,12 +85,47 @@ def _not_shop(o) -> bool:
     return not _shop(o)
 
 
+def _garage(o) -> bool:
+    return o.get("op") == "garage"
+
+
+def _plain_door(o) -> bool:
+    """A door with leaves of its own — not a shopfront, not a garage door."""
+    return not _shop(o) and not _garage(o)
+
+
 def _size(key, label, lo, hi, step, default, snaps=(), show=None, unit="m",
-          also=()) -> Part:
+          also=(), tip="") -> Part:
     """A measure dragged on a bar, its field beside it (his idea,
     2026-10-10: the spin boxes' arrows are fiddly)."""
     return Part(key, label, (), show, "size", (lo, hi, step, default),
-                tuple(snaps), unit, tuple(also))
+                tuple(snaps), unit, tuple(also), tip=tip)
+
+
+#: a feet / inches document: the bars' usual sizes, in INCHES, per (shelf,
+#: measure) — what an American builder reaches for (3'0" × 6'8" doors, 42"
+#: guards…). Others: the metric ones rounded to the inch.
+IMPERIAL_SNAPS = {
+    ("door", "w"): (24, 28, 30, 32, 36, 48, 60, 72),
+    ("door", "h"): (80, 84, 96),
+    ("window", "w"): (24, 36, 48, 60, 72),
+    ("window", "h"): (24, 36, 48, 60, 72),
+    ("window", "sill"): (24, 30, 36, 42),
+    ("wall", "cw_s"): (48, 60),
+    ("stair", "w"): (36, 42, 48),
+    ("stair", "landing"): (36, 42, 48),
+    ("stair", "tread"): (10, 11, 12),
+    ("ramp", "w"): (36, 48, 60, 120),
+    ("ramp", "landing"): (60,),
+    ("guard", "h"): (36, 42),
+    ("guard", "t"): (4, 6, 8),
+    ("guard", "wall_h"): (12, 18, 24),
+    ("guard", "gap_w"): (36,),
+    ("guard", "step_h"): (4, 6, 8),
+    ("glazing", "op_w"): (36, 48, 60),
+    ("glazing", "op_h"): (48, 80, 84),
+    ("glazing", "op_sill"): (0, 36, 42),
+}
 
 
 def parse_measure(s: str, unit: str = "m") -> float | None:
@@ -109,7 +146,8 @@ def parse_measure(s: str, unit: str = "m") -> float | None:
                 return v
     t = (s or "").strip().lower().replace(",", ".").replace(" ", "")
     k = 1.0
-    for suf, f in (("mm", 0.001), ("cm", 0.01), ("m", 1.0), ("%", 1.0)):
+    for suf, f in (("mm", 0.001), ("cm", 0.01), ("m", 1.0), ("%", 1.0),
+                   ("°", 1.0)):
         if t.endswith(suf):
             t, k = t[:-len(suf)], f
             break
@@ -151,6 +189,14 @@ RAILING_PARTS = (
     Part("rail_infill", "Infill", (("vertical", "Balusters"),
                                    ("bars", "Bars"), ("cables", "Cables")),
          lambda o: o.get("railing") == "steel"),
+    # the clear gap between balusters / bars (his ask, 2026-10-18: fewer of
+    # them — a lighter model)
+    _size("rail_clear", "Gap between bars", 0.05, 0.30, 0.01, 0.11,
+          (0.11, 0.15, 0.20, 0.25),
+          lambda o: o.get("railing") == "steel",
+          tip="The clear gap between balusters (or bars, cables) — 11 cm "
+              "is the most NBR 14718 allows where people can fall; wider: "
+              "fewer bars, a lighter model"),
     Part("rail_fix", "Glass fixing", (("posts", "On posts"),
                                       ("frameless", "Frameless")),
          lambda o: o.get("railing") == "glass"),
@@ -168,9 +214,25 @@ RAILING_PARTS = (
 
 DOOR_SIZES = (
     _size("w", "Width", 0.50, 3.00, 0.05, 0.90,
-          (0.60, 0.70, 0.80, 0.90, 1.00, 1.20, 1.60, 2.00, 2.40), _not_shop),
+          (0.60, 0.70, 0.80, 0.90, 1.00, 1.20, 1.60, 2.00, 2.40),
+          _plain_door),
     _size("h", "Height", 1.80, 3.00, 0.05, 2.10, (2.10, 2.20, 2.40),
-          _not_shop))
+          _plain_door))
+#: a GARAGE door (Badis, 2026-10-18): its kind and its sizes
+GARAGE_PARTS = (
+    Part("garage", "Kind", (("sectional", "Sectional"),
+                            ("rollup", "Roll-up"),
+                            ("tilt", "Up-and-over")), _garage),
+    Part("gfinish", "Finish", (("steel", "Steel"), ("white", "White"),
+                               ("anthracite", "Anthracite"),
+                               ("wood", "Wood")), _garage),
+    Part("gwin", "Windows", ((False, "None"), (True, "A row on top")),
+         lambda o: _garage(o) and o.get("garage", "sectional") != "rollup"),
+    _size("w", "Width", 2.00, 6.00, 0.05, 2.60,
+          (2.40, 2.60, 3.00, 5.00), _garage),
+    _size("h", "Height", 1.90, 3.50, 0.05, 2.20, (2.10, 2.20, 2.40),
+          _garage))
+GARAGE_INIT = {"w": 2.60, "h": 2.20}
 #: a door's sizes again, when the next one drawn was a shopfront
 DOOR_INIT = {"w": 0.90, "h": 2.10}
 #: a SHOPFRONT (shopfront.py, 2026-10-11): the whole shop's front
@@ -215,6 +277,39 @@ DOOR_GLASS_PART = Part("glass", "Glass", (("clear", "See-through"),
 
 def _win_op(*ops):
     return lambda o: o.get("op") in ops
+
+
+def _trimmed(o) -> bool:
+    return o.get("trim", "none") != "none"
+
+
+def _stone(o) -> bool:
+    return o.get("sill_k", "none") == "stone" and not _shop(o)
+
+
+#: TRIM round a door / window and a STONE SILL under a window (trim.py,
+#: his ask 2026-10-19: the façades' finish — each part its own material)
+TRIM_PARTS = (
+    Part("trim", "Trim", (("none", "None"), ("out", "Outside"),
+                          ("both", "Both sides")),
+         tip="A moulding round the opening, standing out of the wall"),
+    _size("trim_w", "Trim width", 0.02, 0.40, 0.01, 0.08,
+          (0.05, 0.08, 0.10, 0.15), _trimmed,
+          tip="The moulding's face width"),
+    _size("trim_d", "Trim projection", 0.005, 0.15, 0.005, 0.03,
+          (0.02, 0.03, 0.05), _trimmed,
+          tip="How far it stands out of the wall's face"))
+SILL_PARTS = (
+    Part("sill_k", "Stone sill", (("none", "None"), ("stone", "Stone")),
+         _not_shop, tip="The stone under the window, outside"),
+    _size("sill_d", "Sill projection", 0.0, 0.20, 0.01, 0.04,
+          (0.03, 0.04, 0.05), _stone,
+          tip="How far it stands out past the wall's face (or the trim's)"),
+    _size("sill_t", "Sill thickness", 0.01, 0.12, 0.005, 0.03,
+          (0.02, 0.03, 0.05), _stone),
+    _size("sill_x", "Sill past the sides", 0.0, 0.20, 0.01, 0.03,
+          (0.0, 0.03, 0.05), _stone,
+          tip="How far it runs past the opening (or the trim) on each side"))
 
 
 #: a window WITH LEAVES (2026-10-12, PLANO_JANELAS.md)
@@ -262,8 +357,13 @@ CATALOG = {
              "transom, a base — a roll-up shutter and a sign band if you "
              "like. Selected: «Fill the bay» makes it pier to pier",
              {"w": 4.00, "h": 2.70, "sill": 0.0}),
+        Type("garage", "Garage door", "door_garage",
+             {"op": "garage", "leaf": "solid"},
+             "A garage's door in steel: sectional (panels), roll-up (slats, "
+             "with its box and guides inside) or up-and-over. «Open» lifts "
+             "it", GARAGE_INIT),
         Type("arched", "Arched", "door_arched", None)),
-        (Part("leaves", "Leaves", ((1, "1"), (2, "2")), _not_shop),
+        (Part("leaves", "Leaves", ((1, "1"), (2, "2")), _plain_door),
          Part("swing", "Hinge · slides to", (("left", "Left"),
                                               ("right", "Right")),
               _one_leaf),
@@ -272,9 +372,9 @@ CATALOG = {
          Part("out", "Opens", ((False, "In"), (True, "Out")),
               lambda o: o.get("op", "swing") == "swing"),
          Part("top", "Top", (("square", "Square"), ("arched", "Arched",
-                                                    "soon")), _not_shop),
+                                                    "soon")), _plain_door),
          Part("open", "Open", (), None, "slider"), DOOR_GLASS_PART)
-        + SHOP_PARTS + DOOR_SIZES),
+        + SHOP_PARTS + GARAGE_PARTS + DOOR_SIZES + TRIM_PARTS),
     "window": Shelf("Windows", (
         Type("fixed", "Fixed", "win_fixed", {"op": "fixed"},
              "A frame and its glass", WINDOW_INIT),
@@ -295,7 +395,7 @@ CATALOG = {
              "— bathrooms, kitchens",
              {"w": 0.60, "h": 0.60, "sill": 1.50})),
         WINDOW_LEAF_PARTS + (GLASS_PART,) + SHOP_WINDOW_PARTS
-        + WINDOW_SIZES),
+        + WINDOW_SIZES + TRIM_PARTS + SILL_PARTS),
     "wall": Shelf("Walls", (
         Type("w15", "15 cm", "wall_15", {"t": 0.15, "cw": False},
              "A 15 cm wall"),
@@ -341,7 +441,8 @@ CATALOG = {
          # Part B (2026-10-10): a slab under the steps, or open treads on
          # two steel stringers (the modern house's)
          Part("build", "Build", (("concrete", "Concrete"),
-                                 ("open", "Open treads"))),
+                                 ("open", "Open treads"),
+                                 ("solid", "Solid"))),
          CUT_PART,
         ) + RAILING_PARTS + (
          _size("w", "Width", 0.60, 3.00, 0.05, 1.20,
@@ -353,20 +454,206 @@ CATALOG = {
          # typed, it stays (Blondel's no more — the window's «Blondel»
          # button gives it back)
          _size("tread", "Tread", 0.25, 0.32, 0.005, 0.28, (0.28, 0.30),
-               also=(("fix_tread", True),)))),
+               also=(("fix_tread", True),)),
+         # a platform where it arrives (his idea, 2026-10-18)
+         _size("top_landing", "Landing at the top", 0.0, 6.00, 0.05, 0.0,
+               (0.0, 1.20, 1.50, 2.00),
+               tip="A level platform where it arrives (0: none) — or push "
+                   "the grip on its last step's front face"))),
     "ramp": Shelf("Ramps", (
         Type("straight", "Straight", "ramp_straight", {"shape": "straight"}),
         Type("L", "L", "ramp_l", {"shape": "L"}),
         Type("U", "U", "ramp_u", {"shape": "U"})),
         (Part("turn", "Turns", (("right", "Right"), ("left", "Left")),
-              _turning), CUT_PART) + RAILING_PARTS + (
+              _turning),
+         # a sloped slab, or a block down to the floor (2026-10-18)
+         Part("build", "Build", (("slab", "Slab"), ("solid", "Solid"))),
+         CUT_PART) + RAILING_PARTS + (
          _size("w", "Width", 0.80, 8.00, 0.10, 3.00,
                (1.20, 1.50, 3.00, 3.50, 5.50)),
          _size("landing", "Landing", 0.60, 8.00, 0.10, 3.00, (1.50, 3.00),
                _turning),
          _size("slope", "Slope", 1.0, 25.0, 0.5, 20.0,
                (5.0, 8.33, 12.5, 20.0), unit="%",
-               also=(("fix", "slope"),)))),
+               also=(("fix", "slope"),)),
+         _size("top_landing", "Landing at the top", 0.0, 6.00, 0.05, 0.0,
+               (0.0, 1.20, 1.50, 2.00),
+               tip="A level platform where it arrives (0: none) — or push "
+                   "the grip on its top edge"))),
+    # low walls & guards (guards.py, his go 2026-10-15 — Pro)
+    "guard": Shelf("Low walls & guards", (
+        Type("wall", "Low wall", "guard_wall", {"kind": "wall"},
+             "Masonry, 1.10 m by default — a coping on top if you like",
+             {"h": 1.10}),
+        Type("wallrail", "Low wall + railing", "guard_wallrail",
+             {"kind": "wallrail"},
+             "A low wall with a steel or glass railing over it",
+             {"h": 1.10}),
+        Type("glass", "Glass", "guard_glass", {"kind": "glass"},
+             "Glass in a channel on the floor (or on posts), a top rail",
+             {"h": 1.10}),
+        Type("steel", "Steel", "guard_steel", {"kind": "steel"},
+             "Posts and a top rail — balusters, bars or cables "
+             "(11 cm clear at most)", {"h": 1.10}),
+        # the plot's wall (phase C, 2026-10-17): 2 m, piers, a coping
+        Type("boundary", "Boundary wall", "guard_boundary",
+             {"kind": "boundary"},
+             "A plot's wall — 2.00 m, piers every 3 m, a coping; gates in "
+             "its gaps", {"h": 2.00, "cap": True})),
+        (Part("how", "How", (("draw", "Draw"), ("edge", "Slab edge"),
+                             ("hole", "Round an opening"),
+                             ("gap", "Add a gap"), ("gate", "Add a gate")),
+              tip="Draw: point by point. Slab edge: click a slab — its free "
+                  "edges (no wall) get one. Round an opening: click a "
+                  "slab's opening — open where a stair arrives. Add a gap: "
+                  "click on one — a passage there. Add a gate: click a gap "
+                  "(or a wall: a gap is opened with it)"),
+         _size("gap_w", "Gap width", 0.30, 8.00, 0.05, 0.90,
+               (0.80, 0.90, 1.20, 3.00), lambda o: o.get("how") in ("gap",
+                                                                  "gate")),
+         Part("gate_kind", "Gate", (("swing", "Swing"),
+                                    ("sliding", "Sliding")),
+              lambda o: o.get("how") == "gate",
+              tip="Swing: on hinges at the gap's edges, opening into the "
+                  "plot. Sliding: on a rail along the inside face"),
+         Part("gate_leaves", "Leaves", ((1, "One"), (2, "Two")),
+              lambda o: o.get("how") == "gate"),
+         Part("gate_style", "Infill", (("bars", "Bars"), ("solid", "Plate"),
+                                       ("slats", "Slats")),
+              lambda o: o.get("how") == "gate"),
+         Part("gate_finish", "Finish", (("anthracite", "Anthracite"),
+                                        ("steel", "Steel"),
+                                        ("white", "White"),
+                                        ("wood", "Wood")),
+              lambda o: o.get("how") == "gate",
+              tip="Wood slats come in an anthracite frame — two colours"),
+         Part("gate_open", "Shown", ((0.0, "Closed"), (0.35, "Ajar"),
+                                     (1.0, "Open")),
+              lambda o: o.get("how") == "gate"),
+         Part("on", "Stands on", (("auto", "Auto"), ("floor", "Floor"),
+                                  ("ground", "Ground"), ("roof", "Roof")),
+              tip="Auto: on a slab of its level where there is one, else "
+                  "the ground. Floor: flat, on its level's floor. Ground: "
+                  "on the terrain point by point — its top that high over "
+                  "it. Roof: on top of its level's flat roof (a parapet "
+                  "on the building)"),
+         _size("base", "Bottom above it", -1.0, 6.0, 0.01, 0.0,
+               (0.0, 0.10, 0.20),
+               tip="Its bottom face this high over what it stands on (the "
+                   "slab, the roof, the ground; Floor: the level's zero). "
+                   "0 = sitting on it"),
+         Part("top", "Top on a slope", (("stepped", "Stepped"),
+                                        ("slope", "Follows the slope")),
+              lambda o: o.get("kind", "wall") in ("wall", "wallrail", "boundary")
+              and o.get("on", "auto") not in ("floor", "roof"),
+              tip="Stepped: level steps, each one at most the step's height "
+                  "(masonry). Follows the slope: its top that high over the "
+                  "ground the whole way"),
+         Part("cap", "Top", ((False, "Plain"), (True, "Coping")),
+              lambda o: o.get("kind", "wall") in ("wall", "boundary")),
+         Part("rail_top", "Railing", (("steel", "Steel"), ("glass", "Glass")),
+              lambda o: o.get("kind") == "wallrail"),
+         Part("rail_infill", "Infill", (("vertical", "Balusters"),
+                                        ("bars", "Bars"),
+                                        ("cables", "Cables")),
+              lambda o: o.get("kind") == "steel" or (
+                  o.get("kind") == "wallrail"
+                  and o.get("rail_top", "steel") == "steel")),
+         _size("rail_clear", "Gap between bars", 0.05, 0.30, 0.01, 0.11,
+               (0.11, 0.15, 0.20, 0.25),
+               lambda o: o.get("kind") == "steel" or (
+                   o.get("kind") == "wallrail"
+                   and o.get("rail_top", "steel") == "steel"),
+               tip="The clear gap between balusters (or bars, cables) — "
+                   "11 cm is the most NBR 14718 allows where people can "
+                   "fall; wider: fewer bars, a lighter model"),
+         Part("rail_fix", "Glass fixing", (("frameless", "Frameless"),
+                                           ("posts", "On posts")),
+              lambda o: o.get("kind") == "glass"),
+         Part("insert", "The line drawn is its", (("centre", "Centre"),
+                                                  ("left", "Left face"),
+                                                  ("right", "Right face")),
+              lambda o: o.get("how", "draw") == "draw",
+              tip="Draw along a slab's edge or a wall's face: the line is "
+                  "that face (Tab while drawing: the other one)"),
+         _size("h", "Height", 0.30, 3.00, 0.05, 1.10,
+               (0.90, 1.00, 1.10, 1.20, 1.80, 2.00)),
+         _size("t", "Thickness", 0.05, 0.60, 0.01, 0.15,
+               (0.10, 0.15, 0.20),
+               lambda o: o.get("kind", "wall") in ("wall", "wallrail", "boundary")),
+         _size("pier_s", "Piers every", 0.0, 10.0, 0.05, 3.00,
+               (0.0, 2.50, 3.00, 4.00), lambda o: o.get("kind") == "boundary",
+               tip="Piers at its ends, bends, steps and gaps, and at most "
+                   "this far apart — 0 = none"),
+         _size("wall_h", "Low wall under it", 0.10, 1.50, 0.05, 0.40,
+               (0.30, 0.40, 0.60), lambda o: o.get("kind") == "wallrail"),
+         _size("step_h", "Each step at most", 0.05, 0.50, 0.01, 0.15,
+               (0.10, 0.15, 0.20, 0.30),
+               lambda o: o.get("kind", "wall") in ("wall", "wallrail", "boundary")
+               and o.get("on", "auto") not in ("floor", "roof")
+               and o.get("top", "stepped") == "stepped"))),
+    # glass grids (glazing.py, his go 2026-10-15 — Pro): a card sets its
+    # kind's sizes (glazing.KIND_SET, copied here: the library needs no Qt
+    # model of its own)
+    "glazing": Shelf("Glass grids", (
+        Type("industrial", "Industrial", "glaz_industrial",
+             {"kind": "industrial"},
+             "Thin black steel, small square panes (about 50 × 50)",
+             {"by": "size", "pw": 0.50, "ph": 0.50, "fw": 0.03, "fd": 0.05,
+              "mw": 0.025, "md": 0.04, "frame": "black"}),
+        Type("aluminium", "Aluminium", "glaz_aluminium",
+             {"kind": "aluminium"},
+             "A wider silver frame, big panes (about 1.00 × 1.00)",
+             {"by": "size", "pw": 1.00, "ph": 1.00, "fw": 0.05, "fd": 0.07,
+              "mw": 0.04, "md": 0.06, "frame": "silver"}),
+        Type("partition", "Partition", "glaz_partition",
+             {"kind": "partition"},
+             "A glass partition: vertical muntins only",
+             {"by": "size", "pw": 0.90, "fw": 0.04, "fd": 0.06, "mw": 0.03,
+              "md": 0.05, "frame": "dark"}),
+        Type("arched", "Arched top", "glaz_arched", None, "Coming"),
+        Type("round", "Round", "glaz_round", None, "Coming")),
+        (Part("place", "Where", (("void", "In an Opening"),
+                                 ("free", "Free (2 points)")),
+              tip="In an Opening: click a wall's Opening (a void) — it "
+                  "fills it, and follows it. Free: two points, a "
+                  "partition anywhere"),
+         Part("by", "Panes by", (("size", "Their size"),
+                                 ("count", "Columns × rows"))),
+         Part("frame", "Frame", (("black", "Black"), ("dark", "Dark"),
+                                 ("silver", "Silver"), ("white", "White"),
+                                 ("bronze", "Bronze"))),
+         Part("bead", "Glazing bead", ((True, "Both faces"), (False, "None"))),
+         Part("opaque", "Glass", ((False, "See-through"), (True, "Opaque"))),
+         _size("pw", "Pane width", 0.10, 3.00, 0.05, 0.50, (0.30, 0.50, 1.00),
+               lambda o: o.get("by", "size") == "size"),
+         _size("ph", "Pane height", 0.10, 3.00, 0.05, 0.50, (0.30, 0.50, 1.00),
+               lambda o: o.get("by", "size") == "size"
+               and o.get("kind") != "partition"),
+         _size("cols", "Columns", 1, 20, 1, 4, (2, 3, 4, 6),
+               lambda o: o.get("by") == "count", unit=""),
+         _size("rows", "Rows", 1, 20, 1, 4, (2, 3, 4, 6),
+               lambda o: o.get("by") == "count"
+               and o.get("kind") != "partition", unit=""),
+         # his first ask: push the glass in / out inside the frame
+         _size("gpos", "Glass from the outer face", 0.0, 0.10, 0.001, 0.025,
+               (0.01, 0.025)),
+         _size("fw", "Frame width", 0.01, 0.15, 0.005, 0.03,
+               (0.03, 0.05, 0.08)),
+         _size("fd", "Frame depth", 0.01, 0.20, 0.005, 0.05,
+               (0.05, 0.07, 0.10)),
+         # in an Opening: ITS sizes — the opening changes, the grid follows
+         # (his test, 2026-10-15: they must go together)
+         _size("op_w", "Width", 0.30, 6.00, 0.05, 1.20, (0.80, 1.20, 1.60),
+               lambda o: o.get("place", "void") == "void"),
+         _size("op_h", "Height", 0.30, 4.00, 0.05, 2.00, (1.20, 2.00, 2.10),
+               lambda o: o.get("place", "void") == "void"),
+         _size("op_sill", "Sill", 0.0, 3.00, 0.05, 0.0, (0.0, 0.90, 1.10),
+               lambda o: o.get("place", "void") == "void"),
+         _size("h", "Height", 0.20, 6.00, 0.05, 2.10, (1.00, 2.10, 2.60),
+               lambda o: o.get("place") == "free"),
+         _size("base", "Sill", 0.0, 3.00, 0.05, 0.0, (0.0, 0.90, 1.10),
+               lambda o: o.get("place") == "free"))),
     "roof": Shelf("Roofs", (
         Type("gable", "Gable", "roof_gable", {"kind": "gable"},
              "Two slopes, a triangle of wall at each end"),
@@ -381,7 +668,13 @@ CATALOG = {
              "gutter — the modern house's roof"),
         Type("butterfly", "Butterfly", "roof_butterfly", None),
         Type("mansard", "Mansard", "roof_mansard", None),
-        Type("lt", "L / T plan", "roof_lt", None)),
+        # one click: a hip roof over this level's walls when they are an
+        # L (roof_l.py), a T, a U or any other plan (roof_any.py, 0.12.0 —
+        # Hip / Gable «Over the walls» make them too)
+        Type("lt", "L / T / U plan", "roof_lt",
+             {"kind": "hip", "lplan": True},
+             "One click: a hip roof over this level's walls, whatever their "
+             "plan — L, T, U, oblique: hips outside, valleys inside")),
         (Part("ridge", "Ridge along", (("long", "Long side"),
                                        ("short", "Short side")),
               lambda o: o.get("kind") == "gable"),
@@ -393,7 +686,23 @@ CATALOG = {
                   o.get("kind") == "hidden" and int(o.get("slopes", 2)) == 1)),
          Part("pauto", "Parapet height (Auto = just hides the roof)",
               ((True, "Auto"), (False, "Typed")),
-              lambda o: o.get("kind") == "hidden"))),
+              lambda o: o.get("kind") == "hidden"),
+         # its measures on bars, as the walls' and the low walls' (his ask,
+         # 2026-10-18 — before, only the options bar and «Sizes & details»)
+         _size("slope", "Slope", 3.0, 60.0, 0.5, 30.0,
+               (10.0, 15.0, 22.5, 30.0, 35.0, 45.0),
+               lambda o: o.get("kind") != "flat", unit="°",
+               tip="Drag: the selected roofs follow — it pulls to the usual "
+                   "slopes; Shift = 0.1° by 0.1°. Double click: 30°"),
+         _size("overhang", "Overhang", 0.0, 1.50, 0.05, 0.50,
+               (0.30, 0.50, 0.60, 0.80, 1.00),
+               lambda o: o.get("kind") != "hidden"),
+         _size("t", "Thickness", 0.05, 0.60, 0.01, 0.20,
+               (0.10, 0.15, 0.20, 0.25, 0.30)),
+         _size("parapet", "Parapet", 0.0, 2.00, 0.05, 1.00,
+               (0.0, 0.50, 1.00, 1.10),
+               lambda o: o.get("kind") == "flat" or (
+                   o.get("kind") == "hidden" and not o.get("pauto", True))))),
 }
 
 #: the «Building elements» (the left section, not phases): set up in the
@@ -419,12 +728,15 @@ def _same(a, b) -> bool:
 
 def current_type(shelf: Shelf, opts: dict) -> str | None:
     """The type the options are (the first that fits); None = sizes of
-    one's own."""
+    one's own. Two that fit: the one that says MORE wins (the roofs' «L
+    plan» = Hip + L, 2026-10-16); equal: the first."""
+    best = None
     for t in shelf.types:
         if t.set is not None and all(_same(opts.get(k), v)
                                      for k, v in t.set.items()):
-            return t.key
-    return None
+            if best is None or len(t.set) > len(best.set):
+                best = t
+    return best.key if best is not None else None
 
 
 # ---- the pictures ------------------------------------------------------------------
@@ -501,6 +813,19 @@ def _door_shop(p) -> None:
     p.drawRect(QRectF(48, 42, 16, 44))
     p.drawLine(QPointF(45, 58), QPointF(45, 72))      # handles
     p.drawLine(QPointF(51, 58), QPointF(51, 72))
+
+
+def _door_garage(p) -> None:
+    """A sectional garage door, front view: wide and low, horizontal
+    panels, a handle."""
+    p.setPen(_pen(INK, 4))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(8, 26, 80, 62))                 # the opening
+    p.setPen(_pen(ACCENT, 3))
+    for y in (41, 56, 71):                            # the panels' joints
+        p.drawLine(QPointF(10, y), QPointF(86, y))
+    p.setPen(_pen(INK, 3))
+    p.drawLine(QPointF(42, 80), QPointF(54, 80))      # the handle
 
 
 def _door_arched(p) -> None:
@@ -734,7 +1059,106 @@ def _roof(p, kind) -> None:
         p.drawLine(QPointF(29, 29), QPointF(29, 70))
 
 
+def _guard(p, kind) -> None:
+    """A low wall / guard seen from the front, on its floor."""
+    glass = QColor("#8fc3dd")
+    glass.setAlpha(150)
+    p.setPen(_pen(INK, 2.5))
+    p.drawLine(QPointF(6, 86), QPointF(90, 86))        # the floor
+    if kind == "wall":
+        p.setPen(Qt.NoPen)
+        p.setBrush(ACCENT)
+        p.drawRect(QRectF(14, 30, 68, 56))
+        p.setBrush(INK)
+        p.drawRect(QRectF(10, 24, 76, 7))              # the coping
+        return
+    if kind == "boundary":
+        # a tall wall between two piers, a gate in a gap
+        p.setPen(Qt.NoPen)
+        p.setBrush(ACCENT)
+        p.drawRect(QRectF(6, 22, 40, 64))               # the wall
+        p.setBrush(INK)
+        for x in (4, 44, 82):                          # the piers
+            p.drawRect(QRectF(x, 14, 10, 72))
+        p.drawRect(QRectF(4, 19, 50, 4))                # its coping
+        p.setPen(_pen(INK, 2.5))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(56, 26, 24, 57))              # the gate
+        for x in (62, 68, 74):
+            p.drawLine(QPointF(x, 28), QPointF(x, 81))
+        return
+    base = 86
+    if kind == "wallrail":
+        p.setPen(Qt.NoPen)
+        p.setBrush(ACCENT)
+        p.drawRect(QRectF(14, 60, 68, 26))
+        base = 60
+    p.setPen(_pen(INK, 4))
+    p.drawLine(QPointF(12, 22), QPointF(84, 22))       # the top rail
+    if kind == "glass":
+        p.setPen(_pen(QColor("#3b4046"), 2))
+        p.setBrush(glass)
+        p.drawRect(QRectF(16, 26, 64, base - 30))
+        p.setPen(Qt.NoPen)
+        p.setBrush(INK)
+        p.drawRect(QRectF(14, base - 6, 68, 6))         # the channel
+        return
+    p.setPen(_pen(INK, 3))
+    for x in (16, 48, 80):
+        p.drawLine(QPointF(x, 22), QPointF(x, base))
+    p.setPen(_pen(ACCENT if kind == "steel" else INK, 2))
+    for x in (24, 32, 40, 56, 64, 72):
+        p.drawLine(QPointF(x, 26), QPointF(x, base - 4))
+
+
+def _glaz(p, kind) -> None:
+    """A glass grid seen from the front."""
+    glass = QColor("#8fc3dd")
+    glass.setAlpha(140)
+    dim = kind in ("arched", "round")
+    p.setPen(Qt.NoPen)
+    p.setBrush(glass if not dim else QColor("#3a3f45"))
+    if kind == "round":
+        p.drawEllipse(QPointF(48, 48), 36, 36)
+        p.setPen(_pen(DIM, 4))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(48, 48), 36, 36)
+        return
+    p.drawRect(QRectF(14, 12, 68, 74))
+    ink = DIM if dim else INK
+    p.setPen(_pen(ink, 5 if kind == "aluminium" else 3))
+    p.setBrush(Qt.NoBrush)
+    if kind == "arched":
+        path = QPainterPath(QPointF(14, 86))
+        path.lineTo(14, 46)
+        path.arcTo(QRectF(14, 12, 68, 68), 180, -180)
+        path.lineTo(82, 86)
+        path.closeSubpath()
+        p.drawPath(path)
+        return
+    p.drawRect(QRectF(14, 12, 68, 74))
+    p.setPen(_pen(ACCENT, 2.5 if kind == "industrial" else 3.5))
+    xs = {"industrial": (31, 48, 65), "aluminium": (48,),
+          "partition": (37, 59)}[kind]
+    for x in xs:
+        p.drawLine(QPointF(x, 12), QPointF(x, 86))
+    if kind != "partition":
+        zs = (30.5, 49, 67.5) if kind == "industrial" else (49,)
+        for z in zs:
+            p.drawLine(QPointF(14, z), QPointF(82, z))
+
+
 PICS = {
+    "glaz_industrial": lambda p: _glaz(p, "industrial"),
+    "glaz_aluminium": lambda p: _glaz(p, "aluminium"),
+    "glaz_partition": lambda p: _glaz(p, "partition"),
+    "glaz_arched": lambda p: _glaz(p, "arched"),
+    "glaz_round": lambda p: _glaz(p, "round"),
+    "guard_wall": lambda p: _guard(p, "wall"),
+    "guard_wallrail": lambda p: _guard(p, "wallrail"),
+    "guard_glass": lambda p: _guard(p, "glass"),
+    "guard_steel": lambda p: _guard(p, "steel"),
+    "guard_boundary": lambda p: _guard(p, "boundary"),
     "roof_gable": lambda p: _roof(p, "gable"),
     "roof_hip": lambda p: _roof(p, "hip"),
     "roof_flat": lambda p: _roof(p, "flat"),
@@ -745,7 +1169,7 @@ PICS = {
     "roof_lt": lambda p: _roof(p, "lt"),
     "door_swing": _door_swing, "door_sliding": _door_sliding,
     "door_glass": _door_glass, "door_shop": _door_shop,
-    "door_arched": _door_arched,
+    "door_arched": _door_arched, "door_garage": _door_garage,
     "win_fixed": _win_fixed, "win_sliding": _win_sliding,
     "win_shop": _win_shop,
     "win_casement": _win_casement, "win_awning": _win_awning,
@@ -936,10 +1360,34 @@ class LibraryPanel(QWidget):
         from PySide6.QtWidgets import QApplication, QLineEdit, QSlider
         lo, hi, step, default = part.size
         K = 1000                          # the bar counts in thousandths
-        pct = part.unit == "%"
-        tol = 0.4 if pct else 0.025       # how near a usual size pulls
+        pct = part.unit in ("%", "°")     # not a length: a slope, an angle
+        # how near a usual size pulls — never more than 2 % of the bar's
+        # span (a glass's place, 0…10 cm, was pulled to 1 / 2.5 cm wherever
+        # it was dragged — his test, 2026-10-15: «as if held back»)
+        lo_, hi_ = part.size[0], part.size[1]
+        tol = 0.4 if pct else min(0.025, max(part.size[2],
+                                             (hi_ - lo_) * 0.02))
+
+        # a length in a feet-inch / mm document: shown in its unit, the bar
+        # on whole inches (1/4", 1/16" for the fine ones), the usual sizes
+        # rounded to the inch (his ask, 2026-10-16 — American viewers)
+        from . import compat
+        from .look import imperial_step
+        host = part.unit == "m" and compat.doc_length_unit() != "m"
+        inch = compat.imperial()
+        if host and inch:
+            step = imperial_step(step)
+        snaps = tuple(round(q / 0.0254) * 0.0254 for q in part.snaps) \
+            if host and inch else part.snaps
+        if host and inch and (self.key, part.key) in IMPERIAL_SNAPS:
+            snaps = tuple(i * 0.0254
+                          for i in IMPERIAL_SNAPS[(self.key, part.key)])
+        if host and inch and snaps:            # a double click: the nearest
+            default = min(snaps, key=lambda q: abs(q - default))
 
         def text(v):
+            if host:
+                return compat.fmt_len(v)
             return f"{v:.1f}" if pct else f"{v:.3f}".rstrip("0").rstrip(".") \
                 if step < 0.01 else f"{v:.2f}"
 
@@ -948,8 +1396,13 @@ class LibraryPanel(QWidget):
         def changes(v):
             return dict(part.also, **{part.key: round(v - sh, 4)})
 
-        def fitted(v):
-            v = min(max(v, lo), hi)
+        # a TYPED measure goes past the bar's end (his ask, 2026-10-18: a
+        # ramp's 6 m landing could not reach the façade) — the bar is the
+        # usual sizes; the field, what you mean (a slope / angle: not past)
+        typed_hi = hi if pct else hi * 4
+
+        def fitted(v, typed=False):
+            v = min(max(v, lo), typed_hi if typed else hi)
             if self.fit is not None:
                 v = self.fit(self.key, part.key, v - sh) + sh
             return v
@@ -971,18 +1424,23 @@ class LibraryPanel(QWidget):
             now = default
         s.setValue(int(round(now * K)))
         s.setToolTip(part.tip or "Drag: the selected ones follow — it pulls "
-                     "to the usual sizes; Shift = centimetre by centimetre. "
-                     f"Double click: {text(default)} {part.unit}")
+                     "to the usual sizes; Shift = "
+                     + ("1/4 inch" if host and inch else "centimetre")
+                     + " by " + ("1/4 inch" if host and inch else "centimetre")
+                     + ". Double click: " + text(default)
+                     + ("" if host else f" {part.unit}"))
         f = QLineEdit(text(now))
-        f.setFixedWidth(54)
+        f.setFixedWidth(84 if host else 54)
         f.setAlignment(Qt.AlignRight)
-        f.setToolTip("Type an exact one + Enter (0.85 · 85 cm · 850 mm"
+        f.setToolTip("Type an exact one + Enter (3'7\" · 43\" · 110 cm)"
+                     if host and inch else
+                     "Type an exact one + Enter (0.85 · 85 cm · 850 mm"
                      if not pct else "Type an exact one + Enter")
         f.setStyleSheet("QLineEdit { background: #1d2025; border: 1px solid "
                         "#3a3f45; border-radius: 3px; padding: 1px 4px; "
                         "color: #e6e6e6; } QLineEdit:focus { border-color: "
                         "#e8742c; }")
-        u = QLabel(part.unit)
+        u = QLabel("" if host else part.unit)
         u.setStyleSheet("color: #8a9099;")
         row.addWidget(s, 1)
         row.addWidget(f)
@@ -999,15 +1457,17 @@ class LibraryPanel(QWidget):
 
         def snapped(raw):
             if QApplication.keyboardModifiers() & Qt.ShiftModifier:
-                fine = 0.1 if pct else 0.01
+                fine = 0.1 if pct else 0.00635 if host and inch else 0.01
                 return round(raw / fine) * fine
-            near = min(part.snaps, key=lambda q: abs(q - raw), default=None)
+            near = min(snaps, key=lambda q: abs(q - raw), default=None)
             if near is not None and abs(near - raw) <= tol:
                 return near
+            if host and inch:                  # on a whole inch, not from lo
+                return round(raw / step) * step
             return lo + round((raw - lo) / step) * step
 
-        def keep(v):
-            v = fitted(v)
+        def keep(v, typed=False):
+            v = fitted(v, typed)
             put(v)
             self.on_pick(self.key, changes(v))
 
@@ -1029,7 +1489,7 @@ class LibraryPanel(QWidget):
             if v is None:
                 f.setText(text(s.value() / K))
                 return
-            keep(v)
+            keep(v, typed=True)
         f.returnPressed.connect(typed)
         return row
 
@@ -1042,18 +1502,21 @@ class LibraryPanel(QWidget):
             return
         self.key = key
         self._clear()
-        self.head.setText(f"Library · {shelf.title}"
+        from .i18n import tr
+        self.head.setText(tr("Library") + " · " + tr(shelf.title)
                           + ("   PRO" if pro_locked else ""))
         apart = key in BUILDING_ELEMENTS
         self.sub.setText(
-            f"Click a type to change the {picked} selected"
+            tr("Click a type to change the {what} selected", what=picked)
             if picked else
-            "Pick a type, then click where it starts — sizes and levels: "
-            "the button below"
+            tr("Pick a type, then click where it starts — sizes and levels: "
+               "the button below")
             if apart else
-            "Pick a type, then draw — the sizes are in the options bar on "
-            "top" + (", or drag them below" if any(
-                pt.kind == "size" for pt in shelf.parts) else ""))
+            tr("Pick a type, then draw — the sizes are in the options bar on "
+               "top, or drag them below")
+            if any(pt.kind == "size" for pt in shelf.parts) else
+            tr("Pick a type, then draw — the sizes are in the options bar on "
+               "top"))
         grid = QGridLayout()
         grid.setSpacing(6)
         cur = current_type(shelf, opts)

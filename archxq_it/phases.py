@@ -177,6 +177,10 @@ PRO_ELEMENTS = frozenset({
     "rooms", "sheets", "section", "export",
     # the «Building elements» (his call, 2026-10-05: Pro)
     "ramp", "stair",
+    # low walls & guards (his call, 2026-10-15: an extra, Pro)
+    "guard",
+    # glass grids (his go, 2026-10-15)
+    "glazing",
 })
 
 

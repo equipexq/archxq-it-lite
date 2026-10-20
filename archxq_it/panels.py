@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import icons, model
+from . import compat, icons, model
 from .help import HELP, help_button
 from .phases import ELEMENTS, PHASES, SYSTEMS, VISIBLE_PARTS
 from .style import BLUE, CSS
@@ -153,6 +153,14 @@ BUILDING_ELEMENTS = [
                              "— set it up, then click where it starts"),
     ("stair", "Stair", "stair", "A stair from a level (or the ground) to "
                                 "another — its steps by Blondel's rule"),
+    ("guard", "Low wall", "guard", "Low walls & guards — a low wall, a low "
+                                   "wall with a railing, glass or steel: "
+                                   "point by point, any angle (balconies, "
+                                   "voids, open stairs)"),
+    ("glazing", "Glass grid", "glazing", "Squared glass — a frame, a grid of "
+                                         "muntins, a bead holding every "
+                                         "pane: it fills a wall's Opening, "
+                                         "or stands free as a partition"),
 ]
 
 
@@ -207,7 +215,8 @@ class PlanSwitch(QPushButton):
     leaves it for the 3D view; a click brings it back."""
 
     def __init__(self, owner) -> None:
-        super().__init__("▦   Plan view")
+        from .i18n import tr
+        super().__init__("▦   " + tr("Plan view"))
         self.setObjectName("axq_plan")
         self.setStyleSheet(CSS)
         self.setCheckable(True)
@@ -221,6 +230,33 @@ class PlanSwitch(QPushButton):
 
     def set_plan(self, on: bool) -> None:
         self.setChecked(bool(on))
+
+
+class PresentButton(QPushButton):
+    """PRESENT — on its own, left of the «Show» bar (his design,
+    2026-10-18, for a client on a big screen — Karl's ask): one click and
+    every ArchXQ piece goes, only the model stays; the button itself stays,
+    almost see-through (lit under the mouse) — a click, or Esc, brings
+    everything back. The model is never touched."""
+
+    def __init__(self, owner) -> None:
+        super().__init__("▶  Present")
+        self.setObjectName("axq_present")
+        self.setStyleSheet(CSS)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.clicked.connect(lambda: owner.toggle_present())
+        self.set_on(False)
+
+    def set_on(self, on: bool) -> None:
+        self.setText("■  Exit present" if on else "▶  Present")
+        self.setToolTip("Back to ArchXQ (or Esc)" if on else
+                        "Present: hides every ArchXQ bar and panel — only "
+                        "the model, for a client on a big screen. Click "
+                        "again (or Esc) to bring them back")
+        self.setProperty("faint", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.adjustSize()
 
 
 #: the plan and the four sides (his idea, 2026-10-10): shown under «Plan
@@ -349,26 +385,19 @@ class ViewBar(QFrame):
         # (levels are shown / hidden in the levels strip — N)
         lay.addWidget(_caption("Show"))
         self.parts: dict[str, QPushButton] = {}
-        for key in VISIBLE_PARTS:
-            b = _chip(PHASES[key].label)
+        # (+ «Slabs» after Structure — his ask, 2026-10-16: the slabs on
+        # their own; the «View» chips went — the Plan view strip has them)
+        keys = list(VISIBLE_PARTS)
+        keys.insert(keys.index("structure") + 1, "slabs")
+        for key in keys:
+            label = "Slabs" if key == "slabs" else PHASES[key].label
+            b = _chip(label)
             b.setChecked(True)
-            b.setToolTip(f"Show / hide the {PHASES[key].label.lower()}")
+            b.setToolTip(f"Show / hide the {label.lower()}")
             b.toggled.connect(
                 lambda on, k=key: owner.on_view_option(f"show:{k}", on))
             self.parts[key] = b
             lay.addWidget(b)
-        lay.addWidget(_vsep())
-
-        lay.addWidget(_caption("View"))
-        self.views = QButtonGroup(self)
-        for i, text in enumerate(("3D", "Plan", "Section", "Elevation")):
-            b = _chip(text)
-            b.setChecked(i == 0)
-            self.views.addButton(b, i)
-            lay.addWidget(b)
-        self.views.idClicked.connect(
-            lambda i: owner.on_view_kind(("3d", "plan", "section",
-                                          "elevation")[i]))
         lay.addWidget(_vsep())
 
         lay.addWidget(_caption("Camera"))
@@ -376,9 +405,14 @@ class ViewBar(QFrame):
         self.persp.setToolTip("Perspective / parallel projection")
         self.persp.toggled.connect(owner.on_perspective)
         lay.addWidget(self.persp)
-        for name, text in (("top", "Top"), ("front", "Front"),
-                           ("right", "Right"), ("iso", "Iso")):
-            b = _chip(text, checkable=False)
+        from .i18n import N_, tr
+        # the camera's own words («Top» is also a fill's top elsewhere —
+        # «Oberkante» in German: a view needs «Oben»)
+        for name, text in (("top", N_("Top view")), ("front", N_("Front view")),
+                           ("right", N_("Right view")), ("iso", "Iso")):
+            shown = tr(text)
+            b = _chip(text.replace(" view", "") if shown == text else shown,
+                      checkable=False)
             b.clicked.connect(lambda _=False, n=name: owner.on_camera(n))
             lay.addWidget(b)
         ext = _chip("Extents", checkable=False)
@@ -387,10 +421,7 @@ class ViewBar(QFrame):
         lay.addWidget(ext)
 
     def sync_view(self, plan: bool) -> None:
-        """3D / Plan lit as the plan view switch stands."""
-        b = self.views.button(1 if plan else 0)
-        if b is not None:
-            b.setChecked(True)
+        """(The «View» chips are gone — 2026-10-16.)"""
 
     def sync_camera(self, perspective: bool) -> None:
         self.persp.blockSignals(True)
@@ -498,8 +529,8 @@ class PropsPanel(QWidget):
             elev = model.elevations(levels, p["ground_level"])
             for i in range(len(levels) - 1, -1, -1):
                 lv = levels[i]
-                self._row(lv["name"], f"{elev[i]:+.2f} m   ·   "
-                          f"h {lv['height']:.2f} m")
+                self._row(lv["name"], f"{compat.fmt_level(elev[i])}   ·   "
+                          f"h {compat.fmt_len(lv['height'])}")
             self._action("Edit levels…", self.owner.edit_current_level)
             return
         self.hint.setText("The data every drawing and sheet reads.")
@@ -510,15 +541,17 @@ class PropsPanel(QWidget):
         self._row("Date", p["date"] or "(the day a sheet is exported)")
         self._row("System", SYSTEMS[doc["system"]])
         nb, nf = model.count(levels, "basement"), model.count(levels, "floor")
-        parts = ([f"{nb} basement" + ("s" if nb > 1 else "")] if nb else []) \
-            + ["ground floor"] \
-            + ([f"{nf} floor" + ("s" if nf > 1 else "") + " above"]
-               if nf else [])
+        from .i18n import tr
+        parts = ([tr("{n} basements", n=nb) if nb > 1
+                  else tr("1 basement")] if nb else []) \
+            + [tr("ground floor")] \
+            + ([tr("{n} floors above", n=nf) if nf > 1
+                else tr("1 floor above")] if nf else [])
         self._row("Levels", " · ".join(parts))
-        self._row("Ground level", f"{p['ground_level']:+.2f} m")
+        self._row("Ground level", compat.fmt_level(p['ground_level']))
         self._row("North", f"{p['north_deg']:.1f}°")
-        self._row("Sheets", f"{p['paper']} {p['orientation'].lower()}, "
-                  f"{p['scale']}")
+        self._row("Sheets", f"{p['paper']} "
+                  + tr(p['orientation']).lower() + f", {p['scale']}")
         self._action("Edit project…",
                      lambda: self.owner.edit_project("project"))
 
@@ -532,10 +565,13 @@ class PropsPanel(QWidget):
             return
         pts = plot["corners"]
         self.hint.setText("The plot everything sits on.")
-        self._row("Area", f"{plotgeo.area(pts):,.2f} m²")
-        self._row("Perimeter", f"{plotgeo.perimeter(pts):,.2f} m")
+        self._row("Area", compat.fmt_area(plotgeo.area(pts), group=True))
+        self._row("Perimeter", compat.fmt_len(plotgeo.perimeter(pts),
+                                              group=True))
         self._row("Corners", str(len(pts)))
-        self._row("Ground", f"{plot.get('thickness', 0):.2f} m deep")
+        from .i18n import tr
+        self._row("Ground", tr("{d} deep",
+                               d=compat.fmt_len(plot.get('thickness', 0))))
 
     def _setback_summary(self, doc: dict) -> None:
         from . import plotgeo
@@ -554,7 +590,8 @@ class PropsPanel(QWidget):
         self.hint.setText("The area you may build on (dashed on the "
                           "model). Every side in detail: «Edit setbacks…».")
         self._row("Fronts", str(roles.count("front")))
-        self._row("Buildable", f"{plotgeo.area(area):,.2f} m²" if area
+        self._row("Buildable", compat.fmt_area(plotgeo.area(area), group=True)
+                  if area
                   else "none — the setbacks leave nothing")
         own = sum(1 for c in plot["sb_custom"] if c is not None)
         if own:
@@ -583,7 +620,8 @@ class PropsPanel(QWidget):
         self._row("Shaping the ground", str(len(used)))
         if used:
             zs = [p[2] for p in used]
-            self._row("Elevations", f"{min(zs):+.2f} … {max(zs):+.2f} m")
+            self._row("Elevations", f"{compat.fmt_level(min(zs), unit=False)}"
+                      f" … {compat.fmt_level(max(zs))}")
         if len(used) < len(pts):
             self._row("Not used", f"{len(pts) - len(used)} — outside the "
                       "plot")
@@ -619,15 +657,19 @@ class PropsPanel(QWidget):
                 total[terrain.is_fill(d)] += vols.get(d["id"], 0.0)
         for d in digs:
             if d["id"] in opened:
-                self._row(d["name"], f"{vols.get(d['id'], 0.0):,.1f} m³")
+                self._row(d["name"], compat.fmt_volume(vols.get(d['id'], 0.0)))
             else:
                 self._row(d["name"], "not built — outside the plot now")
         if len(digs) > 1:
-            self._row("Total", f"{total[fill]:,.1f} m³")
+            self._row("Total", compat.fmt_volume(total[fill]))
         if total[True] and total[False]:
             # the balance: earth out against earth in
-            self._row("Cut / fill", f"{total[False]:,.1f} out · "
-                      f"{total[True]:,.1f} in")
+            if compat.doc_length_unit() == "m":
+                self._row("Cut / fill", f"{total[False]:,.1f} out · "
+                          f"{total[True]:,.1f} in")
+            else:
+                self._row("Cut / fill", f"{compat.fmt_volume(total[False])} "
+                          f"out · {compat.fmt_volume(total[True])} in")
 
     # -- one editor per property kind --------------------------------------------
     def _editor(self, ekey: str, prop, doc: dict | None = None) -> QWidget:
@@ -645,7 +687,8 @@ class PropsPanel(QWidget):
             plot = (doc or {}).get("plot")
             has = bool((doc or {}).get("_has_plot") and plot)
             key = prop.name.lower()
-            w = QDoubleSpinBox()
+            from .look import LengthBox   # feet / inches in such a document
+            w = LengthBox()
             w.setDecimals(2)
             w.setRange(0.0, 100.0)
             w.setSingleStep(0.5)
@@ -660,7 +703,8 @@ class PropsPanel(QWidget):
             return w
         if ekey == "ground" and prop.name == "Thickness":
             plot = (doc or {}).get("plot")
-            w = QDoubleSpinBox()
+            from .look import LengthBox
+            w = LengthBox()
             w.setDecimals(2)
             w.setRange(0.0, 20.0)
             w.setSingleStep(0.05)
@@ -678,7 +722,8 @@ class PropsPanel(QWidget):
         val = self.values.get(key, prop.default)
         store = lambda v, k=key: self.values.__setitem__(k, v)  # noqa: E731
         if prop.kind in ("len", "angle"):
-            w = QDoubleSpinBox()
+            from .look import LengthBox   # « m»: feet / inches if so
+            w = LengthBox()
             w.setDecimals(2)
             w.setRange(-1000.0, 1000.0)
             w.setSingleStep(0.05 if prop.kind == "len" else 1.0)
@@ -693,10 +738,13 @@ class PropsPanel(QWidget):
             w.valueChanged.connect(store)
             return w
         if prop.kind == "choice":
+            from .i18n import raw_text
             w = QComboBox()
             w.addItems(list(prop.options))
             w.setCurrentText(str(val))
-            w.currentTextChanged.connect(store)
+            # the choice as the code knows it (the words shown may be
+            # translated — i18n.py)
+            w.currentIndexChanged.connect(lambda _i, w=w: store(raw_text(w)))
             return w
         if prop.kind == "check":
             w = QCheckBox()

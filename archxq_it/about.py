@@ -19,7 +19,6 @@ from .style import BLUE
 SITE = "https://www.xq.com.br/archxq-it"
 SUPPORT = "https://www.xq.com.br/support"
 GITHUB = "https://github.com/equipexq/archxq-it-lite"
-UPDATES = "https://app.gumroad.com/library"      # the buyer's Gumroad library
 VIDEOS = "https://www.youtube.com/@landosouzza"
 
 
@@ -43,9 +42,11 @@ def _host_version() -> str:
 def version_line() -> str:
     """What support needs to know, in one line to copy (his idea,
     2026-10-07): «ArchXQ IT Pro 0.9.3 · IngeTrazo 0.5.7 · Windows 11»."""
-    import platform
+    # (Qt's own words for the system: the catalog's review flagged the
+    # other way — Lite updates waited for a person, 2026-10-15)
+    from PySide6.QtCore import QSysInfo
     ed = "Lite" if edition.lite() else "Pro"
-    system = f"{platform.system()} {platform.release()}".strip()
+    system = QSysInfo.prettyProductName().strip()
     return (f"ArchXQ IT {ed} {_version()} · IngeTrazo {_host_version()}"
             f" · {system}")
 
@@ -56,14 +57,22 @@ def _links() -> list[tuple[str, str, str]]:
     if edition.lite():
         out.append(("Get Pro", edition.PRO_URL,
                     "beams, slabs, openings, roof, sheets, PDF / DXF"))
+        # bought already: the key, and the Pro installs itself (updater.py)
+        out.append(("Upgrade to Pro…", "updater",
+                    "paste your license key — one click"))
         out.append(("Source code", GITHUB, "GitHub — free, GPL-3.0"))
     else:
-        out.append(("Updates", UPDATES, "your Gumroad library"))
+        from .updater import available
+        a = available().get("version")
+        out.append(("Update to " + a if a else "Updates", "updater",
+                    "one click — then restart IngeTrazo" if a
+                    else "check for a new version"))
     # the support form arrives with the product and the version filled in
     # (the site's inbox shows which product a request is about)
-    from urllib.parse import quote
     ed = "Lite" if edition.lite() else "Pro"
-    support = f"{SUPPORT}?product=archxq-it&version={quote(ed + ' ' + _version())}"
+    # (Qt encodes it — the catalog's review flagged the other way)
+    ver = bytes(QUrl.toPercentEncoding(ed + " " + _version())).decode()
+    support = f"{SUPPORT}?product=archxq-it&version={ver}"
     out += [("What's new", f"{SITE}/whats-new?edition={ed.lower()}",
              "every version's changes"),
             ("Manual", "guide", "the Help of every tool"),
@@ -123,7 +132,9 @@ class _About(QFrame):
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(7)
         for r, (label, t, note) in enumerate(_links()):
-            a = QLabel(f"<a href='{t}' style='color:#8fd3ff; "
+            hot = t == "updater" and label.startswith("Update to")
+            colour = "#ff9a52" if hot else "#8fd3ff"     # a version waits
+            a = QLabel(f"<a href='{t}' style='color:{colour}; "
                        f"text-decoration:none'><b>{label}</b></a>")
             a.setTextFormat(Qt.RichText)
             a.setTextInteractionFlags(Qt.TextBrowserInteraction)
@@ -146,7 +157,10 @@ class _About(QFrame):
 
     def _go(self, target: str) -> None:
         self.close()
-        if target == "guide":
+        if target == "updater":
+            from .updater import open_dialog
+            open_dialog(self.owner)
+        elif target == "guide":
             from .guide import open_guide
             open_guide(getattr(self.owner, "element", None) or "plot",
                        self.owner.viewport.window())

@@ -35,6 +35,8 @@ LEVEL_PARTS = (("slabs", "Slabs", ("slab",)),
                ("walls", "Walls", ("wall",)),
                ("openings", "Openings", ("opening",)),
                ("ramps", "Ramps & stairs", ("ramp", "stair")),
+               ("guards", "Low walls & guards", ("guard",)),
+               ("glazing", "Glass grids", ("glazing",)),
                # the host's guide lines drawn on that level (at its height)
                # — set aside in «guides_off» while off (his ask, 2026-10-12:
                # one floor's guides cluttered the next)
@@ -58,7 +60,9 @@ DEFAULT_DOC = {
     # what is shown (view state: kept in the file, never an undo step).
     # *_dims: None = the Settings decide; True / False = chosen in the
     # element's own window, and that choice rules
-    "view": {"setbacks": True, "folds": True,
+    # setbacks: OFF by default (his ask 2026-10-16 — the dashed outline
+    # stood on every new house); always drawn in Terrain › Setbacks
+    "view": {"setbacks": False, "folds": True,
              "plot_dims": None, "setback_dims": None, "dig_dims": None,
              "plot_elev_dims": None, "dig_elev_dims": None,
              "survey_dims": None, "contour_dims": None},
@@ -362,7 +366,12 @@ _RAIL_CHOICES = {"railing": ("none", "handrail", "steel", "glass", "wall"),
 _RAIL_SIZES = {"rail_h": (0.80, 1.20), "rail_d": (0.03, 0.08),
                "rail_inset": (0.02, 0.20), "rail_ext": (0.0, 0.60),
                "rail_post": (0.02, 0.10), "rail_gap": (0.60, 2.00),
-               "rail_wall_t": (0.08, 0.30)}
+               "rail_wall_t": (0.08, 0.30),
+               # the clear gap between balusters (2026-10-18)
+               "rail_clear": (0.05, 1.0),
+               # (not a railing's: the slab opening's «Clearance» all round —
+               # his ask, 2026-10-15; kept here as «cut» is)
+               "clear": (0.0, 1.0)}
 
 
 def _railing(e: dict) -> dict:
@@ -415,6 +424,15 @@ def _settle_owners(doc: dict) -> None:
     for e in doc.get("structure") or []:
         if e.get("type") not in ("ramp", "stair"):
             continue
+        if e.get("start") == "z":     # «By heights»: the level under its foot
+            try:
+                lo = min(float(e.get("from_z", 0.0)), float(e.get("to_z", 0.0)))
+            except (TypeError, ValueError):
+                continue
+            under = [(zl, lid) for lid, zl in z.items() if zl <= lo + 0.01]
+            e["level"] = max(under)[1] if under else \
+                min((zl, lid) for lid, zl in z.items())[1]
+            continue
         a = at(gid if e.get("start") == "terrain" and gid else e.get("from"))
         b = at(e.get("to"))
         if a and b:
@@ -425,7 +443,31 @@ def _settle_owners(doc: dict) -> None:
 
 _ST_LABEL = {"column": "Column", "beam": "Beam", "slab": "Slab",
              "footing": "Footing", "roof": "Roof", "ramp": "Ramp",
-             "stair": "Stair"}
+             "stair": "Stair", "guard": "Low wall", "glazing": "Glass grid"}
+#: a glass grid's choices / sizes kept (glazing.py — here, without Qt)
+_GLAZ_CHOICES = {"place": ("void", "free"),
+                 "kind": ("industrial", "aluminium", "partition"),
+                 "by": ("size", "count"),
+                 "frame": ("black", "dark", "silver", "white", "bronze"),
+                 "bead_c": ("black", "dark", "silver", "white", "bronze"),
+                 "glass": ("clear", "blue", "green", "grey", "bronze"),
+                 "outside": ("right", "left")}
+_GLAZ_SIZES = {"pw": (0.10, 3.0, 0.50), "ph": (0.10, 9.0, 0.50),
+               "fw": (0.01, 0.30, 0.03), "fd": (0.01, 0.50, 0.05),
+               "mw": (0.005, 0.20, 0.025), "md": (0.005, 0.50, 0.04),
+               "foff": (-1.0, 1.0, 0.0), "gpos": (-1.0, 0.50, -1.0),
+               "gt": (0.003, 0.05, 0.008), "glass_tr": (0.0, 0.95, 0.70),
+               "bw": (0.003, 0.05, 0.012), "bt": (0.002, 0.05, 0.010),
+               "h": (0.2, 20.0, 2.10), "base": (-1.0, 10.0, 0.0)}
+#: a low wall's / guard's choices kept (guards.py — here, so the model
+#: needs no Qt)
+_GUARD_CHOICES = {"kind": ("wall", "wallrail", "glass", "steel", "boundary"),
+                  "on": ("auto", "floor", "ground", "roof"),
+                  "top": ("stepped", "slope"),
+                  "rail_top": ("steel", "glass"),
+                  "rail_infill": ("vertical", "bars", "cables"),
+                  "rail_fix": ("frameless", "posts"),
+                  "rail_profile": ("round", "square")}
 
 
 def _pt(p) -> list[float]:
@@ -552,6 +594,12 @@ def _structure(raw, level_ids: set) -> list[dict]:
                 rec.update(a=_pt(e["a"]), b=_pt(e["b"]),
                            w=min(max(float(e["w"]), 0.05), 3.0),
                            h=min(max(float(e["h"]), 0.05), 5.0))
+                # its top: under the slab above (the level's), or at a
+                # height of its own over the floor (Badis, 2026-10-18: a
+                # lean-to's beams on 2.50 m posts)
+                if e.get("zmode") == "own":
+                    rec.update(zmode="own", zt=min(max(float(
+                        e.get("zt", 2.5)), -20.0), 50.0))
             elif t == "slab":
                 cs = [_pt(p) for p in e["corners"]]
                 if len(cs) < 3:
@@ -574,7 +622,13 @@ def _structure(raw, level_ids: set) -> list[dict]:
                 kind = e.get("kind") if e.get("kind") in (
                     "gable", "hip", "flat", "shed", "hidden") else "flat"
                 if kind != "flat" and len(cs) != 4:
-                    kind = "flat"           # a pitched roof: a rectangle
+                    # a pitched roof: a rectangle — or a hip / gable one
+                    # over an L (roof_l.py, 2026-10-16) or any other plan
+                    # (roof_any.py, 0.12.0)
+                    from . import roof_any, roof_l
+                    if kind not in ("gable", "hip") or not (
+                            roof_l.is_l(cs) or roof_any.ok(cs)):
+                        kind = "flat"
                 o = min(max(float(e.get("overhang", 0.5)), 0.0), 3.0)
                 rec.update(kind=kind, corners=cs,
                            slope=min(max(float(e.get("slope", 30.0)), 5.0),
@@ -591,9 +645,17 @@ def _structure(raw, level_ids: set) -> list[dict]:
                            t=min(max(float(e.get("t", 0.2)), 0.02), 1.0),
                            ridge="short" if e.get("ridge") == "short"
                            else "long",
+                           # a gable L: the wing keeping its gable
+                           main="other" if e.get("main") == "other"
+                           else "long",
                            parapet=min(max(float(e.get("parapet", 0.0)),
                                            0.0), 3.0),
-                           pt=min(max(float(e.get("pt", 0.15)), 0.05), 1.0))
+                           pt=min(max(float(e.get("pt", 0.15)), 0.05), 1.0),
+                           # on the walls, or at its own height (a lean-to
+                           # — Badis, 2026-10-18)
+                           zmode="own" if e.get("zmode") == "own"
+                           else "walls",
+                           zh=min(max(float(e.get("zh", 2.50)), 0.5), 50.0))
             elif t == "ramp":               # a «Building element» (ramps.py)
                 rec.update(start="terrain" if e.get("start") == "terrain"
                            else "level",
@@ -617,7 +679,11 @@ def _structure(raw, level_ids: set) -> list[dict]:
                            landing=min(max(float(e.get("landing", 3.0)),
                                            0.5), 50.0),
                            anchor=e.get("anchor") if e.get("anchor") in (
-                               "left", "right") else "centre")
+                               "left", "right") else "centre",
+                           # a sloped slab, or SOLID down to the floor (his
+                           # ask, 2026-10-18)
+                           build="solid" if e.get("build") == "solid"
+                           else "slab")
                 if rec["to"] != "z" and rec["to"] not in level_ids \
                         and not _top_of_level(rec["to"], level_ids):
                     rec["to"] = "z"         # its level is gone: an elevation
@@ -651,11 +717,92 @@ def _structure(raw, level_ids: set) -> list[dict]:
                                        0.0), 2.0),
                            nosing=min(max(float(e.get("nosing", 0.0) or 0.0),
                                           0.0), 0.05),
-                           build="open" if e.get("build") == "open"
-                           else "concrete")
+                           build=e.get("build") if e.get("build") in (
+                               "open", "solid") else "concrete")
                 if rec["to"] != "z" and rec["to"] not in level_ids \
                         and not _top_of_level(rec["to"], level_ids):
                     rec["to"] = "z"
+            elif t == "guard":              # a «Building element» (guards.py)
+                pts = [_pt(p) for p in e["pts"]]
+                if len(pts) < 2:
+                    continue
+                rec.update(pts=pts, closed=bool(e.get("closed")) and
+                           len(pts) > 2,
+                           h=min(max(float(e.get("h", 1.10)), 0.3), 3.0),
+                           t=min(max(float(e.get("t", 0.15)), 0.05), 0.6),
+                           wall_h=min(max(float(e.get("wall_h", 0.40)), 0.1),
+                                      2.5),
+                           base=min(max(float(e.get("base", 0.0)), -1.0),
+                                    60.0),
+                           cap=bool(e.get("cap", False)))
+                try:            # its stepped top: each step this high at most
+                    rec["step_h"] = min(max(float(e.get("step_h", 0.15)),
+                                            0.05), 0.50)
+                except (TypeError, ValueError):
+                    rec["step_h"] = 0.15
+                gaps = []       # its gaps: [from, to] along its line (m)
+                for g in e.get("gaps") or []:
+                    try:
+                        s0, s1 = float(g[0]), float(g[1])
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if s1 - s0 >= 0.02:
+                        gaps.append([round(s0, 4), round(s1, 4)])
+                if gaps:
+                    rec["gaps"] = gaps
+                try:            # a boundary wall's piers (0 = none)
+                    rec["pier_s"] = min(max(float(e.get("pier_s", 3.0)), 0.0),
+                                        10.0)
+                except (TypeError, ValueError):
+                    rec["pier_s"] = 3.0
+                gates = []      # its gates, each in the gap holding «at»
+                for g in e.get("gates") or []:
+                    if not gaps or not isinstance(g, dict):
+                        break
+                    try:
+                        at = round(float(g["at"]), 4)
+                        op = min(max(float(g.get("open", 0.0)), 0.0), 1.0)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    gates.append({
+                        "at": at,
+                        "kind": g.get("kind") if g.get("kind") in (
+                            "swing", "sliding") else "swing",
+                        "leaves": 2 if g.get("leaves") == 2 else 1,
+                        "style": g.get("style") if g.get("style") in (
+                            "bars", "solid", "slats") else "bars",
+                        "finish": g.get("finish") if g.get("finish") in (
+                            "anthracite", "steel", "white", "wood")
+                        else "anthracite",
+                        "open": op})
+                if gates:
+                    rec["gates"] = gates
+                for k, allowed in _GUARD_CHOICES.items():
+                    rec[k] = e.get(k) if e.get(k) in allowed else allowed[0]
+                try:            # the clear gap between balusters (18/10)
+                    if e.get("rail_clear") is not None:
+                        rec["rail_clear"] = min(max(float(
+                            e["rail_clear"]), 0.05), 1.0)
+                except (TypeError, ValueError):
+                    pass
+            elif t == "glazing":            # a «Building element» (glazing.py)
+                for k, allowed in _GLAZ_CHOICES.items():
+                    rec[k] = e.get(k) if e.get(k) in allowed else allowed[0]
+                for k, (lo, hi, dv) in _GLAZ_SIZES.items():
+                    try:
+                        rec[k] = min(max(float(e.get(k, dv)), lo), hi)
+                    except (TypeError, ValueError):
+                        rec[k] = dv
+                rec["cols"] = min(max(int(e.get("cols", 4) or 4), 1), 40)
+                rec["rows"] = min(max(int(e.get("rows", 4) or 4), 1), 40)
+                rec["opaque"] = bool(e.get("opaque", False))
+                rec["bead"] = bool(e.get("bead", True))
+                if rec["place"] == "free":
+                    rec.update(a=_pt(e["a"]), b=_pt(e["b"]))
+                else:
+                    rec["op"] = str(e.get("op") or "")
+                    if not rec["op"]:
+                        continue
             else:                                   # footing
                 kind = "strip" if e.get("kind") == "strip" else "pad"
                 rec.update(kind=kind, w=min(max(float(e["w"]), 0.1), 10.0),
@@ -673,11 +820,25 @@ def _structure(raw, level_ids: set) -> list[dict]:
             rec["fit"] = bool(e.get("fit", False))   # hidden in a wall
         if t in ("ramp", "stair"):
             rec.update(_railing(e))          # its railing (railings.py)
+            # its landing at the top (2026-10-18): 0 = none
+            try:
+                tl = float(e.get("top_landing", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                tl = 0.0
+            if tl >= 0.01:
+                rec["top_landing"] = round(min(tl, 20.0), 4)
             # the level it starts on («level» = the one it belongs to — the
             # lower; older records had them as one)
             f = str(e.get("from") or e["level"])
             rec["from"] = f if (f in level_ids or _top_of_level(
                 f, level_ids)) else rec["level"]
+            # «By heights» (2026-10-18): its clicked end at a typed
+            # elevation, the other one «to_z»
+            if e.get("start") == "z":
+                rec["start"] = "z"
+                rec["to"] = "z"
+                rec["from_z"] = min(max(float(e.get("from_z", 0.0)), -100.0),
+                                    100.0)
         eid = str(e.get("id") or "") or uuid.uuid4().hex[:8]
         while eid in ids:
             eid = uuid.uuid4().hex[:8]
@@ -708,8 +869,14 @@ def _openings(raw, wall_ids: set) -> list[dict]:
                    "swing": "right" if o.get("swing") == "right"
                    else "left"}
             if o["kind"] == "door":          # its type (library, 0.9.5)
-                rec["op"] = o["op"] if o.get("op") in ("sliding", "shop") \
+                rec["op"] = o["op"] if o.get("op") in ("sliding", "shop",
+                                                       "garage") \
                     else "swing"
+                if rec["op"] == "garage":    # sectional / roll-up / tilt
+                    from .structure import garage_finish, garage_kind
+                    rec["garage"] = garage_kind(o)
+                    rec["gfinish"] = garage_finish(o)     # its colour
+                    rec["gwin"] = bool(o.get("gwin"))     # a row of windows
                 if rec["op"] == "shop":      # a shopfront (shopfront.py)
                     from .shopfront import DEFAULTS
                     for k, v in DEFAULTS.items():
@@ -743,6 +910,10 @@ def _openings(raw, wall_ids: set) -> list[dict]:
             continue
         if o.get("glass") == "opaque":       # opaque panes (2026-10-14)
             rec["glass"] = "opaque"
+        # its trim and stone sill (trim.py, 2026-10-19) — none: nothing kept
+        from .trim import keys_of
+        rec.update(keys_of(dict(o, **{k: rec[k] for k in ("op",)
+                                      if k in rec}), rec["kind"]))
         oid = str(o.get("id") or "") or uuid.uuid4().hex[:8]
         while oid in ids:
             oid = uuid.uuid4().hex[:8]
@@ -775,7 +946,8 @@ def new_elements(structure: list[dict], recs: list[dict]) -> list[dict]:
     count: dict = {}
     out = []
     for r in recs:
-        label = _ST_LABEL[r["type"]]
+        label = "Boundary wall" if r["type"] == "guard" and \
+            r.get("kind") == "boundary" else _ST_LABEL[r["type"]]
         k = count.get(label, 1)
         while f"{label} {k}" in names:
             k += 1

@@ -111,8 +111,14 @@ def why_not(r: dict) -> str | None:
     return None
 
 
+#: SOLID (his ask, 2026-10-18 — the shops' entrance: steps and a ramp built
+#: as one block): its underside on the lower floor, 1 mm over it (never the
+#: floor's plane — the 1 mm rule)
+SOLID_LIFT = 0.001
+
+
 def _run_profile(m: int, z0: float, h: float, p: float, t: float,
-                 nos: float = 0.0) -> list:
+                 nos: float = 0.0, floor: float | None = None) -> list:
     """A run of ``m`` risers from ``z0`` (riser ``h``, signed), its side
     profile (along, z) counter-clockwise: the treads on top, the waist
     under them. Going down it starts on its first tread (the floor's edge
@@ -134,9 +140,13 @@ def _run_profile(m: int, z0: float, h: float, p: float, t: float,
                      (s1, zk - tn)]
         else:
             tops += [(s0, zk), (s1, zk)]
-    # the waist: under the line through the treads' inner corners
-    b0 = z0 + min(h, 0.0) - t
-    b1 = z1 - max(h, 0.0) - t
+    # the waist: under the line through the treads' inner corners — or,
+    # SOLID (``floor``), flat on the lower floor: filled under the steps
+    if floor is not None:
+        b0 = b1 = floor + SOLID_LIFT
+    else:
+        b0 = z0 + min(h, 0.0) - t
+        b1 = z1 - max(h, 0.0) - t
     return [(0.0, b0), (L, b1)] + list(reversed(tops))
 
 
@@ -157,7 +167,11 @@ def faces(r: dict, doc: dict, elevations) -> list:
     walls = RL.wall_plan(r, ps, ze > zs, True, doc) if RL else None
     nos = min(max(float(r.get("nosing", 0.0) or 0.0), 0.0), 0.05)
     open_ = r.get("build") == "open"
-    for pc in ps:
+    floor = min(zs, ze) if r.get("build") == "solid" else None
+    # its landing at the top (``R.top_piece``, 2026-10-18): a slab «t»
+    # thick — or, solid, down to the floor: steps and platform one block
+    tp = R.top_piece(r, ps, zs, ze)
+    for pc in ps + ([tp] if tp else []):
         (cx, cy), (dx, dy) = pc["c"], pc["d"]
         rx, ry = dy, -dx
 
@@ -171,16 +185,19 @@ def faces(r: dict, doc: dict, elevations) -> list:
             if open_:
                 out += _open_run(pc, P, a0, a1, nos)
                 continue
-            prof = _run_profile(m, pc["z0"], pc["h"], pc["p"], t, nos)
+            prof = _run_profile(m, pc["z0"], pc["h"], pc["p"], t, nos, floor)
         else:
             # the landing: thick enough to meet the next run's first
-            # riser; its top 1 mm under (never the floor's plane)
+            # riser; its top 1 mm under (never the floor's plane) — solid:
+            # down to the lower floor
             z = pc["z0"] - 0.001
-            tl = t + abs(pc["h"])
+            zb = floor + SOLID_LIFT if floor is not None \
+                else z - t if pc.get("top") \
+                else z - (t + abs(pc["h"]))
             if walls is not None:
-                out += landing_round(pc, walls, z - tl, z)
+                out += landing_round(pc, walls, zb, z)
                 continue
-            prof = [(0.0, z - tl), (pc["l"], z - tl), (pc["l"], z), (0.0, z)]
+            prof = [(0.0, zb), (pc["l"], zb), (pc["l"], z), (0.0, z)]
             a0, a1 = -pc["w"] / 2, pc["w"] / 2
         out += _sweep(prof, a0, a1, P, COLOR + (1.0,))
     if RL is not None:
@@ -258,7 +275,9 @@ def landing_round(pc: dict, walls, z0: float, z1: float,
 
 def footprints(r: dict, doc: dict, elevations) -> list:
     zs, ze = R.heights(r, doc, elevations)
-    return [R.piece_corners(pc) for pc in layout(r, zs, ze)]
+    ps = layout(r, zs, ze)
+    tp = R.top_piece(r, ps, zs, ze)          # its landing at the top too
+    return [R.piece_corners(pc) for pc in ps + ([tp] if tp else [])]
 
 
 def well(r: dict, doc: dict, elevations) -> list:
@@ -357,17 +376,17 @@ class _Steps(QWidget):
         p.setFont(f)
         p.setPen(QColor("#e6e6e6"))
         p.drawText(QRectF(x0 - 6, q(0, self.zs).y() - 24, 200, 18),
-                   Qt.AlignLeft, f"{self.zs:+.2f}"
+                   Qt.AlignLeft, compat.fmt_level(self.zs, unit=False)
                    + ("" if self.known else " (the ground)"))
         end = q(x, self.ze)
         p.drawText(QRectF(end.x() - 194, end.y() + 6, 200, 18),
-                   Qt.AlignRight, f"{self.ze:+.2f}")
+                   Qt.AlignRight, compat.fmt_level(self.ze, unit=False))
 
 
 def summary(s: dict) -> str:
-    return (f"{s['n']} risers × {abs(s['h']) * 100:.1f} cm · tread "
-            f"{s['p'] * 100:.1f} cm · 2h+p = "
-            f"{(2 * abs(s['h']) + s['p']) * 100:.1f} cm")
+    return (f"{s['n']} risers × {compat.fmt_cm(abs(s['h']))} · tread "
+            f"{compat.fmt_cm(s['p'])} · 2h+p = "
+            f"{compat.fmt_cm(2 * abs(s['h']) + s['p'])}")
 
 
 # ---- its window's drawings (the windows of 0.10.0 — look.py) ---------------------------
@@ -454,6 +473,10 @@ def _pic_build(kind):
         if kind == "concrete":
             L.poly(p, [(5, 46), (5, 36), (25, 36), (25, 26), (45, 26), (45, 16),
                        (65, 16), (65, 6), (85, 6), (85, 16), (25, 46)],
+                   L.INK, 1.0, fill="#8a8f96")
+        elif kind == "solid":            # filled down to the floor
+            L.poly(p, [(5, 46), (5, 36), (25, 36), (25, 26), (45, 26), (45, 16),
+                       (65, 16), (65, 6), (85, 6), (85, 46)],
                    L.INK, 1.0, fill="#8a8f96")
         else:
             p.setPen(L.pen("#9aa6b2", 3.0))
@@ -598,6 +621,14 @@ class StairDialog(QDialog):
         self.f_gap.setToolTip("A U's well between its two flights (0: side "
                               "by side) — the floor above opens over it too")
         form.addRow("Gap between flights", self.f_gap)
+        # its landing at the top (his idea, 2026-10-18): a platform where
+        # it arrives — or push its grip on the last step's front face
+        self.f_tland = L.metres(float(rec.get("top_landing", 0.0) or 0.0),
+                                0.0, 20.0)
+        self.f_tland.setToolTip("A level platform where it arrives, this "
+                                "long (0: none) — or push the grip on its "
+                                "last step's front face")
+        form.addRow("Landing at the top", self.f_tland)
         gl.addWidget(self.fold_shape)
         gl.addStretch(1)
         self.tabs.addTab(geo, "Geometry", "geometry")
@@ -610,7 +641,10 @@ class StairDialog(QDialog):
                              pic=_pic_build("concrete"))
         self.f_build.addItem("Open treads\non two steel stringers", "open",
                              pic=_pic_build("open"))
-        self.f_build.setCurrentIndex(1 if rec.get("build") == "open" else 0)
+        self.f_build.addItem("Solid\nfilled down to the floor", "solid",
+                             pic=_pic_build("solid"))
+        self.f_build.setCurrentIndex(max(0, self.f_build.findData(
+            rec.get("build", "concrete"))))
         self.fold_build.box.addWidget(self.f_build)
         bl.addWidget(self.fold_build)
         self.fold_cut = L.Fold("Opening in the slab", "stair.cut")
@@ -619,6 +653,12 @@ class StairDialog(QDialog):
         self.f_cut.addItem("None", False)
         self.f_cut.setCurrentIndex(0 if rec.get("cut", True) else 1)
         self.fold_cut.box.addWidget(self.f_cut)
+        # room round it for the walls of a stair core (his ask, 2026-10-15)
+        self.f_clear = L.metres(float(rec.get("clear", 0.0) or 0.0), 0.0, 1.0)
+        self.f_clear.setToolTip("The opening this much wider round the "
+                                "stair — never on the side where it reaches "
+                                "the floor")
+        self.fold_cut.form().addRow("Clearance", self.f_clear)
         self.fold_cut.box.addWidget(L.hint(
             "None: the slab stays whole — draw an opening of your own "
             "(Structure › Slab › Opening, any shape)."))
@@ -713,9 +753,9 @@ class StairDialog(QDialog):
                                         self.f_build, self.f_cut,
                                         self.f_anchor):
             w.currentIndexChanged.connect(self._sync)
-        for w in (self.ends.f_z, self.f_w, self.f_riser, self.f_tread,
+        for w in (*self.ends.values(), self.f_w, self.f_riser, self.f_tread,
                   self.f_t, self.f_land, self.f_split, self.f_gap,
-                  self.f_nos):
+                  self.f_nos, self.f_clear, self.f_tland):
             w.valueChanged.connect(self._sync)
         if edit:
             self.f_a.valueChanged.connect(self._sync)
@@ -751,8 +791,14 @@ class StairDialog(QDialog):
         r["gap"] = round(self.f_gap.value(), 3)
         r["nosing"] = round(self.f_nos.value(), 3)
         r["build"] = self.f_build.currentData()
+        tl = round(self.f_tland.value(), 3)
+        if tl >= 0.01:
+            r["top_landing"] = tl
+        else:
+            r.pop("top_landing", None)
         self.rails.write(r)
         r["cut"] = bool(self.f_cut.currentData())
+        r["clear"] = round(self.f_clear.value(), 3)
         if self.edit:
             r["x"] = round(self.f_x.value(), 4)
             r["y"] = round(self.f_y.value(), 4)
@@ -800,44 +846,70 @@ class StairDialog(QDialog):
         def name(box):
             return box.currentText().split("  (")[0].strip()
         lo, hi = name(self.ends.f_bottom), name(self.ends.f_top)
+        if self.ends.by_heights():        # two elevations
+            lo = compat.fmt_level(min(zs, ze), unit=False)
+            hi = compat.fmt_level(max(zs, ze), unit=False)
         n, h, p = s["n"], abs(s["h"]) * 100, s["p"] * 100
+        # feet / inches: «7 1/16"» (compat.fmt_cm); metres: «17.5 cm»
+        hc, pc = compat.fmt_cm(abs(s["h"])), compat.fmt_cm(s["p"], 0)
         shape = {"straight": "Straight", "L": "L", "U": "U"}.get(
             r["shape"], "Straight")
         if r["shape"] in ("L", "U"):
             shape += f", turning {r['turn']}"
         drop = abs(ze - zs)
+        self.ends.note(f"{compat.fmt_len(drop)} · {n} risers of {hc}")
         self.head.set_summary([
             f"{lo} → {hi}",
-            "{" + f"{drop:.2f} m" + "}" + ("" if known else " ≈"),
-            "{" + f"{n} risers" + "}" + f" of {h:.1f} cm",
-            "tread {" + f"{p:.0f} cm" + "}", shape,
+            "{" + compat.fmt_len(drop) + "}" + ("" if known else " ≈"),
+            "{" + f"{n} risers" + "}" + f" of {hc}",
+            "tread {" + pc + "}", shape,
             self.rails.summary()])
         self.fold_lv.set_pick(f"{lo} → {hi}")
-        self.fold_steps.set_pick(f"{r['w']:.2f} wide · {h:.1f} / {p:.0f}")
+        if compat.doc_length_unit() == "m":
+            self.fold_steps.set_pick(f"{r['w']:.2f} wide · {h:.1f} / {p:.0f}")
+        else:
+            self.fold_steps.set_pick(f"{compat.fmt_len(r['w'])} wide · "
+                                     f"{hc} / {pc}")
         self.fold_shape.set_pick(shape)
-        self.fold_build.set_pick("Open treads" if r["build"] == "open"
-                                 else "Concrete")
-        self.fold_cut.set_pick("Auto" if r["cut"] else "None")
+        self.fold_build.set_pick({"open": "Open treads",
+                                  "solid": "Solid"}.get(r["build"],
+                                                        "Concrete"))
+        self.f_clear.setEnabled(r["cut"])
+        self.fold_cut.set_pick(("Auto" + (
+            f" {compat.fmt_level(r['clear'], unit=False)}"
+            if r["clear"] > 1e-6 else ""))
+                               if r["cut"] else "None")
         self.fold_anchor.set_pick(self.f_anchor.currentText())
-        self.d_lv.set(h=f"{drop:.2f}", lo=lo, hi=hi)
+        self.d_lv.set(h=compat.fmt_num(drop), lo=lo, hi=hi)
         if self.edit:
-            self.fold_place.set_pick(f"{r['x']:.2f}, {r['y']:.2f} · "
+            self.fold_place.set_pick(f"{compat.fmt_num(r['x'])}, "
+                                     f"{compat.fmt_num(r['y'])} · "
                                      f"{r['angle'] % 360:.0f}°")
             self.d_dial.set(a=r["angle"])
         treads = max(s["n1"] - 1, 0) + max(s["n2"] - 1, 0)
         if r["shape"] in ("L", "U"):
             ld = max(r["landing"], r["w"]) if r["shape"] == "L" \
                 else r["landing"]
-            last = (f"{ld:.2f} m", "landing")
+            last = (compat.fmt_len(ld), "landing")
         else:
-            last = (f"{r['w']:.2f} m", "wide")
-        self.stats.set([(f"{n}", f"risers of {h:.1f} cm"),
-                        (f"{treads}", f"treads of {p:.0f} cm"),
-                        (f"{s['L']:.2f} m", "run" + ("" if known else " ≈")),
+            last = (compat.fmt_len(r['w']), "wide")
+        self.stats.set([(f"{n}", f"risers of {hc}"),
+                        (f"{treads}", f"treads of {pc}"),
+                        (compat.fmt_len(s['L']),
+                         "run" + ("" if known else " ≈")),
                         last])
         v = 2 * abs(s["h"]) + s["p"]
+        if compat.imperial():
+            # an American document: the residential code's limits (IRC
+            # R311.7: riser 7 3/4" at most, tread 10" at least)
+            ok = abs(s["h"]) <= 0.19685 + 1e-4 and s["p"] >= 0.254 - 1e-4
+            self.badge.set(ok, f"Riser {hc} · tread {pc} — "
+                               + ("within IRC (≤ 7 3/4\", ≥ 10\")" if ok else
+                                  "outside IRC (riser ≤ 7 3/4\", tread "
+                                  "≥ 10\")"))
+            return
         ok = 0.625 <= v <= 0.655
-        self.badge.set(ok, f"Blondel: 2 R + T = {v * 100:.1f} cm "
+        self.badge.set(ok, f"Blondel: 2 R + T = {compat.fmt_cm(v)} "
                            + ("(NBR 9050: 63–65)" if ok else
                               "— outside 63–65 cm (NBR 9050)"))
 
@@ -911,7 +983,9 @@ class StairTool(R.RampTool):
         zs, ze = self.heights_at(self.a)
         s = steps(self.rec, zs, ze)
         ang = self._angle(self.hover)
-        return (f"{s['n']} risers · run {s['L']:.2f} m  {zs:+.2f} → {ze:+.2f}"
+        return (f"{s['n']} risers · run {compat.fmt_len(s['L'])}  "
+                f"{compat.fmt_level(zs, unit=False)} → "
+                f"{compat.fmt_level(ze, unit=False)}"
                 + (f"   {ang % 360:.0f}°" if ang is not None else ""), None)
 
     def status_clause(self) -> str:

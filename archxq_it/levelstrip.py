@@ -135,7 +135,10 @@ class _Row(QFrame):
 
 
 def _elev(z: float) -> str:
-    return "±0.00" if abs(z) < 0.005 else f"{z:+.2f}"
+    from . import compat           # feet / inches: «+10'6"»
+    if abs(z) < 0.005:
+        return "±0.00" if compat.doc_length_unit() == "m" else "±0"
+    return compat.fmt_level(z, unit=False)
 
 
 class LevelStrip(QFrame):

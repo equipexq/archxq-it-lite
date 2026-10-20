@@ -28,6 +28,7 @@ from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSettings, QSize, Q
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -189,10 +190,23 @@ def dress(dlg) -> None:
 def ok_button(bb) -> None:
     """The OK of a QDialogButtonBox filled orange (one per window)."""
     from PySide6.QtWidgets import QDialogButtonBox
+    from .i18n import N_, tr
     b = bb.button(QDialogButtonBox.Ok)
     if b is not None:
         b.setObjectName("axqOk")
         b.setDefault(True)
+    # the box's standard buttons in the chosen language (Qt's own texts
+    # stay English — no Qt translator is loaded): every window passes here
+    B = QDialogButtonBox
+    for sb, text in ((B.Cancel, N_("Cancel")), (B.Close, N_("Close")),
+                     (B.Apply, N_("Apply")), (B.Yes, N_("Yes")),
+                     (B.No, N_("No")), (B.Help, N_("Help")),
+                     (B.Reset, N_("Reset")),
+                     (B.RestoreDefaults, N_("Restore defaults")),
+                     (B.Save, N_("Save")), (B.Discard, N_("Discard"))):
+        x = bb.button(sb)
+        if x is not None:
+            x.setText(tr(text))
 
 
 def rule() -> QFrame:
@@ -404,10 +418,22 @@ class Header(QWidget):
     def set_summary(self, parts) -> None:
         """``parts``: strings — a «{…}» in one is shown in blue."""
         import html
+        import re
+        from .i18n import _t
         out = []
         for s in parts:
             if not s:
                 continue                   # a part that does not apply
+            # «{4.00 m} high»: the words round the values in the language
+            # (the catalogue holds «{} high»)
+            vals = re.findall(r"\{[^}]*\}", s)
+            k = re.sub(r"\{[^}]*\}", "{}", s)
+            v = _t(k) if vals else _t(s)
+            if v is not None:
+                if vals:
+                    it = iter(vals)
+                    v = re.sub(r"\{\}", lambda _m: next(it, "{}"), v)
+                s = v
             s = html.escape(s)
             s = s.replace("{", f"<span style='color:{BLUE}'>").replace("}", "</span>")
             out.append(s)
@@ -696,6 +722,80 @@ SLIDER_CSS = ("QSlider::groove:horizontal { height: 6px; border-radius: 3px; "
               "border-color: #4a4e55; }")
 
 
+def imperial_step(step: float) -> float:
+    """A metric step's feet-inch counterpart: 1" for the usual 5 cm, 1/4"
+    for a centimetre, 1/16" for millimetres."""
+    if step >= 0.02 - 1e-9:
+        return 0.0254
+    if step >= 0.005 - 1e-9:
+        return 0.00635
+    return 0.0015875
+
+
+class LengthBox(QDoubleSpinBox):
+    """A QDoubleSpinBox for a LENGTH (metres inside, always): once its
+    suffix is « m», in a document kept in feet / inches / mm it SHOWS the
+    document's unit («3'7 5/16"») and reads what is typed as IngeTrazo's
+    value box does («3'7"», «43"», «110cm», a bare number in the
+    document's unit). A metres document: just as before (his ask,
+    2026-10-16 — American viewers)."""
+
+    def __init__(self, *a) -> None:
+        super().__init__(*a)
+        self._host = False
+
+    # -- switched on by its suffix ------------------------------------------------
+    def setSuffix(self, s: str) -> None:  # noqa: N802
+        from . import compat
+        if s.strip() == "m" and compat.doc_length_unit() != "m":
+            if not self._host:
+                self._host = True
+                v = self.value()
+                super().setSuffix("")
+                super().setDecimals(6)     # 1/16" is 0.0015875 m
+                super().setSingleStep(imperial_step(self.singleStep()))
+                self.setValue(v)
+                self.setMinimumWidth(max(self.minimumWidth(), 96))
+            return
+        super().setSuffix(s)
+
+    def setDecimals(self, n: int) -> None:  # noqa: N802
+        if not self._host:
+            super().setDecimals(n)
+
+    def setSingleStep(self, s: float) -> None:  # noqa: N802
+        super().setSingleStep(imperial_step(s) if self._host else s)
+
+    # -- shown / read ----------------------------------------------------------------
+    def textFromValue(self, v: float) -> str:  # noqa: N802
+        if self._host:
+            from . import compat
+            return compat.fmt_len(v)
+        return super().textFromValue(v)
+
+    def valueFromText(self, text: str) -> float:  # noqa: N802
+        if self._host:
+            from . import compat
+            v = compat.parse_host_length(text.strip())
+            return self.value() if v is None else float(v)
+        return super().valueFromText(text)
+
+    def validate(self, text: str, pos: int):
+        if self._host:
+            from PySide6.QtGui import QValidator
+            from . import compat
+            t = text.strip()
+            ok = bool(t) and compat.parse_host_length(t) is not None
+            return (QValidator.Acceptable if ok else QValidator.Intermediate,
+                    text, pos)
+        return super().validate(text, pos)
+
+    def fixup(self, text: str) -> str:
+        if self._host:
+            return self.textFromValue(self.value())
+        return super().fixup(text)
+
+
 class Measure(QWidget):
     """A measure as the library shows it: a BAR to drag + its FIELD to type
     (his ask, 2026-10-13: «você não está usando barras para as medidas?»),
@@ -716,12 +816,16 @@ class Measure(QWidget):
         self.bar.setStyleSheet(SLIDER_CSS)
         self.bar.setFocusPolicy(Qt.NoFocus)
         self.bar.setCursor(Qt.PointingHandCursor)
-        self.field = QDoubleSpinBox()
+        self.field = LengthBox()
         # millimetre steps (a riser, a nosing) show 3 decimals FROM THE
         # START: set after the value, it was already rounded to 2
         self.field.setDecimals(3 if step < 0.01 - 1e-9 else 2)
         self.field.setSuffix(suffix)
-        self.field.setFixedWidth(104)
+        # feet / inches: the bar runs inch by inch (1/4", 1/16" for the
+        # fine ones), on whole multiples of it
+        if self.field._host:
+            step = imperial_step(step)
+        self.field.setFixedWidth(118 if self.field._host else 104)
         self.field.setKeyboardTracking(False)
         lay.addWidget(self.bar, 1)
         lay.addWidget(self.field)
@@ -753,6 +857,9 @@ class Measure(QWidget):
         if self._busy:
             return
         v = self.field.minimum() + i * self._step
+        if self.field._host:                 # on a whole inch (1/4", 1/16")
+            v = min(max(round(v / self._step) * self._step,
+                        self.field.minimum()), self.field.maximum())
         self._busy = True
         try:
             self.field.setValue(v)        # emits valueChanged via _typed
@@ -775,7 +882,7 @@ class Measure(QWidget):
         self.field.setDecimals(n)
 
     def setSingleStep(self, s: float) -> None:  # noqa: N802
-        self.field.setSingleStep(s)
+        self.field.setSingleStep(s)       # (LengthBox: in inches if so)
 
     def setSuffix(self, s: str) -> None:  # noqa: N802
         self.field.setSuffix(s)
@@ -882,6 +989,14 @@ class Card(QFrame):
         self.box.addLayout(head)
 
 
+from .i18n import N_  # noqa: E402 — the captions and summary words
+# set in the code as data (Stats, Header.set_summary): kept in the
+# catalogues by the extractor
+_SHOWN = (N_("height"), N_("elevation"), N_("length"), N_("width"),
+          N_("area"), N_("slope"), N_("section"), N_("{} high"),
+          N_("{} long"), N_("{} wide"), N_("{} thick"), N_("{} deep"))
+
+
 class Stats(QWidget):
     """Number tiles, two a row: ``set([(value, caption), …])``."""
 
@@ -904,6 +1019,8 @@ class Stats(QWidget):
                 lab.hide()
                 continue
             v, cap = it
+            from .i18n import tr_parts
+            cap = tr_parts(cap)                # «height» in the language
             lab.setText(f"<span style='color:{BLUE};font-size:15px;"
                         f"font-weight:600'>{v}</span><br>{cap}")
             lab.show()

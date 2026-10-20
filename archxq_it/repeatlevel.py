@@ -19,7 +19,7 @@ import copy
 from . import model
 
 #: the structure copied with its level
-COPIED = ("column", "beam", "slab")
+COPIED = ("column", "beam", "slab", "guard")   # (a balcony's low wall too)
 
 
 def repeat(doc: dict, level_id: str, n: int) -> tuple[dict, list[str], list]:
@@ -110,9 +110,45 @@ def _same_element(a: dict, b: dict) -> bool:
             return _near((a["x"], a["y"]), (b["x"], b["y"])) \
                 and abs(float(a.get("angle", 0)) - float(b.get("angle", 0))) \
                 < 1.0
+        if t == "guard":
+            pa, pb = a["pts"], b["pts"]
+            return len(pa) == len(pb) and all(_near(p, q)
+                                              for p, q in zip(pa, pb))
     except (KeyError, TypeError, IndexError):
         return False
     return False
+
+
+def _wall_slabs(slabs: list, walls: list) -> set:
+    """The ids of the slabs made «Inside the walls» — their outline is one
+    of the walls' blocks (they are refitted to the target's walls)."""
+    if not slabs or not walls:
+        return set()
+    from . import structure as S
+    loops = [{"corners": c, "type": "slab"} for c in S.inside_walls_all(walls)]
+    return {e["id"] for e in slabs if e.get("type") == "slab"
+            and any(_same_element(e, l) for l in loops)}
+
+
+def _refit(e: dict, walls: list) -> list | None:
+    """The target's walls' block that stands where the slab ``e`` stood
+    (the most overlap), or None (keep its own corners)."""
+    from . import structure as S
+    try:
+        from shapely.geometry import Polygon
+    except ImportError:
+        return None
+    src = Polygon(e["corners"])
+    if not src.is_valid:
+        src = src.buffer(0)
+    best, area = None, 0.0
+    for loop in S.inside_walls_all(walls):
+        p = Polygon(loop)
+        a = p.intersection(src).area if p.is_valid else 0.0
+        if a > area:
+            best, area = loop, a
+    # it must stand mostly where the original did
+    return best if best is not None and area >= 0.5 * src.area else None
 
 
 def _copy(doc: dict, level_id: str, targets: list, new_levels: list,
@@ -154,7 +190,7 @@ def _copy(doc: dict, level_id: str, targets: list, new_levels: list,
         if e.get("type") not in ("stair", "ramp") or e["level"] != level_id:
             continue
         ends = (role(e.get("from") or e.get("level")), role(e.get("to")))
-        if e.get("start") != "terrain" and None not in ends \
+        if e.get("start") not in ("terrain", "z") and None not in ends \
                 and "self" in ends:
             flights.append((e, ends))
         else:
@@ -173,6 +209,11 @@ def _copy(doc: dict, level_id: str, targets: list, new_levels: list,
         st = [fixed.get(e["id"], e) for e in st]
         flights = [(fixed[e["id"]], ends) for e, ends in flights]
     src_r = [r for r in rooms if r.get("level") == level_id]
+    # a slab made «Inside the walls» is made again under the TARGET's walls
+    # (his copy, 2026-10-18: the copied slab kept the lower floor's bigger
+    # outline — he deleted it and made it again)
+    by_walls = _wall_slabs(src_s, src_w)
+    refitted = 0
 
     def bare(r):
         return {k: v for k, v in copy.deepcopy(r).items()
@@ -239,7 +280,14 @@ def _copy(doc: dict, level_id: str, targets: list, new_levels: list,
             add_o.append(rec)
         ops += model.new_openings(ops, add_o)
         new_s = []
+        tgt_w = [w for w in walls if w["level"] == nid]
         for e in src_s:
+            if e["id"] in by_walls:
+                loop = _refit(e, tgt_w)
+                if loop is not None and not _same_element(
+                        e, {"type": "slab", "corners": loop}):
+                    e = dict(e, corners=loop)
+                    refitted += 1
             if any(_same_element(e, h) for h in have_s):
                 there += 1
             else:
@@ -266,6 +314,8 @@ def _copy(doc: dict, level_id: str, targets: list, new_levels: list,
     if mats:
         out["materials"] = dict(doc.get("materials") or {}, el=mats)
     notes = []
+    if refitted:
+        notes.append(f"{refitted} slab made under that level's own walls")
     if there:
         notes.append(f"{there} already there — left as they were")
     if flights:

@@ -27,6 +27,7 @@ import os
 import sys
 
 from . import edition
+from .i18n import tr
 
 #: an element kind's PARTS: (key, label). One part = the whole element.
 SLOTS = {
@@ -44,14 +45,21 @@ SLOTS = {
     "stair": (("top", "Treads"), ("side", "Sides"),
               ("rail", "Railing (posts, handrail)"), ("glass", "Railing glass"),
               ("lowwall", "Low wall")),
+    "guard": (("lowwall", "Wall"), ("pier", "Piers"), ("cap", "Coping"),
+              ("rail", "Steel (posts, rails)"), ("glass", "Glass")),
     "roof": (("cover", "Covering (tiles, sheets)"),
              ("parapet", "Parapet and gable walls"),
              ("gutter", "Gutter"), ("slab", "Slab (flat, hidden)")),
+    # a door / window: each part its own (trim.py, his ask 2026-10-19 —
+    # the glass keeps its own: see-through or opaque, in the library)
+    "opening": (("frame", "Frame"), ("leaf", "Leaf (door, sash)"),
+                ("trim", "Trim"), ("sill", "Stone sill")),
 }
 PLURAL = {"plot": "plots", "dig": "excavations", "fill": "fills",
           "column": "columns", "beam": "beams", "slab": "slabs",
           "footing": "footings", "wall": "walls", "ramp": "ramps",
-          "stair": "stairs", "roof": "roofs"}
+          "stair": "stairs", "roof": "roofs", "guard": "low walls",
+          "opening": "doors and windows"}
 MAT_PREFIX = "ArchXQ · "
 #: kinds whose faces carry colours of their own on purpose (a door's glass
 #: and frame) — kept under a material. Ramps and stairs carry their plain
@@ -317,9 +325,16 @@ DEFAULTS = {"stair": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
                       "lowwall": _PLASTER},
             "ramp": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
                      "lowwall": _PLASTER},
+            # a boundary wall's three parts each its own (his ask,
+            # 2026-10-17): white render, stone piers, a dark granite coping
+            "guard": {"lowwall": _PLASTER, "rail": _BRUSHED,
+                      "pier": {"lib": "stone/stone_ashlar.png"},
+                      "cap": {"lib": "misc/dark_granite.jpg"}},
             "column": {"all": _EXPOSED}, "beam": {"all": _EXPOSED},
             "footing": {"all": _EXPOSED},
             "slab": {"top": _SMOOTH, "under": _EXPOSED},
+            # a stone sill: dark granite (the trim keeps its white)
+            "opening": {"sill": {"lib": "misc/dark_granite.jpg"}},
             "wall": {"all": _PLASTER},
             "plot": {"top": _GRASS, "side": _GRAVEL},
             "dig": {"floor": _GRAVEL, "wall": _GRAVEL},
@@ -377,6 +392,14 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
     # and footings, 2026-10-07) — the faces' attrs are what the host keeps
     keep_own = kind in KEEP_OWN_COLOURS
     for f in group.mesh.faces:
+        if kind == "opening":
+            # each part by the colour it is built with (trim.py): a part
+            # with a material takes it, the others (the glass) keep theirs
+            from .trim import part_of_color
+            part = part_of_color(f.attrs.get("color"))
+            if part in made:
+                f.attrs.update(made[part][1])
+            continue
         if keep_own and "color" in f.attrs and "mat" not in f.attrs:
             continue                              # its own (glass, frame)
         if kind == "roof":
@@ -386,11 +409,14 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
                 continue
         else:
             part = None
-            if kind in ("stair", "ramp"):
+            if kind in ("stair", "ramp", "guard"):
                 # its railing's parts, told by the colours they are built
                 # with; the glass keeps its own until one is chosen
                 try:
-                    from .railings import part_of_color   # Pro only
+                    if kind == "guard":                   # + piers, coping
+                        from .guards import part_of_color
+                    else:
+                        from .railings import part_of_color   # Pro only
                     part = part_of_color(f.attrs.get("color"))
                 except ImportError:
                     part = None
@@ -517,7 +543,7 @@ class MaterialTab:
         self.list.setWordWrap(True)
         self.list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for p, label in self.parts:
-            self.list.addItem(W.QListWidgetItem(label))
+            self.list.addItem(W.QListWidgetItem(tr(label)))
         self.list.setCurrentRow(0)
         self.list.currentRowChanged.connect(self._pick_part)
         if len(self.parts) == 1:
@@ -569,7 +595,7 @@ class MaterialTab:
         dflt.clicked.connect(lambda: self._choose(None))
         row.addWidget(dflt)
         row.addStretch()
-        self.all = W.QCheckBox(f"Use for all {PLURAL.get(kind, kind)}")
+        self.all = W.QCheckBox(tr(f"Use for all {PLURAL.get(kind, kind)}"))
         self.all.setToolTip(f"Every {kind} in the project takes it (one "
                             "that had its own for this part, too)")
         row.addWidget(self.all)
@@ -617,7 +643,7 @@ class MaterialTab:
         ref = self.now.get(self.part)
         self.big.setPixmap(thumb(ref, 132))
         label = dict(self.parts)[self.part]
-        self.name.setText(f"<b>{label}</b><br>{ref_label(ref)}")
+        self.name.setText(f"<b>{tr(label)}</b><br>{tr(ref_label(ref))}")
         for i, (p, _l) in enumerate(self.parts):
             self.list.item(i).setIcon(QtGui.QIcon(thumb(self.now.get(p), 28)))
 

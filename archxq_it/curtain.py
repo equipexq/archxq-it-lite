@@ -109,9 +109,13 @@ def sizes(w: dict) -> dict:
             "td": min(c["cw_td"] or t - 2 * INSET, t - INSET)}
 
 
-def faces(w: dict, pieces, z0: float, b: float, top: float) -> list:
+def faces(w: dict, pieces, z0: float, b: float, top: float,
+          ops=()) -> list:
     """The curtain wall's faces (with their colours) in its plan
-    ``pieces``, from ``b`` (its foot) to ``top``; ``z0`` its floor."""
+    ``pieces``, from ``b`` (its foot) to ``top``; ``z0`` its floor.
+    ``ops``: its openings (fitted — pos, w, sill, h): every piece of frame,
+    glass and band is cut out where one stands (the door / window is built
+    in it by ``structure.opening_parts``)."""
     from shapely.geometry import Polygon, box
     from shapely import affinity
     import math
@@ -155,9 +159,54 @@ def faces(w: dict, pieces, z0: float, b: float, top: float) -> list:
         g = affinity.rotate(g, ang, origin=(0, 0))
         return affinity.translate(g, p0[0], p0[1])
 
-    def solid(g, za, zb, color):
+    # its openings: (s0, s1, z_lo, z_hi) — 1 mm wider / taller, so no
+    # face of the frame lies in the opening's own jamb / head plane
+    holes = []
+    for o in ops or ():
+        try:
+            s0 = float(o["pos"]) - float(o["w"]) / 2 - 0.001
+            s1 = float(o["pos"]) + float(o["w"]) / 2 + 0.001
+            zl = z0 + float(o.get("sill", 0.0)) - 0.001
+            zh = z0 + float(o.get("sill", 0.0)) + float(o["h"]) + 0.001
+        except (KeyError, TypeError, ValueError):
+            continue
+        if s1 - s0 > 0.02 and zh - zl > 0.02:
+            holes.append((s0, s1, zl, zh))
+
+    def _plain(g, za, zb, color):
+        if g.is_empty or zb - za < 1e-4:
+            return
         for pc in _piece_dict(g):
             out.extend(_faces(W.solid(pc, za, zb), color))
+
+    def solid(g, za, zb, color):
+        """``g`` from za to zb — less every opening it meets: beside an
+        opening it stands whole; over its stretch, only under its sill and
+        over its head."""
+        if g.is_empty:
+            return
+        parts = [(g, za, zb)]
+        for s0, s1, zl, zh in holes:
+            nxt = []
+            for gg, a, e in parts:
+                if zh <= a or zl >= e:
+                    nxt.append((gg, a, e))
+                    continue
+                band_ = frame(s0, s1, -1e4, 1e4)
+                inside = gg.intersection(band_)
+                if inside.is_empty:
+                    nxt.append((gg, a, e))
+                    continue
+                rest = gg.difference(band_)
+                if not rest.is_empty:
+                    nxt.append((rest, a, e))
+                if zl > a:
+                    nxt.append((inside, a, min(zl, e)))
+                if zh < e:
+                    nxt.append((inside, max(zh, a), e))
+            parts = nxt
+        for gg, a, e in parts:
+            _plain(gg, a, e, color)
 
     if c["cw_glass"] == "outside":
         g_mid = min(CAP + GLASS_T / 2, md - GLASS_T / 2)

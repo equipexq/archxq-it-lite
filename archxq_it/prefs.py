@@ -21,14 +21,23 @@ DEFAULTS: dict[str, tuple[object, type]] = {
     "grid_snap": (False, bool),          # the cursor on the plan's grid
     # Warnings
     "warn_setbacks": (True, bool),       # an excavation into the setbacks
+    # Language (i18n.py): auto = IngeTrazo's | en | pt-BR | de — read when
+    # ArchXQ starts
+    "language": ("auto", str),
+    # the sheets' words: as ArchXQ («interface») or always English («en»)
+    "sheets_lang": ("interface", str),
+    # Settings ▸ Units: the unit chosen there for new documents too
+    "units_for_new": (True, bool),
     # Defaults for new things
     "ground_thickness": (0.50, float),   # m, under the plot
     "floor_height": (3.00, float),       # m, a new storey
 }
 
-PLOT_DIMS = {"off": "Off",
-             "terrain": "In the Terrain phase",
-             "always": "Always (while ArchXQ is on)"}
+from .i18n import N_  # noqa: E402 — shown with tr() (i18n.py)
+
+PLOT_DIMS = {"off": N_("Off"),
+             "terrain": N_("In the Terrain phase"),
+             "always": N_("Always (while ArchXQ is on)")}
 
 
 def get(key: str):

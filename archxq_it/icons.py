@@ -465,7 +465,36 @@ def _guides(p) -> None:
     _dot(p, 40, 22, 6.0)
 
 
-_CUSTOM = {"help": _help, "guides": _guides, "survey": _survey, "add_point": _add_point, "fit": _fit,
+def _guard(p) -> None:
+    """A low wall with balusters over it — the «Low wall» element."""
+    p.setPen(Qt.NoPen)
+    p.setBrush(ACCENT)
+    p.drawRect(QRectF(6, 40, 52, 16))                # the low wall
+    p.setPen(_pen(INK, 4))
+    p.drawLine(QPointF(6, 14), QPointF(58, 14))      # the top rail
+    p.setPen(_pen(INK, 3))
+    for x in (12, 24, 36, 48):
+        p.drawLine(QPointF(x, 14), QPointF(x, 40))
+
+
+def _glazing(p) -> None:
+    """A squared glass panel: its frame, a grid of muntins."""
+    glass = QColor("#8fc3dd")
+    glass.setAlpha(120)
+    p.setPen(Qt.NoPen)
+    p.setBrush(glass)
+    p.drawRect(QRectF(8, 8, 48, 48))
+    p.setPen(_pen(INK, 4))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(8, 8, 48, 48))
+    p.setPen(_pen(ACCENT, 3))
+    for k in (24, 40):
+        p.drawLine(QPointF(k, 8), QPointF(k, 56))
+        p.drawLine(QPointF(8, k), QPointF(56, k))
+
+
+_CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
+           "glazing": _glazing, "survey": _survey, "add_point": _add_point, "fit": _fit,
            "excavate": _excavate, "eye": _eye, "eye_off": _eye_off,
            "eye_part": _eye_part,
            "edit": _edit, "ramp": _ramp, "stair": _stair,

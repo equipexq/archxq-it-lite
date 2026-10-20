@@ -3,6 +3,8 @@ The permanent regions (top / left / right / bottom) stay the home of the
 interface; a dialog opens only to change a set of values and closes."""
 from __future__ import annotations
 
+from .i18n import raw_text, tr
+
 import copy
 import re
 
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model
+from . import compat, model
 from .help import help_button
 from .phases import SYSTEMS
 from .style import BLUE
@@ -241,7 +243,8 @@ def hide_button(dlg: QDialog) -> QPushButton:
 
 
 def _metres(value: float, lo: float, hi: float, step: float = 0.05):
-    w = QDoubleSpinBox()
+    from .look import LengthBox          # feet / inches in such a document
+    w = LengthBox()
     w.setDecimals(2)
     w.setRange(lo, hi)
     w.setSingleStep(step)
@@ -345,11 +348,15 @@ class ProjectDialog(QDialog):
         self.f_system.setCurrentIndex(self.f_system.findData(self.system))
         form.addRow("Structural system", _with_help(self.f_system, "system"))
 
+        # the DOCUMENT's units (IngeTrazo asks them for every new document)
+        # — shown, not chosen here (feet / inches: 2026-10-16)
         self.f_units = QComboBox()
         self.f_units.addItems(list(model.UNITS))
-        self.f_units.model().item(1).setEnabled(False)   # not yet
-        self.f_units.setItemData(1, "Coming later", Qt.ToolTipRole)
-        self.f_units.setCurrentText(p["units"])
+        self.f_units.setCurrentIndex(1 if compat.imperial() else 0)
+        self.f_units.setEnabled(False)
+        self.f_units.setToolTip("The document's units — IngeTrazo asks them "
+                                "for every new document. ArchXQ shows and "
+                                "reads every measure in them.")
         form.addRow("Units", self.f_units)
 
         self.f_north = QDoubleSpinBox()
@@ -441,7 +448,7 @@ class ProjectDialog(QDialog):
             spin.valueChanged.connect(
                 lambda v, i=i: self._on_height(i, v))
             self.table.setCellWidget(row, 1, spin)
-            e = QTableWidgetItem(f"{elev[i]:+.2f} m")
+            e = QTableWidgetItem(compat.fmt_level(elev[i]))
             e.setFlags(e.flags() & ~Qt.ItemIsEditable)
             e.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(row, 2, e)
@@ -458,7 +465,8 @@ class ProjectDialog(QDialog):
         n = len(self.levels)
         self.table.blockSignals(True)
         for row in range(n):
-            self.table.item(row, 2).setText(f"{elev[n - 1 - row]:+.2f} m")
+            self.table.item(row, 2).setText(
+                compat.fmt_level(elev[n - 1 - row]))
         self.table.blockSignals(False)
 
     def _selected_index(self) -> int | None:
@@ -523,12 +531,12 @@ class ProjectDialog(QDialog):
         p["location"] = self.f_location.text().strip()
         p["author"] = self.f_author.text().strip()
         p["date"] = self.f_date.text().strip()
-        p["units"] = self.f_units.currentText()
+        p["units"] = raw_text(self.f_units)
         p["north_deg"] = round(self.f_north.value(), 1)
         p["ground_level"] = round(self.f_ground.value(), 3)
-        p["paper"] = self.f_paper.currentText()
-        p["orientation"] = self.f_orient.currentText()
-        p["scale"] = self.f_scale.currentText()
+        p["paper"] = raw_text(self.f_paper)
+        p["orientation"] = raw_text(self.f_orient)
+        p["scale"] = raw_text(self.f_scale)
         self.system = self.f_system.currentData()
         self.levels = model.fix_levels(self.levels)
         self.accept()
@@ -549,12 +557,12 @@ class SettingsDialog(QDialog):
         from . import prefs
         super().__init__(parent)
         self.placement = placement
-        self.setWindowTitle("ArchXQ settings")
+        self.setWindowTitle(tr("ArchXQ settings"))
         self.setMinimumSize(640, 560)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 12)
-        look_head(self, lay, "settings", "Settings", "settings",
-                  "Yours, for every project — not saved in the file.")
+        look_head(self, lay, "settings", tr("Settings"), "settings",
+                  tr("Yours, for every project — not saved in the file."))
         tabs = L.Tabs()
         lay.addWidget(tabs.bar)
         lay.addWidget(L.rule())
@@ -566,65 +574,112 @@ class SettingsDialog(QDialog):
 
         # ---- Display -------------------------------------------------------------
         pg, dl = L.page()
-        fold = L.Fold("Plan", "settings.plan")
+        # the LANGUAGE (i18n.py, 0.14.0): Auto = IngeTrazo's own
+        from . import i18n
+        fold = L.Fold(tr("Language"), "settings.language")
         form = fold.form()
-        self.f_plan = tick("Switch to plan view when a drawing tool starts",
+        self.f_lang = QComboBox()
+        self.f_lang.addItem(tr("Auto — as IngeTrazo ({language})",
+                               language=i18n.LANGUAGES[i18n.host_language()]),
+                            "auto")
+        for code, name in i18n.LANGUAGES.items():
+            self.f_lang.addItem(name, code)
+        self._lang_was = prefs.get("language")
+        k = self.f_lang.findData(self._lang_was)
+        self.f_lang.setCurrentIndex(k if k >= 0 else 0)
+        form.addRow(tr("ArchXQ in"), self.f_lang)
+        form.addRow("", L.hint(tr("Takes effect when IngeTrazo is restarted.")))
+        # the SHEETS' words (titles, title block, area schedule): as ArchXQ,
+        # or English (an office delivering in English)
+        self.f_sheets_lang = QComboBox()
+        self.f_sheets_lang.addItem(tr("The same as ArchXQ"), "interface")
+        self.f_sheets_lang.addItem("English", "en")
+        k = self.f_sheets_lang.findData(prefs.get("sheets_lang"))
+        self.f_sheets_lang.setCurrentIndex(k if k >= 0 else 0)
+        form.addRow(tr("Sheets in"), self.f_sheets_lang)
+        dl.addWidget(fold)
+
+        # the UNITS — the document's own, the same setting as IngeTrazo's
+        # Preferences ▸ Units (his ask, 2026-10-20: people look for it here)
+        self.f_unit = None
+        choices = compat.length_units()
+        if choices:
+            fold = L.Fold(tr("Units"), "settings.units")
+            form = fold.form()
+            self.f_unit = QComboBox()
+            for code, label in choices:
+                self.f_unit.addItem(label, code)
+            self._unit_was = compat.doc_length_unit()
+            k = self.f_unit.findData(self._unit_was)
+            self.f_unit.setCurrentIndex(k if k >= 0 else 0)
+            form.addRow(tr("Lengths in"), self.f_unit)
+            self.f_unit_new = tick(tr("New documents too"), "units_for_new")
+            form.addRow("", self.f_unit_new)
+            form.addRow("", L.hint(tr(
+                "This document's units, saved in the file — the same setting "
+                "as IngeTrazo's Preferences ▸ Units, where the areas, angles "
+                "and decimals are.")))
+            dl.addWidget(fold)
+
+        fold = L.Fold(tr("Plan"), "settings.plan")
+        form = fold.form()
+        self.f_plan = tick(tr("Switch to plan view when a drawing tool starts"),
                            "plan_on_tool")
         form.addRow("", self.f_plan)
-        self.f_plan_hl = tick("Show the plan in Hidden Line",
+        self.f_plan_hl = tick(tr("Show the plan in Hidden Line"),
                               "plan_hidden_line")
         form.addRow("", self.f_plan_hl)
-        self.f_grid = tick("A grid and the red / green axes in the plan",
+        self.f_grid = tick(tr("A grid and the red / green axes in the plan"),
                            "plan_grid")
         form.addRow("", self.f_grid)
-        self.f_pdims = tick("Dimensions round the walls in the plan "
-                            "(through the openings, and overall)",
+        self.f_pdims = tick(tr("Dimensions round the walls in the plan "
+                            "(through the openings, and overall)"),
                             "plan_dims")
         form.addRow("", self.f_pdims)
-        self.f_tint = tick("Rooms' floors tinted in the plan", "room_tint")
+        self.f_tint = tick(tr("Rooms' floors tinted in the plan"), "room_tint")
         form.addRow("", self.f_tint)
         dl.addWidget(fold)
 
-        fold = L.Fold("Drawing", "settings.drawing")
+        fold = L.Fold(tr("Drawing"), "settings.drawing")
         form = fold.form()
         # (where ArchXQ's bars sit is no longer a choice: over the 3D view)
         self.f_dims = QComboBox()
         for k, label in prefs.PLOT_DIMS.items():
-            self.f_dims.addItem(label, k)
+            self.f_dims.addItem(tr(label), k)
         self.f_dims.setCurrentIndex(self.f_dims.findData(prefs.get("plot_dims")))
-        form.addRow("Plot dimensions", _with_help(self.f_dims, "plot_dims"))
-        self.f_live = tick("Show lengths while drawing", "live_dims")
+        form.addRow(tr("Plot dimensions"), _with_help(self.f_dims, "plot_dims"))
+        self.f_live = tick(tr("Show lengths while drawing"), "live_dims")
         form.addRow("", self.f_live)
-        self.f_diag = tick("Pull the cursor onto 45°", "diag_pull")
+        self.f_diag = tick(tr("Pull the cursor onto 45°"), "diag_pull")
         form.addRow("", self.f_diag)
         dl.addWidget(fold)
 
-        fold = L.Fold("On screen", "settings.screen")
+        fold = L.Fold(tr("On screen"), "settings.screen")
         form = fold.form()
-        self.f_radial = tick("A ring of actions at the mouse when a column, "
-                             "beam, slab, stair… is clicked (F9)",
+        self.f_radial = tick(tr("A ring of actions at the mouse when a column, "
+                             "beam, slab, stair… is clicked (F9)"),
                              "radial_menu")
-        form.addRow("Radial menu", self.f_radial)
-        self.f_grips = tick("Grips on the element selected — drag them to "
-                            "change it", "grips")
+        form.addRow(tr("Radial menu"), self.f_radial)
+        self.f_grips = tick(tr("Grips on the element selected — drag them to "
+                            "change it"), "grips")
         grips_row = QHBoxLayout()
         grips_row.setContentsMargins(0, 0, 0, 0)
         grips_row.addWidget(self.f_grips)
         grips_row.addWidget(help_button("grips"))
         grips_row.addStretch(1)
-        form.addRow("Grips", grips_row)
+        form.addRow(tr("Grips"), grips_row)
         # the QUICK HELP cards (quickhelp.py): all on / off — F1 too — and
         # the ones hidden one by one, back
-        self.f_quick = tick("A card with the tool's clicks and keys, "
-                            "bottom-left (F1)", "quick_help")
+        self.f_quick = tick(tr("A card with the tool's clicks and keys, "
+                            "bottom-left (F1)"), "quick_help")
         quick_row = QHBoxLayout()
         quick_row.setContentsMargins(0, 0, 0, 0)
         quick_row.addWidget(self.f_quick)
         from .quickhelp import hidden_topics, set_hidden_topics
-        b_all = QPushButton("Show all again")
+        b_all = QPushButton(tr("Show all again"))
         b_all.setObjectName("axqChip")
-        b_all.setToolTip("The cards you hid one by one («Don't show this one "
-                         "again») come back")
+        b_all.setToolTip(tr("The cards you hid one by one («Don't show this one "
+                         "again») come back"))
         b_all.setEnabled(bool(hidden_topics()))
 
         def _all_again() -> None:
@@ -634,35 +689,35 @@ class SettingsDialog(QDialog):
         b_all.clicked.connect(_all_again)
         quick_row.addWidget(b_all)
         quick_row.addStretch(1)
-        form.addRow("Quick help", quick_row)
+        form.addRow(tr("Quick help"), quick_row)
         dl.addWidget(fold)
 
-        fold = L.Fold("Warnings", "settings.warn")
+        fold = L.Fold(tr("Warnings"), "settings.warn")
         form = fold.form()
-        self.f_warn_sb = tick("When an excavation enters the setbacks",
+        self.f_warn_sb = tick(tr("When an excavation enters the setbacks"),
                               "warn_setbacks")
-        form.addRow("Warn me", self.f_warn_sb)
+        form.addRow(tr("Warn me"), self.f_warn_sb)
         dl.addWidget(fold)
         dl.addStretch(1)
-        tabs.addTab(pg, "Display", "material")
+        tabs.addTab(pg, tr("Display"), "material")
 
         # ---- Defaults ------------------------------------------------------------
         pg, fl = L.page()
-        fold = L.Fold("New projects and levels", "settings.defaults")
+        fold = L.Fold(tr("New projects and levels"), "settings.defaults")
         form = fold.form()
         self.f_ground = L.metres(prefs.get("ground_thickness"), 0.05, 5.0)
         self.f_ground.field.setMaximum(20.0)
         self.f_ground.setValue(prefs.get("ground_thickness"))
-        form.addRow("Ground thickness", _with_help(self.f_ground,
+        form.addRow(tr("Ground thickness"), _with_help(self.f_ground,
                                                    "ground_thickness"))
         self.f_floor = L.metres(prefs.get("floor_height"), model.MIN_HEIGHT,
                                 min(model.MAX_HEIGHT, 10.0))
         self.f_floor.field.setMaximum(model.MAX_HEIGHT)
         self.f_floor.setValue(prefs.get("floor_height"))
-        form.addRow("New floor height", self.f_floor)
+        form.addRow(tr("New floor height"), self.f_floor)
         fl.addWidget(fold)
         fl.addStretch(1)
-        tabs.addTab(pg, "Defaults", "geometry")
+        tabs.addTab(pg, tr("Defaults"), "geometry")
         lay.addWidget(tabs.stack, 1)
 
         lay.addWidget(L.rule())
@@ -709,6 +764,22 @@ class SettingsDialog(QDialog):
         prefs.put("quick_help", self.f_quick.isChecked())
         prefs.put("ground_thickness", round(self.f_ground.value(), 3))
         prefs.put("floor_height", round(self.f_floor.value(), 3))
+        prefs.put("sheets_lang", self.f_sheets_lang.currentData())
+        if self.f_unit is not None:
+            prefs.put("units_for_new", self.f_unit_new.isChecked())
+            viewport = getattr(self.parent(), "viewport", None)
+            if viewport is not None and self.f_unit.currentData() != self._unit_was:
+                compat.set_doc_length_unit(viewport, self.f_unit.currentData(),
+                                           self.f_unit_new.isChecked())
+        lang = self.f_lang.currentData()
+        prefs.put("language", lang)
+        if lang != self._lang_was:
+            from PySide6.QtWidgets import QMessageBox
+            from . import i18n
+            QMessageBox.information(
+                self, tr("Language"),
+                tr("ArchXQ will be in {language} the next time IngeTrazo "
+                   "starts.", language=i18n.LANGUAGES[i18n.resolve(lang)]))
         self.accept()
 
 
@@ -751,7 +822,11 @@ class PlotDialog(QDialog):
              "elevations"),
             ("contour_dims", "Contours",
              "The ground's contour lines (their step: Survey points › "
-             "Points & import…)")])
+             "Points & import…)"),
+            # here too: he looked for it in THIS window (2026-10-16)
+            ("setbacks", "Setback outline",
+             "The dashed outline of where you may build (the buildable "
+             "area) — off by default")])
         if show is not None:
             lay.addWidget(show)
 
@@ -838,7 +913,8 @@ class PlotDialog(QDialog):
 
     @staticmethod
     def _spin(lo, hi, step, suffix, decimals):
-        w = QDoubleSpinBox()
+        from .look import LengthBox      # « m»: feet / inches if so
+        w = LengthBox()
         w.setDecimals(decimals)
         w.setRange(lo, hi)
         w.setSingleStep(step)
@@ -863,11 +939,12 @@ class PlotDialog(QDialog):
             self.f_a[i].setToolTip("" if i in free else
                                    "Worked out to close the plot")
         area = plotgeo.area(self.pts)
-        text = (f"Area {area:,.2f} m²   ·   perimeter "
-                f"{plotgeo.perimeter(self.pts):,.2f} m")
+        text = (f"Area {compat.fmt_area(area, group=True)}   ·   perimeter "
+                f"{compat.fmt_len(plotgeo.perimeter(self.pts), group=True)}")
         if self.gap > 0.005:
             text += (f"<br><span style='color:#e5484d'>These lengths cannot "
-                     f"close: the closing side is {self.gap:.2f} m off. Check "
+                     f"close: the closing side is {compat.fmt_len(self.gap)} "
+                     "off. Check "
                      "the lengths (or set an angle).</span>")
         self.status.setText(text)
         self._send_preview()
@@ -1003,8 +1080,9 @@ class _LevelStack(QWidget):
                    ("#2e313599" if kind != "basement" else "#26282c"))
             L.text(p, x0 + 8, (y(z) + y(z + h)) / 2 + 4, name,
                    L.TEXT if on else L.MUTED, 8, on)
-            L.text(p, x0 - 6, y(z) + 4, "±0.00" if abs(z) < 0.005
-                   else f"{z:+.2f}", L.GOLD if on else L.BLUE, 7,
+            from .plottools import elev_text      # ±0.00 / +3.20 / +10'6"
+            L.text(p, x0 - 6, y(z) + 4, elev_text(z).replace("−", "-"),
+                   L.GOLD if on else L.BLUE, 7,
                    align=Qt.AlignRight)
         g = next((z for _n, z, _h, kd in self.rows if kd == "ground"), None)
         if g is not None:
@@ -1151,7 +1229,16 @@ class LevelDialog(QDialog):
         fold.box.addLayout(row)
         rl_.addWidget(fold)
         rl_.addStretch(1)
-        self.tabs.addTab(pg, "Repeat & copy", "build")
+        self._rep_tab = self.tabs.addTab(pg, "Repeat & copy", "build")
+        # what the user touched last on that tab — the orange OK there
+        # then does it (his trap, 2026-10-18: a level picked, OK pressed,
+        # nothing copied — only the «Copy» chip copied)
+        self._rep_intent = "copy"
+        self._rep_ok = content > 0
+        self.f_times.valueChanged.connect(
+            lambda _v: setattr(self, "_rep_intent", "repeat"))
+        self.f_target.currentIndexChanged.connect(
+            lambda _i: setattr(self, "_rep_intent", "copy"))
 
         # ---- the pages + the stack beside them -----------------------------------
         body = QHBoxLayout()
@@ -1183,11 +1270,45 @@ class LevelDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         ok_apply(self, bb)
         L.ok_button(bb)
-        bb.accepted.connect(lambda: self._done("apply"))
+        bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         acts.addWidget(bb)
         lay.addLayout(acts)
         self._refresh()
+
+    def _ok(self) -> None:
+        """OK. On the «Repeat & copy» tab it asks whether to do what is
+        set up there — never a silent «only the name and height»."""
+        if self.tabs.currentIndex() != self._rep_tab or not self._rep_ok:
+            self._done("apply")
+            return
+        from PySide6.QtWidgets import QMessageBox
+        if self._rep_intent == "repeat":
+            n = self.times()
+            what, act = (f"Repeat this level {n}× above?", "repeat")
+            label = "Repeat"
+        else:
+            if self.target() is None:
+                self._done("apply")
+                return
+            what, act = (f"Copy this level onto «{self.f_target.currentText()}»?",
+                         "copy")
+            label = "Copy"
+        box = QMessageBox(self)
+        box.setWindowTitle("Level")
+        box.setText(what)
+        box.setInformativeText("Its walls, doors, windows, columns, beams and "
+                               "slabs. One Ctrl+Z.")
+        b_do = box.addButton(label, QMessageBox.AcceptRole)
+        b_keep = box.addButton("Only save name and height",
+                               QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(b_do)
+        box.exec()
+        if box.clickedButton() is b_do:
+            self._done(act)
+        elif box.clickedButton() is b_keep:
+            self._done("apply")
 
     def _show_grid(self, off: set, on_show):
         """Two rows of three ticks; each change goes out at once."""
@@ -1212,14 +1333,16 @@ class LevelDialog(QDialog):
         levels[self.index]["height"] = self.f_height.value()
         zs = model.elevations(levels, self.ground_level)
         z = zs[self.index]
-        el = "±0.00 m" if abs(z) < 0.005 else f"{z:+.2f} m"
+        el = ("±0.00 m" if compat.doc_length_unit() == "m" else "±0") \
+            if abs(z) < 0.005 else compat.fmt_level(z)
         self.l_elev.setText(el)
         h = self.f_height.value()
-        self.head.set_summary(["{" + f"{h:.2f} m" + "} high", "at " + el])
-        self.fold_h.set_pick(f"{h:.2f} m")
+        self.head.set_summary(["{" + compat.fmt_len(h) + "} high",
+                               "at " + el])
+        self.fold_h.set_pick(compat.fmt_len(h))
         self.stack.set([(r["name"], zs[i], float(r["height"]), r["kind"])
                         for i, r in enumerate(levels)], self.index)
-        self.stats.set([(f"{h:.2f} m", "height"), (el, "elevation")])
+        self.stats.set([(compat.fmt_len(h), "height"), (el, "elevation")])
 
     def _delete(self) -> None:
         from PySide6.QtWidgets import QMessageBox
@@ -1516,7 +1639,8 @@ class WallDialog(QDialog):
         self.fold_h = L.Fold("Height", "wall.height")
         form = self.fold_h.form()
         self.f_hmode = L.Chips()
-        self.f_hmode.addItem(f"Level height ({level['height']:.2f} m)",
+        self.f_hmode.addItem(f"Level height "
+                             f"({compat.fmt_len(level['height'])})",
                              "level")
         self.f_hmode.addItem("Its own height", "own")
         own = wall.get("height", "level") != "level"
@@ -1575,8 +1699,8 @@ class WallDialog(QDialog):
         else:
             self.f_len = None
             form.addRow("Length" if kind == "arc" else "Radius",
-                        QLabel(f"{self.length0:.2f} m" if kind == "arc"
-                               else f"{wall['r']:.2f} m"))
+                        QLabel(compat.fmt_len(self.length0) if kind == "arc"
+                               else compat.fmt_len(wall['r'])))
         pl.addWidget(self.fold_pos)
         pl.addStretch(1)
         self.tabs.addTab(pg, "Position", "position")
@@ -1672,7 +1796,8 @@ class WallDialog(QDialog):
         self.d_cw_plan = L.Drawing(_draw_cw_plan, 150, 120)
         self.d_cw_elev = L.Drawing(_draw_cw_elev, 150, 120)
         depth_tip = ("From the wall's OUTER face inwards — the frame stays "
-                     f"flush with a wall below (up to its {t * 100:.0f} cm)")
+                     f"flush with a wall below (up to its "
+                     f"{compat.fmt_cm(t, 0)})")
         fold = L.Fold("Mullions", "cw.mullions")
         form = fold.form(self.d_cw_plan)
         measure(form, "cw_s", "Every", c["cw_s"], 0.30, 3.00, 0.05,
@@ -1722,18 +1847,18 @@ class WallDialog(QDialog):
                                  ("outside", "Near the outside")),
               c["cw_glass"], "Glass")
         # its transparency, in % (his ask, 2026-10-14)
-        tr = L.Measure(round(c["cw_glass_tr"] * 100), 0, 95, 1, " %")
-        tr.field.setDecimals(0)
+        f_seen = L.Measure(round(c["cw_glass_tr"] * 100), 0, 95, 1, " %")
+        f_seen.field.setDecimals(0)
         # (IngeTrazo draws the LINES behind a see-through face over it, so
         # any transparency still shows them; 0 % = a plain face that hides
         # everything behind — his test, 2026-10-14)
-        tr.setToolTip("How much you see through it. 0 % = opaque glass "
-                      "that hides everything behind it, the lines too "
-                      "(IngeTrazo shows the lines behind any see-through "
-                      "glass)")
-        tr.valueChanged.connect(self._refresh)
-        form.addRow("Transparency", tr)
-        f["cw_glass_tr"] = tr
+        f_seen.setToolTip("How much you see through it. 0 % = opaque glass "
+                          "that hides everything behind it, the lines too "
+                          "(IngeTrazo shows the lines behind any see-through "
+                          "glass)")
+        f_seen.valueChanged.connect(self._refresh)
+        form.addRow("Transparency", f_seen)
+        f["cw_glass_tr"] = f_seen
         if not edition.lite():
             chips(form, "cw_frame", (("dark", "Dark grey"),
                                      ("black", "Black"),
@@ -1821,19 +1946,22 @@ class WallDialog(QDialog):
         self.f_h.setEnabled(own)
         _a, w = self.result_data()
         al = self.f_align.currentText()
-        self.head.set_summary(["{" + f"{w['t'] * 100:.0f} cm" + "}", al,
-                               f"{L:.2f} m long",
-                               "{" + f"{h:.2f} m" + "} high"])
-        self.fold_t.set_pick(f"{w['t'] * 100:.0f} cm · {al}")
-        self.fold_h.set_pick(("level" if not own else f"{h:.2f} m")
-                             + (f" · base {w['base']:+.2f}"
+        t_ = compat.fmt_cm(w['t'], 0)
+        self.head.set_summary(["{" + t_ + "}", al,
+                               f"{compat.fmt_len(L)} long",
+                               "{" + compat.fmt_len(h) + "} high"])
+        self.fold_t.set_pick(f"{t_} · {al}")
+        self.fold_h.set_pick(("level" if not own else compat.fmt_len(h))
+                             + (" · base "
+                                + compat.fmt_level(w['base'], unit=False)
                                 if abs(w["base"]) > 1e-6 else ""))
-        self.fold_pos.set_pick(f"{L:.2f} m")
+        self.fold_pos.set_pick(compat.fmt_len(L))
         self.d_size.set(align=w["align"], base=w["base"])
         self.plan.set(w)
-        self.stats.set([(f"{L:.2f} m", "length"), (f"{h:.2f} m", "height"),
-                        (f"{w['t'] * 100:.0f} cm", "thickness"),
-                        (f"{L * h:.2f} m²", "face area")])
+        self.stats.set([(compat.fmt_len(L), "length"),
+                        (compat.fmt_len(h), "height"),
+                        (t_, "thickness"),
+                        (compat.fmt_area(L * h), "face area")])
         self._cw_refresh(w, h)
 
     def _cw_refresh(self, w: dict, h: float) -> None:
@@ -1846,15 +1974,13 @@ class WallDialog(QDialog):
                         rows=c["cw_rows"], h=h)
             self.d_cw_plan.set(**data)
             self.d_cw_elev.set(**data)
-            self.fold_cw_m.set_pick(f"{c['cw_s']:.2f} m · "
-                                    f"{sz['mw'] * 100:.1f} × "
-                                    f"{sz['md'] * 100:.1f} cm")
-            self.fold_cw_p.set_pick(f"{sz['pw'] * 100:.1f} × "
-                                    f"{sz['pd'] * 100:.1f} cm")
+            self.fold_cw_m.set_pick(f"{compat.fmt_len(c['cw_s'])} · "
+                                    + compat.fmt_cm2(sz['mw'], sz['md']))
+            self.fold_cw_p.set_pick(compat.fmt_cm2(sz['pw'], sz['pd']))
             self.fold_cw_t.set_pick(
                 f"{c['cw_rows'] + 1} row" + ("s" if c["cw_rows"] else "")
-                + (f" · band {c['cw_band_h']:.2f}" if c["cw_band"]
-                   else " · no band"))
+                + (f" · band {compat.fmt_num(c['cw_band_h'])}"
+                   if c["cw_band"] else " · no band"))
             self.fold_cw_g.set_pick(("middle" if c["cw_glass"] == "centre"
                                      else "outside")
                                     + f" · {c['cw_glass_tr'] * 100:.0f} %")
@@ -1964,8 +2090,8 @@ class CurtainDialog(QDialog):
         self._cw_refresh(w, h)
         from . import curtain as CW
         c = CW.clean(w)
-        self.head.set_summary([f"mullions every {c['cw_s']:.2f} m",
-                               "band " + (f"{c['cw_band_h']:.2f} m"
+        self.head.set_summary([f"mullions every {compat.fmt_len(c['cw_s'])}",
+                               "band " + (compat.fmt_len(c['cw_band_h'])
                                           if c["cw_band"] else "off"),
                                f"glass {c['cw_glass_tr'] * 100:.0f} %"])
 
@@ -1998,6 +2124,24 @@ def _ic_struct(t):
             L.poly(p, [(6, 22), (34, 22), (34, 32), (6, 32)], L.GOLD, 2.2,
                    close=True)
     return draw
+
+
+def hole_text(h) -> str:
+    """A slab opening in a few words: «1.20 × 2.40 m · 2.88 m²», «round
+    Ø 0.80 m · 0.50 m²», «6 corners · 3.10 m²»."""
+    import math
+    from . import grips as G
+    from . import structure as S
+    pts = [tuple(p) for p in h]
+    area = abs(S._area(pts))
+    rnd = G.round_hole(pts)
+    if rnd:
+        return (f"round Ø {compat.fmt_len(rnd[2] * 2)} · "
+                f"{compat.fmt_area(area)}")
+    if len(pts) == 4:
+        a, b = math.dist(pts[0], pts[1]), math.dist(pts[1], pts[2])
+        return f"{compat.fmt_wh(a, b)} · {compat.fmt_area(area)}"
+    return f"{len(pts)} corners · {compat.fmt_area(area)}"
 
 
 def _pic_section(shape):
@@ -2121,6 +2265,8 @@ class _ElView(QWidget):
 
     def _paint(self, p, L) -> None:
         import math
+
+        from . import structure as S
         e, t = self.e, self.e["type"]
         if t in ("slab", "roof"):
             outer = [tuple(c) for c in e["corners"]]
@@ -2132,7 +2278,13 @@ class _ElView(QWidget):
             for h in holes:
                 L.poly(p, [q(*c) for c in h], L.ACCENT, 1.6, close=True,
                        fill="#1f2124")
-            if t == "roof" and e.get("kind") in ("gable", "hip"):
+            if t == "roof" and e.get("kind") in ("gable", "hip") \
+                    and S.pitched_plan(e) != "rect":
+                # an L / any plan: its hips / valleys / ridges
+                p.setPen(L.pen(L.ACCENT, 1.4, dash=True))
+                for a, b in S.roof_plan_lines(e):
+                    p.drawLine(QPointF(*q(*a)), QPointF(*q(*b)))
+            elif t == "roof" and e.get("kind") in ("gable", "hip"):
                 cx = sum(c[0] for c in outer) / len(outer)
                 cy = sum(c[1] for c in outer) / len(outer)
                 p.setPen(L.pen(L.ACCENT, 1.4, dash=True))
@@ -2147,7 +2299,8 @@ class _ElView(QWidget):
             L.poly(p, [q(0, -float(e["w"]) / 2), q(ln, -float(e["w"]) / 2),
                        q(ln, float(e["w"]) / 2), q(0, float(e["w"]) / 2)],
                    L.INK, 1.8, close=True, fill="#8a8f9640")
-            L.text(p, self.width() / 2, self.height() - 10, f"{ln:.2f} m",
+            L.text(p, self.width() / 2, self.height() - 10,
+                   compat.fmt_len(ln),
                    L.BLUE, 9, True, align=Qt.AlignHCenter)
             return
         w = float(e.get("w", 0.3))
@@ -2287,9 +2440,28 @@ class ElementDialog(QDialog):
             measure(form, "w", "Width", 0.05, 1.5, hot="w", fmax=3.0)
             measure(form, "h", "Height", 0.05, 2.5, hot="h", fmax=5.0)
             form.addRow("Length", QLabel(
-                f"{math.dist(el['a'], el['b']):.2f} m"))
+                compat.fmt_len(math.dist(el['a'], el['b']))))
             gl.addWidget(fold)
             self.fold_main = fold
+            # its TOP (Badis, 2026-10-18: a lean-to's beams on 2.50 m
+            # posts): under the slab above, or at a height of its own
+            fold = L.Fold("Top", "beam.top")
+            form = fold.form()
+            self.f_zmode = L.Chips()
+            self.f_zmode.addItem("Under the slab", "level",
+                                 tip="Its top in the slab above, under the "
+                                     "next floor (as before)")
+            self.f_zmode.addItem("Its own height", "own",
+                                 tip="Its top at the height you give, over "
+                                     "the level's floor — a lean-to's beams "
+                                     "on posts, a pergola")
+            self.f_zmode.setCurrentIndex(1 if S.beam_own(el) else 0)
+            form.addRow("Top", self.f_zmode)
+            el.setdefault("zt", 2.50)
+            measure(form, "zt", "Top at", 0.2, 6.0, fmax=50.0)
+            self.f_zmode.currentIndexChanged.connect(self._sync)
+            gl.addWidget(fold)
+            self.fold_top = fold
         elif t == "slab":
             fold = L.Fold("Size", "slab.size")
             form = fold.form(self.d_size)
@@ -2308,15 +2480,29 @@ class ElementDialog(QDialog):
                 gl.addWidget(L.hint("Automatic — it follows its "
                                     "excavation's outline. Delete it and it "
                                     "stays away (Ctrl+Z brings it back)."))
-            n = len(el.get("holes") or [])
+            holes = el.get("holes") or []
+            n = len(holes)
             self.f_clear = None
+            self.f_holes = []
             if n:
                 from PySide6.QtWidgets import QCheckBox
                 fold = L.Fold("Openings", "slab.openings")
-                self.f_clear = QCheckBox(f"Close its {n} opening"
-                                         + ("s" if n > 1 else ""))
-                self.f_clear.toggled.connect(self._sync)
-                fold.form().addRow("", self.f_clear)
+                form = fold.form()
+                # each one on its own row: close just that one (his ask,
+                # 2026-10-15 — before, only all of them at once)
+                for i, h in enumerate(holes):
+                    cb = QCheckBox("Close it")
+                    cb.toggled.connect(self._sync)
+                    form.addRow(f"{i + 1}  ·  {hole_text(h)}", cb)
+                    self.f_holes.append(cb)
+                if n > 1:
+                    self.f_clear = QCheckBox(f"Close all {n}")
+                    self.f_clear.toggled.connect(
+                        lambda on: [cb.setChecked(on) for cb in self.f_holes])
+                    form.addRow("", self.f_clear)
+                form.addRow(L.hint(
+                    "Select the slab: each opening has grips — its corners, "
+                    "sides and middle."))
                 fold.set_pick(f"{n}")
                 gl.addWidget(fold)
         elif t == "roof":
@@ -2340,6 +2526,32 @@ class ElementDialog(QDialog):
             measure(form, "t", "Thickness", 0.02, 1.0, 0.01, hot="t")
             gl.addWidget(fold)
             self.fold_main = fold
+            # HEIGHT (Badis, 2026-10-18: a lean-to lower than the house):
+            # on the walls' top, or its eaves at a height of their own
+            fold = L.Fold("Height", "roof.height")
+            form = fold.form()
+            self.f_zmode = L.Chips()
+            self.f_zmode.addItem("On the walls", "walls",
+                                 tip="It rests on the top of its level's "
+                                     "walls (and fills the wall up to it)")
+            self.f_zmode.addItem("Its own height", "own",
+                                 tip="Its eaves at the height you give, over "
+                                     "the level's floor — a lean-to on "
+                                     "columns, a porch lower than the house. "
+                                     "No wall is filled up to it")
+            self.f_zmode.setCurrentIndex(1 if S.own_height(el) else 0)
+            form.addRow("Height", self.f_zmode)
+            el.setdefault("zh", 2.50)
+            measure(form, "zh", "Eaves at", 0.5, 12.0, fmax=50.0)
+            self.rows["zh"].setToolTip(
+                "The height of its eaves (the low edge, for a Shed) over the "
+                "level's floor — where its underside meets the walls' / "
+                "beams' outer line")
+            self.zh_note = L.hint("")
+            form.addRow("", self.zh_note)
+            self.f_zmode.currentIndexChanged.connect(self._sync)
+            gl.addWidget(fold)
+            self.fold_height = fold
             fold = L.Fold("Ridge & fall", "roof.ridge")
             form = fold.form()
             self.f_ridge = L.Chips()
@@ -2348,6 +2560,27 @@ class ElementDialog(QDialog):
             self.f_ridge.setCurrentIndex(0 if el["ridge"] == "long" else 1)
             self.rows["ridge"] = QLabel("Ridge")
             form.addRow(self.rows["ridge"], self.f_ridge)
+            # an L (roof_l.py — Badis's permit, 2026-10-16): which wing
+            # keeps its gable at the corner; the other runs into it
+            from . import roof_l
+            self._is_l = roof_l.is_l(el["corners"])
+            self.f_main = L.Chips()
+            self.f_main.addItem("The long one", "long",
+                                tip="The longer wing keeps its gable at the "
+                                    "corner; the other one runs into it")
+            self.f_main.addItem("The other one", "other",
+                                tip="The shorter wing keeps its gable at the "
+                                    "corner")
+            self.f_main.setCurrentIndex(1 if el.get("main") == "other" else 0)
+            self.rows["main"] = QLabel("Main wing")
+            form.addRow(self.rows["main"], self.f_main)
+            from . import roof_any
+            if self._is_l or (len(el["corners"]) >= 3 and not
+                              roof_any.is_rect(el["corners"])):
+                # an L / any plan: hip or gable (or flat)
+                for i in range(self.f_kind.count()):
+                    if self.f_kind.itemData(i) in ("shed", "hidden"):
+                        self.f_kind.setItemEnabled(i, False)
             self.f_fall = L.Chips()
             self.f_fall.addItem("This side", "right")
             self.f_fall.addItem("The other side", "left")
@@ -2375,7 +2608,8 @@ class ElementDialog(QDialog):
             measure(form, "parapet", "Parapet", 0.0, 3.0)
             gl.addWidget(fold)
             self.fold_hidden = fold
-            for c in (self.f_kind, self.f_ridge, self.f_fall, self.f_slopes):
+            for c in (self.f_kind, self.f_ridge, self.f_fall, self.f_slopes,
+                      self.f_main):
                 c.currentIndexChanged.connect(self._sync)
             self.f_pauto.toggled.connect(self._sync)
         else:                                     # footing
@@ -2428,7 +2662,7 @@ class ElementDialog(QDialog):
         lay.addWidget(L.rule())
         acts = QHBoxLayout()
         acts.addWidget(hide_button(self))
-        b_del = QPushButton(f"Delete {label.lower()}")
+        b_del = QPushButton(tr(f"Delete {label.lower()}"))
         b_del.setObjectName("axqDanger")
         b_del.clicked.connect(self._delete)
         acts.addWidget(b_del)
@@ -2455,49 +2689,66 @@ class ElementDialog(QDialog):
             self.fields["d"].setVisible(not rnd)
             self.rows["d"].setVisible(not rnd)
             self.f_h.setEnabled(e["height"] != "level")
+            metric = compat.doc_length_unit() == "m"
             h = "to the slab" if e["height"] == "level" \
-                else f"{e['height']:.2f} m"
-            sec = (f"Ø {e['w']:.2f}" if rnd
-                   else f"{e['w']:.2f} × {e['d']:.2f}")
-            self.head.set_summary(["{" + sec + " m}", h,
+                else compat.fmt_len(e['height'])
+            if metric:
+                sec = (f"Ø {e['w']:.2f}" if rnd
+                       else f"{e['w']:.2f} × {e['d']:.2f}")
+                sec_m = sec + " m"
+            else:                       # feet / inches: the marks say it
+                sec = sec_m = (f"Ø {compat.fmt_len(e['w'])}" if rnd
+                               else compat.fmt_wh(e['w'], e['d']))
+            self.head.set_summary(["{" + sec_m + "}", h,
                                    f"{e['angle'] % 360:.0f}°"])
             self.fold_main.set_pick(sec)
             self.fold_h.set_pick(h)
             self.fold_place.set_pick(f"{e['angle'] % 360:.0f}°")
             self.d_dial.set(a=e["angle"])
             area = math.pi * e["w"] ** 2 / 4 if rnd else e["w"] * e["d"]
-            self.stats.set([(sec + " m", "section"), (f"{area:.3f} m²",
-                                                      "area"),
+            self.stats.set([(sec_m, "section"),
+                            (compat.fmt_area(area, 3), "area"),
                             (h, "height")])
         elif t == "beam":
             ln = math.dist(e["a"], e["b"])
-            self.head.set_summary(["{" + f"{e['w']:.2f} × {e['h']:.2f} m"
-                                   + "}", f"{ln:.2f} m long"])
-            self.fold_main.set_pick(f"{e['w']:.2f} × {e['h']:.2f}")
-            self.stats.set([(f"{e['w']:.2f} m", "width"),
-                            (f"{e['h']:.2f} m", "height"),
-                            (f"{ln:.2f} m", "length"),
-                            (f"{e['w'] * e['h'] * ln:.2f} m³", "concrete")])
+            self.head.set_summary(["{" + compat.fmt_wh(e['w'], e['h']) + "}",
+                                   f"{compat.fmt_len(ln)} long"])
+            self.fold_main.set_pick(
+                f"{e['w']:.2f} × {e['h']:.2f}"
+                if compat.doc_length_unit() == "m"
+                else compat.fmt_wh(e['w'], e['h']))
+            self.stats.set([(compat.fmt_len(e['w']), "width"),
+                            (compat.fmt_len(e['h']), "height"),
+                            (compat.fmt_len(ln), "length"),
+                            (compat.fmt_volume(e['w'] * e['h'] * ln, 2,
+                                               group=False), "concrete")])
+            own = e.get("zmode") == "own"
+            self.fields["zt"].setEnabled(own)
+            self.fold_top.set_pick(compat.fmt_len(e["zt"]) if own
+                                   else "Under the slab")
         elif t == "slab":
             area = abs(S._area(e["corners"])) - sum(
                 abs(S._area(h)) for h in e.get("holes") or [])
             n = len(e.get("holes") or [])
-            self.head.set_summary(["{" + f"{area:.2f} m²" + "}",
-                                   f"{e['t'] * 100:.0f} cm thick",
+            self.head.set_summary(["{" + compat.fmt_area(area) + "}",
+                                   f"{compat.fmt_cm(e['t'], 0)} thick",
                                    f"{n} opening" + ("" if n == 1 else "s")])
-            self.fold_main.set_pick(f"{e['t'] * 100:.0f} cm")
-            self.stats.set([(f"{area:.2f} m²", "area"),
-                            (f"{e['t']:.2f} m", "thickness"),
-                            (f"{area * e['t']:.2f} m³", "concrete"),
+            self.fold_main.set_pick(compat.fmt_cm(e['t'], 0))
+            self.stats.set([(compat.fmt_area(area), "area"),
+                            (compat.fmt_len(e['t']), "thickness"),
+                            (compat.fmt_volume(area * e['t'], 2,
+                                               group=False), "concrete"),
                             (f"{n}", "openings")])
         elif t == "roof":
             k = e["kind"]
             self.fold_kind.set_pick(self.f_kind.currentText())
             sloped = k in ("gable", "hip", "shed")
+            is_l = getattr(self, "_is_l", False)
             for key, on in (("slope", sloped or k == "hidden"),
                             ("overhang", k != "hidden"),
                             ("go", k == "gable"),
-                            ("ridge", k == "gable"),
+                            ("ridge", k == "gable" and not is_l),
+                            ("main", k == "gable" and is_l),
                             ("fall", k in ("shed", "hidden")),
                             ("slopes", k == "hidden")):
                 (self.fields.get(key) or getattr(self, f"f_{key}")
@@ -2505,6 +2756,12 @@ class ElementDialog(QDialog):
                 self.rows[key].setVisible(on)
             self.fold_ridge.setVisible(k in ("gable", "shed", "hidden"))
             self.fold_hidden.setVisible(k in ("flat", "hidden"))
+            own = self.f_zmode.currentData() == "own"
+            self.fields["zh"].setEnabled(own)
+            self.fold_height.set_pick(compat.fmt_len(e["zh"]) if own
+                                      else "On the walls")
+            self.zh_note.setText(self._roof_heights(e) if own else
+                                 "Its eaves at the top of the level's walls.")
             hid = k == "hidden"
             for key in ("gutter",):
                 self.fields[key].setVisible(hid)
@@ -2515,19 +2772,44 @@ class ElementDialog(QDialog):
             area = abs(S._area(e["corners"]))
             self.head.set_summary([self.f_kind.currentText(),
                                    "{" + f"{e['slope']:.0f}°" + "}"
-                                   if sloped else "", f"{area:.2f} m²"])
+                                   if sloped else "", compat.fmt_area(area)])
             self.fold_main.set_pick(f"{e['slope']:.0f}° · "
-                                    f"{e['overhang']:.2f} m")
-            self.stats.set([(f"{area:.2f} m²", "covers (no eaves)"),
+                                    f"{compat.fmt_len(e['overhang'])}")
+            self.stats.set([(compat.fmt_area(area), "covers (no eaves)"),
                             (f"{e['slope']:.0f}°", "slope"),
-                            (f"{e['overhang']:.2f} m", "eaves")])
+                            (compat.fmt_len(e['overhang']), "eaves")])
         else:
-            self.head.set_summary(["{" + f"{e['w']:.2f} × {e['d']:.2f} m"
-                                   + "}", "pad" if e.get("kind") == "pad"
+            self.head.set_summary(["{" + compat.fmt_wh(e['w'], e['d']) + "}",
+                                   "pad" if e.get("kind") == "pad"
                                    else "strip"])
-            self.fold_main.set_pick(f"{e['w']:.2f} × {e['d']:.2f}")
-            self.stats.set([(f"{e['w']:.2f} m", "width"),
-                            (f"{e['d']:.2f} m", "depth")])
+            self.fold_main.set_pick(
+                f"{e['w']:.2f} × {e['d']:.2f}"
+                if compat.doc_length_unit() == "m"
+                else compat.fmt_wh(e['w'], e['d']))
+            self.stats.set([(compat.fmt_len(e['w']), "width"),
+                            (compat.fmt_len(e['d']), "depth")])
+
+    @staticmethod
+    def _roof_heights(e: dict) -> str:
+        """Where its top lands, at its own height: a Shed's high edge, a
+        gable / hip's ridge (over the level's floor, to the underside)."""
+        import math
+        from . import structure as S
+        zh, k = float(e["zh"]), e["kind"]
+        if k not in ("shed", "gable", "hip") or len(e["corners"]) != 4:
+            return f"Its underside at {compat.fmt_len(zh)} over the floor."
+        _c, _u, ha, _v, hb = S.rect_frame(e["corners"])
+        along = ha >= hb
+        if k == "gable" and e.get("ridge", "long") == "short":
+            along = not along
+        across = 2 * (hb if along else ha)          # the span between eaves
+        tan = math.tan(math.radians(float(e["slope"])))
+        if k == "shed":
+            return (f"Low edge {compat.fmt_len(zh)} → high edge "
+                    f"{compat.fmt_len(zh + across * tan)} (over the floor, "
+                    "at the walls' line).")
+        return (f"Eaves {compat.fmt_len(zh)} → ridge "
+                f"{compat.fmt_len(zh + across / 2 * tan)} (over the floor).")
 
     def _pick(self, i: int) -> None:
         self.action = f"pick:{i}"
@@ -2551,13 +2833,18 @@ class ElementDialog(QDialog):
             e["shape"] = self.f_section.currentData()
             e["height"] = "level" if self.f_hmode.currentIndex() == 0 \
                 else round(self.f_h.value(), 3)
+        if e["type"] == "beam":
+            e["zmode"] = self.f_zmode.currentData()
         if e["type"] == "roof":
             was = self.el["kind"]
             e["kind"] = self.f_kind.currentData()
             e["ridge"] = self.f_ridge.currentData()
+            if getattr(self, "_is_l", False):
+                e["main"] = self.f_main.currentData()
             e["fall"] = self.f_fall.currentData()
             e["slopes"] = int(self.f_slopes.currentData())
             e["pauto"] = self.f_pauto.isChecked()
+            e["zmode"] = self.f_zmode.currentData()
             # turned hidden: sheets' 10° / back from hidden: tiles' 30° —
             # unless the slope was changed here too
             if e["kind"] != was and abs(e["slope"] - self.el["slope"]) < 1e-6:
@@ -2565,9 +2852,10 @@ class ElementDialog(QDialog):
                     e["slope"] = 10.0
                 elif was == "hidden" and e["kind"] != "flat":
                     e["slope"] = 30.0
-        if e["type"] == "slab" and getattr(self, "f_clear", None) is not None \
-                and self.f_clear.isChecked():
-            e["holes"] = []
+        if e["type"] == "slab" and getattr(self, "f_holes", None):
+            e["holes"] = [h for h, cb in zip(self.el.get("holes") or [],
+                                             self.f_holes)
+                          if not cb.isChecked()]
         return e
 
     def result_data(self):
@@ -2597,15 +2885,16 @@ class RoomsDialog(QDialog):
             0, QHeaderView.Stretch)
         for i, r in enumerate(rooms):
             self.table.setItem(i, 0, QTableWidgetItem(r["name"]))
-            for j, v in ((1, f"{r['area']:.2f} m²"),
-                         (2, f"{r['perimeter']:.2f} m")):
+            for j, v in ((1, compat.fmt_area(r['area'])),
+                         (2, compat.fmt_len(r['perimeter']))):
                 it = QTableWidgetItem(v)
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(i, j, it)
         lay.addWidget(self.table, 1)
         net = sum(r["area"] for r in rooms)
-        lay.addWidget(QLabel(f"Net {net:.2f} m²   ·   Gross {gross:.2f} m² "
+        lay.addWidget(QLabel(f"Net {compat.fmt_area(net)}   ·   Gross "
+                             f"{compat.fmt_area(gross)} "
                              "(to the walls' outer faces)"))
         self.f_same = QCheckBox("The same names on the other levels where "
                                 "these rooms are")
@@ -2780,6 +3069,28 @@ class _Front(QWidget):
         box(0, z0, w, z1, L.INK, glass if o["kind"] == "window"
             or o.get("leaf") == "glass" else "#8a8f9633")
         n = int(o.get("leaves", 1) or 1)
+        if o["kind"] == "door" and op == "garage":
+            # its panels / slats across, as the front shows them
+            gk = o.get("garage", "sectional")      # (k is the drawing's scale)
+            rows = 1 if gk == "tilt" else (12 if gk == "rollup" else 4)
+            p.setPen(L.pen(L.INK, 1.0 if gk == "rollup" else 1.4))
+            for i in range(1, rows):
+                z = z0 + (z1 - z0) * i / rows
+                p.drawLine(q(0, z), q(w, z))
+            if gk == "tilt":
+                for i in range(1, 4):
+                    p.drawLine(q(w * i / 4, z0), q(w * i / 4, z1))
+            if o.get("gwin") and gk != "rollup":       # its row of windows
+                k_ = max(3, round(w / 0.62))
+                hh = min(0.36, (z1 - z0) * 0.17)
+                for i in range(k_):
+                    cx = w * (i + 0.5) / k_
+                    hw = w / k_ * 0.34
+                    box(cx - hw, z1 - 0.10 - hh, cx + hw, z1 - 0.10, L.INK,
+                        glass)
+            self._arrow(p, L, q(w * 0.5, z0 + (z1 - z0) * 0.25),
+                        q(w * 0.5, z0 + (z1 - z0) * 0.75))
+            return
         if o["kind"] == "door":
             if op == "sliding":
                 n = max(n, 1)
@@ -2836,7 +3147,8 @@ class _Front(QWidget):
 DOOR_TYPES = ((("swing", "solid"), "Swing", "_door_swing"),
               (("sliding", "solid"), "Sliding", "_door_sliding"),
               (("sliding", "glass"), "Glass sliding", "_door_glass"),
-              (("shop", "glass"), "Shopfront", "_door_shop"))
+              (("shop", "glass"), "Shopfront", "_door_shop"),
+              (("garage", "solid"), "Garage door", "_door_garage"))
 WINDOW_TYPES = (("fixed", "Fixed", "_win_fixed"),
                 ("sliding", "Sliding", "_win_sliding"),
                 ("casement", "Casement", "_win_casement"),
@@ -2895,6 +3207,7 @@ class OpeningDialog(QDialog):
                 self.f_type.addItem(text, val, pic=_lib_pic(getattr(LB, pic)))
             if self.kind == "door":
                 cur = ("shop", "glass") if op.get("op") == "shop" else (
+                    ("garage", "solid")) if op.get("op") == "garage" else (
                     ("sliding", "glass" if op.get("leaf") == "glass"
                      else "solid") if op.get("op") == "sliding"
                     else ("swing", "solid"))
@@ -2929,6 +3242,31 @@ class OpeningDialog(QDialog):
                                   "or its outside")
             self.r_out = QLabel("Opens")
             form.addRow(self.r_out, self.f_out)
+            # a garage door's kind (Badis, 2026-10-18)
+            from .structure import garage_kind
+            self.f_garage = L.Chips(width=96)
+            for k, text in (("sectional", "Sectional"), ("rollup", "Roll-up"),
+                            ("tilt", "Up-and-over")):
+                self.f_garage.addItem(text, k)
+            self.f_garage.setCurrentIndex(max(0, self.f_garage.findData(
+                garage_kind(op))))
+            self.r_garage = QLabel("Kind")
+            form.addRow(self.r_garage, self.f_garage)
+            from .structure import garage_finish
+            self.f_gfinish = L.Chips(width=96)
+            for k, text in (("steel", "Steel"), ("white", "White"),
+                            ("anthracite", "Anthracite"), ("wood", "Wood")):
+                self.f_gfinish.addItem(text, k)
+            self.f_gfinish.setCurrentIndex(max(0, self.f_gfinish.findData(
+                garage_finish(op))))
+            self.r_gfinish = QLabel("Finish")
+            form.addRow(self.r_gfinish, self.f_gfinish)
+            self.f_gwin = L.Chips(width=96)
+            self.f_gwin.addItem("None", False)
+            self.f_gwin.addItem("A row on top", True)
+            self.f_gwin.setCurrentIndex(1 if op.get("gwin") else 0)
+            self.r_gwin = QLabel("Windows")
+            form.addRow(self.r_gwin, self.f_gwin)
             from PySide6.QtWidgets import QSpinBox
             self.f_open = QSpinBox()
             self.f_open.setRange(0, 100)
@@ -2997,6 +3335,60 @@ class OpeningDialog(QDialog):
         sl.addStretch(1)
         self.tabs.addTab(pg, "Size", "geometry")
 
+        # ---- Trim & sill (trim.py, his ask 2026-10-19) ---------------------------
+        from . import trim as TR
+        k = dict(TR.DEFAULTS, **TR.keys_of(op, self.kind))
+        pg, tl2 = L.page()
+        self.fold_trim = L.Fold("Trim", f"{self.kind}.trim")
+        form = self.fold_trim.form()
+        self.f_trim = L.Chips(width=96)
+        for val, text in (("none", "None"), ("out", "Outside"),
+                          ("both", "Both sides")):
+            self.f_trim.addItem(text, val)
+        self.f_trim.setCurrentIndex(max(0, self.f_trim.findData(k["trim"])))
+        self.f_trim.setToolTip("A moulding round the opening, standing out of "
+                               "the wall")
+        form.addRow("Trim", self.f_trim)
+        lo, hi = TR.LIMITS["trim_w"]
+        self.f_trim_w = L.metres(k["trim_w"], lo, hi, 0.01)
+        form.addRow("Width", self.f_trim_w)
+        lo, hi = TR.LIMITS["trim_d"]
+        self.f_trim_d = L.metres(k["trim_d"], lo, hi, 0.005)
+        self.f_trim_d.setToolTip("How far it stands out of the wall's face")
+        form.addRow("Projection", self.f_trim_d)
+        tl2.addWidget(self.fold_trim)
+        self.f_sill_k = None
+        if self.kind == "window":
+            self.fold_sill = L.Fold("Stone sill", "window.sill_k")
+            form = self.fold_sill.form()
+            self.f_sill_k = L.Chips(width=96)
+            self.f_sill_k.addItem("None", "none")
+            self.f_sill_k.addItem("Stone", "stone")
+            self.f_sill_k.setCurrentIndex(
+                1 if k["sill_k"] == "stone" else 0)
+            self.f_sill_k.setToolTip("The stone under the window, outside")
+            form.addRow("Sill", self.f_sill_k)
+            self.f_sill_sz = {}
+            # (not «label»: it names the delete button further down)
+            for key, row, tip in (
+                    ("sill_d", "Projection", "How far it stands out past the "
+                                             "wall's face (or the trim's)"),
+                    ("sill_t", "Thickness", ""),
+                    ("sill_x", "Past the sides", "How far it runs past the "
+                                                 "opening (or the trim) on "
+                                                 "each side")):
+                lo, hi = TR.LIMITS[key]
+                f = L.metres(k[key], lo, hi, 0.005)
+                if tip:
+                    f.setToolTip(tip)
+                form.addRow(row, f)
+                self.f_sill_sz[key] = f
+            tl2.addWidget(self.fold_sill)
+        tl2.addWidget(L.hint("Each part takes a material of its own: the "
+                             "«Material» tab (frame, leaf, trim, sill)."))
+        tl2.addStretch(1)
+        self.tabs.addTab(pg, "Trim & sill", "material")
+
         # ---- Position ------------------------------------------------------------
         pg, pl = L.page()
         self.wall_L = W.drawn(wall).L
@@ -3006,7 +3398,8 @@ class OpeningDialog(QDialog):
         self.f_pos = L.metres(op["pos"], 0.0, max(self.wall_L, 0.1))
         self.f_pos.setToolTip("Its centre, from the start of the wall")
         form.addRow("Along the wall", self.f_pos)
-        form.addRow("Wall", QLabel(f"{wall['name']}  ({self.wall_L:.2f} m)"))
+        form.addRow("Wall", QLabel(f"{wall['name']}  "
+                                   f"({compat.fmt_len(self.wall_L)})"))
         self.d_pos.link(self.f_pos, "pos")
         pl.addWidget(self.fold_pos)
         pl.addStretch(1)
@@ -3033,7 +3426,7 @@ class OpeningDialog(QDialog):
         # ---- the buttons ---------------------------------------------------------
         lay.addWidget(L.rule())
         acts = QHBoxLayout()
-        b_del = QPushButton(f"Delete {label.lower()}")
+        b_del = QPushButton(tr(f"Delete {label.lower()}"))
         b_del.setObjectName("axqDanger")
         b_del.clicked.connect(self._delete)
         acts.addWidget(b_del)
@@ -3049,8 +3442,17 @@ class OpeningDialog(QDialog):
         for w_ in (self.f_w, self.f_h, self.f_pos) + (
                 (self.f_sill,) if self.f_sill is not None else ()):
             w_.valueChanged.connect(self._sync)
+        # the trim / sill fields
+        self.f_trim.currentIndexChanged.connect(self._sync)
+        for w_ in (self.f_trim_w, self.f_trim_d):
+            w_.valueChanged.connect(self._sync)
+        if self.f_sill_k is not None:
+            self.f_sill_k.currentIndexChanged.connect(self._sync)
+            for w_ in self.f_sill_sz.values():
+                w_.valueChanged.connect(self._sync)
         if self.f_type is not None:
-            for c in (self.f_type, self.f_leaves, self.f_swing, self.f_out):
+            for c in (self.f_type, self.f_leaves, self.f_swing, self.f_out,
+                      self.f_garage, self.f_gfinish, self.f_gwin):
                 c.currentIndexChanged.connect(self._sync)
             self.f_open.valueChanged.connect(self._sync)
         self._sync()
@@ -3064,12 +3466,32 @@ class OpeningDialog(QDialog):
         o["pos"] = round(self.f_pos.value(), 3)
         if self.f_sill is not None:
             o["sill"] = round(self.f_sill.value(), 3)
+        # its trim and stone sill (trim.py) — none: the keys go
+        from . import trim as TR
+        for key in TR.DEFAULTS:
+            o.pop(key, None)
+        o["trim"] = self.f_trim.currentData()
+        o["trim_w"] = round(self.f_trim_w.value(), 4)
+        o["trim_d"] = round(self.f_trim_d.value(), 4)
+        if self.f_sill_k is not None:
+            o["sill_k"] = self.f_sill_k.currentData()
+            for key, f in self.f_sill_sz.items():
+                o[key] = round(f.value(), 4)
         if self.f_type is None:
+            kept = TR.keys_of(o, self.kind)
+            for key in TR.DEFAULTS:
+                o.pop(key, None)
+            o.update(kept)
             return o
         t = self.f_type.currentData()
         if self.kind == "door":
             o["op"], o["leaf"] = t
             o["leaves"] = 2 if self.f_leaves.currentData() == 2 else 1
+            if o["op"] == "garage":
+                o["garage"] = self.f_garage.currentData()
+                o["gfinish"] = self.f_gfinish.currentData()
+                o["gwin"] = bool(self.f_gwin.currentData())
+                o["leaves"] = 1
         else:
             o["op"] = t
             o["leaves"] = int(self.f_leaves.currentData())
@@ -3083,19 +3505,37 @@ class OpeningDialog(QDialog):
                 o[part.key] = c.currentData()
             for key, (_p, _l, f) in self.sizes.items():
                 o[key] = round(f.value(), 3)
+        kept = TR.keys_of(o, self.kind)          # (a shop window: no sill)
+        for key in TR.DEFAULTS:
+            o.pop(key, None)
+        o.update(kept)
         return o
 
     def _sync(self, *_a) -> None:
         o = self._record()
         if self.f_type is not None:
             self._shown(o)
+        # the trim's / sill's sizes: only with one
+        on = self.f_trim.currentData() != "none"
+        self.f_trim_w.setEnabled(on)
+        self.f_trim_d.setEnabled(on)
+        self.fold_trim.set_pick({"none": "none", "out": "outside",
+                                 "both": "both sides"}[
+                                     self.f_trim.currentData()])
+        if self.f_sill_k is not None:
+            stone = self.f_sill_k.currentData() == "stone" \
+                and o.get("op") != "shop"
+            self.f_sill_k.setEnabled(o.get("op") != "shop")
+            for f in self.f_sill_sz.values():
+                f.setEnabled(stone)
+            self.fold_sill.set_pick("stone" if stone else "none")
         self.front.set(o)
         # the header, the folds' choices, the drawings, the numbers
         name = self.f_type.currentText() if self.f_type is not None \
             else self.label
-        parts = [name, "{" + f"{o['w']:.2f} × {o['h']:.2f} m" + "}"]
+        parts = [name, "{" + compat.fmt_wh(o['w'], o['h']) + "}"]
         if self.kind != "door":
-            parts.append("sill {" + f"{o.get('sill', 0.0):.2f} m" + "}")
+            parts.append("sill {" + compat.fmt_len(o.get('sill', 0.0)) + "}")
         if self.f_type is not None and o.get("op") not in ("shop", "fixed"):
             parts.append(f"{o['leaves']} leaf" + ("" if o["leaves"] == 1
                                                    else "s"))
@@ -3104,16 +3544,27 @@ class OpeningDialog(QDialog):
             self.fold_type.set_pick(name)
             self.fold_leaves.set_pick(f"{o['leaves']} · "
                                       f"{'out' if o['out'] else 'in'}")
-        self.fold_size.set_pick(f"{o['w']:.2f} × {o['h']:.2f}")
-        self.fold_pos.set_pick(f"{o['pos']:.2f} m along")
+        self.fold_size.set_pick(f"{o['w']:.2f} × {o['h']:.2f}"
+                                if compat.doc_length_unit() == "m"
+                                else compat.fmt_wh(o['w'], o['h']))
+        self.fold_pos.set_pick(f"{compat.fmt_len(o['pos'])} along")
         self.d_pos.set(f=o["pos"] / max(self.wall_L, 0.1),
                        wf=o["w"] / max(self.wall_L, 0.1))
         sill = 0.0 if self.kind == "door" else float(o.get("sill", 0.0))
-        self.stats.set([(f"{o['w']:.2f} m", "width"),
-                        (f"{o['h']:.2f} m", "height"),
-                        (f"{o['w'] * o['h']:.2f} m²", "area"),
-                        (f"{sill + o['h']:.2f} m", "head (top)")])
-        if self.kind == "door" and o.get("op") != "shop":
+        self.stats.set([(compat.fmt_len(o['w']), "width"),
+                        (compat.fmt_len(o['h']), "height"),
+                        (compat.fmt_area(o['w'] * o['h']), "area"),
+                        (compat.fmt_len(sill + o['h']), "head (top)")])
+        if self.kind == "door" and o.get("op") != "shop" \
+                and compat.imperial():
+            # an American document: ADA's 32" clear ≈ a 34" door at least
+            ok = o["w"] >= 0.8636 - 1e-4
+            self.badge.set(ok, "Wide enough for ADA (32\" clear: a 34\" "
+                               "door or more)" if ok else
+                           "Narrower than ADA asks (32\" clear: a 34\" "
+                           "door or more)")
+            self.badge.show()
+        elif self.kind == "door" and o.get("op") != "shop":
             ok = o["w"] >= 0.80 - 1e-6
             self.badge.set(ok, "Free width: NBR 9050 asks 0.80 m at least"
                            if ok else "Narrower than NBR 9050's 0.80 m "
@@ -3126,12 +3577,14 @@ class OpeningDialog(QDialog):
         """Which rows show, for the type picked."""
         t = o.get("op")
         shop = t == "shop"
+        garage = t == "garage"
         if self.kind == "door":
-            leaves = not shop
+            leaves = not shop and not garage
             ok_n = (1, 2)
-            swing = not shop and (t == "sliding" or o["leaves"] == 1)
+            swing = not shop and not garage and (t == "sliding"
+                                                 or o["leaves"] == 1)
             out = t == "swing"
-            opn = t in ("swing", "sliding")
+            opn = t in ("swing", "sliding", "garage")
             self.r_swing.setText("Slides to" if t == "sliding" else "Hinge")
         else:
             leaves = t in ("sliding", "casement")
@@ -3146,6 +3599,13 @@ class OpeningDialog(QDialog):
                             (self.r_swing, self.f_swing, swing),
                             (self.r_out, self.f_out, out),
                             (self.r_open, self.f_open, opn)):
+            lab.setVisible(on)
+            w_.setVisible(on)
+        g_on = self.kind == "door" and t == "garage"
+        w_on = g_on and o.get("garage") != "rollup"
+        for lab, w_, on in ((self.r_garage, self.f_garage, g_on),
+                            (self.r_gfinish, self.f_gfinish, g_on),
+                            (self.r_gwin, self.f_gwin, w_on)):
             lab.setVisible(on)
             w_.setVisible(on)
         self.fold_leaves.setVisible(leaves or swing or out or opn)
@@ -3205,8 +3665,9 @@ class SetbacksDialog(QDialog):
              "rules over the Settings"),
             ("plot_elev_dims", "Plot elevations",
              "The ground's elevation at every corner of the plot"),
-            ("setbacks", "Buildable area",
-             "The dashed outline of where you may build"),
+            ("setbacks", "Setback outline",
+             "The dashed outline of where you may build (the buildable "
+             "area) — off by default"),
             ("setback_dims", "Setback dimensions",
              "The setback figures — chosen here, it rules over the "
              "Settings")])
@@ -3248,7 +3709,7 @@ class SetbacksDialog(QDialog):
         for i in range(n):
             self.table.setItem(i, 0, PlotDialog._fixed(f"{i + 1} → "
                                                        f"{(i + 1) % n + 1}"))
-            self.table.setItem(i, 1, PlotDialog._fixed(f"{L[i]:.2f} m"))
+            self.table.setItem(i, 1, PlotDialog._fixed(compat.fmt_len(L[i])))
             role = QComboBox()
             role.addItems(list(self.ROLES))
             role.currentIndexChanged.connect(
@@ -3305,8 +3766,10 @@ class SetbacksDialog(QDialog):
         if not any(roles):
             text = "Mark a side as <b>Front</b> to start."
         elif area:
-            text = (f"Buildable area <b>{plotgeo.area(area):,.2f} m²</b> of "
-                    f"{plotgeo.area(p['corners']):,.2f} m² — dashed on the "
+            text = (f"Buildable area <b>"
+                    f"{compat.fmt_area(plotgeo.area(area), group=True)}</b> "
+                    f"of {compat.fmt_area(plotgeo.area(p['corners']), group=True)}"
+                    " — dashed on the "
                     "model.")
         else:
             text = ("<span style='color:#e5484d'>These setbacks leave no "
@@ -3476,7 +3939,7 @@ class DigDialog(QDialog):
         for i in range(n):
             self.table.setItem(i, 0, PlotDialog._fixed(str(i + 1)))
             self.table.setItem(i, 1, PlotDialog._fixed(
-                f"{self.ground[i]:+.2f}"))
+                compat.fmt_level(self.ground[i], unit=False)))
             sb = PlotDialog._spin(-100.0, 50.0, 0.05, " m", 2)
             sb.valueChanged.connect(lambda v, i=i: self._on_corner(i, v))
             sb.setProperty("axq_row", i)
@@ -3500,7 +3963,7 @@ class DigDialog(QDialog):
             self.table.setCellWidget(i, 3, dp)
             self.table.setItem(i, 4, PlotDialog._fixed(f"{i + 1} → "
                                                        f"{(i + 1) % n + 1}"))
-            self.table.setItem(i, 5, PlotDialog._fixed(f"{L[i]:.2f} m"))
+            self.table.setItem(i, 5, PlotDialog._fixed(compat.fmt_len(L[i])))
             wall = PlotDialog._spin(5.0, 90.0, 5.0, "°", 0)
             wall.setValue(self.dig["angles"][i])
             wall.valueChanged.connect(lambda v, i=i: self._on_wall(i, v))
@@ -3619,17 +4082,18 @@ class DigDialog(QDialog):
         vol = compat.dig_volumes(trial).get(self.dig["id"], 0.0)
         top = terrain.top_of(self.dig, trial)
         foot = (f" · {'foot' if self.fill else 'open at the ground'} "
-                f"{plotgeo.area(top):,.2f} m²"
+                f"{compat.fmt_area(plotgeo.area(top), group=True)}"
                 if top is not self.dig["corners"] else "")
         if self.fill:
             high = max(z - g for g, z in zip(self.ground, bots))
-            text = (f"Platform <b>{area:,.2f} m²</b>{foot}  ·  highest "
-                    f"{high:.2f} m  ·  earth brought in "
-                    f"<b>{abs(vol):,.1f} m³</b>")
+            text = (f"Platform <b>{compat.fmt_area(area, group=True)}</b>"
+                    f"{foot}  ·  highest {compat.fmt_len(high)}  ·  earth "
+                    f"brought in <b>{compat.fmt_volume(abs(vol))}</b>")
         else:
             deep = max(g - z for g, z in zip(self.ground, bots))
-            text = (f"Floor <b>{area:,.2f} m²</b>{foot}  ·  deepest "
-                    f"{deep:.2f} m  ·  earth taken out <b>{vol:,.1f} m³</b>")
+            text = (f"Floor <b>{compat.fmt_area(area, group=True)}</b>{foot}"
+                    f"  ·  deepest {compat.fmt_len(deep)}  ·  earth taken out "
+                    f"<b>{compat.fmt_volume(vol)}</b>")
         held = getattr(self, "_held", None)
         if held is not None:
             text += (f"<br><span style='color:#d97706'>Corner {held + 1}: "

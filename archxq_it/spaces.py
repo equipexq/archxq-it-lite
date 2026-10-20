@@ -79,11 +79,60 @@ def gross(walls: list[dict]) -> float:
     return sum(Polygon(g.exterior).area for g in getattr(u, "geoms", [u]))
 
 
+#: m — how thick a low wall / glass guard counts when it closes a room
+CLOSER_T = 0.05
+#: m — a guard's free ends reach this much further (to meet the walls)
+EXTEND = 0.05
+
+
+def closers(doc: dict, level_id: str) -> list[dict]:
+    """The level's LOW WALLS and GUARDS (and free glass grids) as thin
+    walls — they close a room as walls do: a balcony or a terrace with
+    walls on three sides and a guard on the fourth (support #42, 2026-10-19:
+    «an open plan does not show the room»). Not a boundary wall (the plot
+    would be a room) nor a low wall standing on the ground (the garden)."""
+    out = []
+    for e in doc.get("structure") or []:
+        if e.get("level") != level_id:
+            continue
+        lines = []
+        if e.get("type") == "guard" and e.get("kind") != "boundary" \
+                and e.get("on") != "ground":
+            pts = [tuple(p) for p in e.get("pts") or []]
+            lines = list(zip(pts, pts[1:]))
+            if e.get("closed") and len(pts) > 2:
+                lines.append((pts[-1], pts[0]))
+            t = max(float(e.get("t", CLOSER_T)), CLOSER_T)
+        elif e.get("type") == "glazing" and e.get("place") == "free" \
+                and e.get("a") and e.get("b"):
+            lines = [(tuple(e["a"]), tuple(e["b"]))]
+            t = CLOSER_T
+        for k, (a, b) in enumerate(lines):
+            L = ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+            if L < 1e-3:
+                continue
+            # its free ends a little longer: a guard drawn up to a wall's
+            # face (or 1 mm short of it) still meets the wall
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            if k == 0 and not e.get("closed"):
+                a = (a[0] - ux * EXTEND, a[1] - uy * EXTEND)
+            if k == len(lines) - 1 and not e.get("closed"):
+                b = (b[0] + ux * EXTEND, b[1] + uy * EXTEND)
+            out.append({"id": f"closer:{e.get('id')}:{k}", "kind": "line",
+                        "a": [a[0], a[1]], "b": [b[0], b[1]], "t": t,
+                        "align": "centre", "side": 1, "level": level_id,
+                        "height": "level", "base": 0.0})
+    return out
+
+
 def of_level(doc: dict, level_id: str) -> list[dict]:
     """The level's rooms with their names: [{"name", "area", "perimeter",
-    "at", "poly", "rec" (the record, or None)}]. Unnamed: «Room N»."""
+    "at", "poly", "rec" (the record, or None)}]. Unnamed: «Room N». Low
+    walls and guards close rooms too (``closers``)."""
     from shapely.geometry import Point
     walls = [w for w in doc.get("walls") or [] if w["level"] == level_id]
+    if walls:
+        walls = walls + closers(doc, level_id)
     recs = [r for r in doc.get("rooms") or [] if r["level"] == level_id]
     out, n = [], 0
     for room in found(walls):
@@ -92,9 +141,17 @@ def of_level(doc: dict, level_id: str) -> list[dict]:
         if rec is None:
             n += 1
         out.append(dict(room, rec=rec,
-                        name=rec["name"] if rec else f"Room {n}"))
+                        name=rec["name"] if rec else _room(n)))
     return out
 
 
+def _room(n: int) -> str:
+    """An unnamed room's label: «Room 3» in the language (a name given
+    stays as it was typed)."""
+    from .i18n import tr
+    return tr("Room {n}", n=n)
+
+
 def label(room: dict) -> str:
-    return f"{room['name']}\n{room['area']:.2f} m²"
+    from . import compat
+    return f"{room['name']}\n{compat.fmt_area(room['area'])}"

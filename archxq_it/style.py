@@ -30,6 +30,16 @@ QPushButton#axq_plan {{
 QPushButton#axq_plan:hover {{ background: rgba(60, 64, 70, 240); }}
 QPushButton#axq_plan:checked {{ background: {PLAN}; color: white;
     border: 2px solid #ffc27a; }}
+QPushButton#axq_present {{
+    background: rgba(32, 35, 40, 235); color: #f3f4f6;
+    border: 2px solid {PLAN}; border-radius: 7px; padding: 5px 14px;
+    font-weight: bold; }}
+QPushButton#axq_present:hover {{ background: rgba(60, 64, 70, 240); }}
+QPushButton#axq_present[faint="true"] {{ background: transparent;
+    color: rgba(243, 244, 246, 50); border: 2px solid rgba(240, 125, 20, 45); }}
+QPushButton#axq_present[faint="true"]:hover {{
+    background: rgba(32, 35, 40, 235); color: #f3f4f6;
+    border: 2px solid {PLAN}; }}
 QLabel#axq_sep {{ color: #6b7280; padding: 0 1px; }}
 QLabel#axq_caption {{ color: #9aa5b1; padding: 0 4px 0 10px; }}
 QLabel#axq_title {{ color: #e8eaed; font-weight: bold; padding: 2px 8px 4px 8px; }}

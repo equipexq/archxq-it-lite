@@ -96,8 +96,9 @@ class Outliner(QWidget):
         self._filter(self.search.text())
 
     def _add(self, parent, n: dict, depth: int) -> None:
-        text = n["label"] + (f"  ({n['count']})" if n.get("count") is not None
-                             else "")
+        from .i18n import tr    # a group's name («Doors»); names given stay
+        text = tr(n["label"]) + (f"  ({n['count']})"
+                                 if n.get("count") is not None else "")
         it = QTreeWidgetItem([text, ""])
         it.setData(0, KEY, n["key"])
         it.setToolTip(0, n.get("tip", ""))

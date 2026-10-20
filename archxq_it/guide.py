@@ -696,6 +696,14 @@ GUIDES["ramp"] = {
         "them.",
         "Into an excavation from the street: <b>Top</b> = the terrain (or "
         "Level 1), <b>Bottom</b> = the basement, <b>Starts at</b> = its top.",
+        "Up from the pavement to a floor: <b>From</b> = <b>The terrain</b> "
+        "(the ground at its foot, read where you place it), <b>To</b> = the "
+        "level. Or <b>Set by ▸ By heights</b>: just the two elevations "
+        "(<b>Bottom at</b> / <b>Top at</b>) — it works out the rest.",
+        "<b>Build ▸ Solid</b>: filled down to the floor — an entrance ramp "
+        "on the ground.",
+        "A level stretch where it arrives (accessibility): push the grip on "
+        "its <b>top edge</b>, or <b>Landing at the top</b> in the library.",
         "A ramp or stair belongs to its <b>bottom level</b> — the storey "
         "whose space it takes (the outliner lists it there).",
         "The <b>slab</b> it goes through (the floor it leaves, and any in "
@@ -755,6 +763,15 @@ GUIDES["stair"] = {
         "A comfortable stair: risers 16–18 cm, treads 27–30 cm.",
         "No level over the highest one yet? <b>To</b> = «Top of ‹level›» "
         "(its floor + its height): the stair goes up inside it.",
+        "Entrance steps from the pavement: <b>From</b> = <b>The terrain</b> "
+        "(the ground at its foot), <b>To</b> = the floor — or <b>Set by ▸ "
+        "By heights</b> and type the two elevations (e.g. +0.50 → +1.60: "
+        "1.10 m, 7 risers).",
+        "<b>Build ▸ Solid</b>: the steps filled down to the floor, as a "
+        "block — outside, on the ground.",
+        "A platform where it arrives: push the grip on its <b>last step's "
+        "front face</b> (or <b>Landing at the top</b>, in the library) — "
+        "with Solid, steps and platform are one block.",
     ],
     "keys": [("Tab", "an L / U turns the other way (while placing it)"),
              ("Backspace", "start again (after the first click)"),
@@ -764,6 +781,12 @@ GUIDES["stair"] = {
 
 # ---- typed sizes (his ask, 2026-10-05: «used a lot, and easy to forget») ----
 # checked against the tools' on_value and the host's _parse_value_buffer
+TYPING_NOTE = ("Type without clicking — the numbers show in IngeTrazo's "
+               "measurements box (bottom right), Enter applies. Two "
+               "numbers: always separate them with <b>;</b> — then a "
+               "decimal comma is never taken for a separator. Decimals "
+               "with a comma or a point (<code>40,5;30</code>). Units "
+               "work too: <code>350cm</code>, <code>4000mm</code>.")
 _T_RECT = ("Rectangle", "click the first corner, move toward where it "
            "grows, type <code>40;30</code> + Enter — along the red axis ; "
            "along the green")
@@ -857,8 +880,11 @@ def _label(key: str) -> str:
 
 
 def page_html(key: str) -> str:
+    """The tool's page, in ArchXQ's language (i18n: the texts translated
+    where they are shown — the site's manual reads GUIDES in English)."""
+    from .i18n import tr, tr_long
     el = ELEMENTS.get(key)
-    label = _label(key)
+    label = tr(_label(key))
     phase, _ = _elements_of(key)
     g = GUIDES.get(key)
     if g is None:                       # no guide yet: the short help + ways
@@ -867,11 +893,11 @@ def page_html(key: str) -> str:
         if el and el.methods:
             g["steps"] = [(m.label, "") for m in el.methods]
     out = [f"<style>{_PAGE_CSS}</style>",
-           f"<div class='phase'>{phase.upper()}</div><h1>{label}</h1>"]
+           f"<div class='phase'>{tr(phase).upper()}</div><h1>{label}</h1>"]
     if is_pro(key) and edition.lite():       # the page reads; the tool waits
         out.append(f"<p style='background:#3b2a6b; color:white; padding:8px'>"
-                   f"<b>This tool is in ArchXQ IT Pro.</b> &nbsp;"
-                   f"<a href='{edition.PRO_URL}'>Get Pro</a></p>")
+                   f"<b>{tr('This tool is in ArchXQ IT Pro.')}</b> &nbsp;"
+                   f"<a href='{edition.PRO_URL}'>{tr('Get Pro')}</a></p>")
     if g.get("image") and (IMAGES / g["image"]).exists():
         url = QUrl.fromLocalFile(str(IMAGES / g["image"])).toString()
         # both sizes: with the width alone Qt keeps the file's height
@@ -880,45 +906,38 @@ def page_html(key: str) -> str:
         # the picture's line (a gap under it)
         out.append(f"<div style='margin: 8px 0 4px 0'><img src='{url}' "
                    "width='560' height='280'></div>")
-    out.append(f"<p>{g['what']}</p>")
+    out.append(f"<p>{tr_long(g['what'])}</p>")
     if g.get("typing"):           # typed sizes: easy to forget — in front
         out.append("<table width='100%' cellpadding='10' style='margin:10px 0;"
                    "background:#2b2418;border-left:4px solid #e8742c'><tr><td>"
                    "<span style='color:#ffb26b;font-weight:bold;font-size:15px'>"
-                   "&#9000;&nbsp; Typing the sizes</span><table "
+                   "&#9000;&nbsp; " + tr("Typing the sizes") + "</span><table "
                    "cellpadding='3' style='margin-top:6px'>")
         for what, how in g["typing"]:
-            out.append(f"<tr><td class='k'>{html.escape(what)}</td>"
-                       f"<td>{how}</td></tr>")
+            out.append(f"<tr><td class='k'>{html.escape(tr(what))}</td>"
+                       f"<td>{tr_long(how)}</td></tr>")
         out.append("</table><p style='color:#c9b79a;margin:6px 0 0 0'>"
-                   "Type without clicking — the numbers show in IngeTrazo's "
-                   "measurements box (bottom right), Enter applies. Two "
-                   "numbers: always separate them with <b>;</b> — then a "
-                   "decimal comma is never taken for a separator. Decimals "
-                   "with a comma or a point (<code>40,5;30</code>). Units "
-                   "work too: "
-                   "<code>350cm</code>, <code>4000mm</code>.</p></td></tr>"
-                   "</table>")
+                   + tr_long(TYPING_NOTE) + "</p></td></tr></table>")
     if g.get("steps"):
-        out.append("<h2>Step by step</h2><table>")
+        out.append(f"<h2>{tr('Step by step')}</h2><table>")
         for name, how in g["steps"]:
-            out.append(f"<tr><td class='k'>{html.escape(name)}</td>"
-                       f"<td>{how}</td></tr>")
+            out.append(f"<tr><td class='k'>{html.escape(tr(name))}</td>"
+                       f"<td>{tr_long(how)}</td></tr>")
         out.append("</table>")
     for field, head in (("tips", "Tips"), ("mistakes", "Common mistakes")):
         if g.get(field):
-            out.append(f"<h2>{head}</h2><ul>")
-            out += [f"<li>{t}</li>" for t in g[field]]
+            out.append(f"<h2>{tr(head)}</h2><ul>")
+            out += [f"<li>{tr_long(t)}</li>" for t in g[field]]
             out.append("</ul>")
     if g.get("keys"):
-        out.append("<h2>Keys</h2><table>")
-        out += [f"<tr><td class='k'>{k}</td><td>{d}</td></tr>"
+        out.append(f"<h2>{tr('Keys')}</h2><table>")
+        out += [f"<tr><td class='k'>{tr(k)}</td><td>{tr_long(d)}</td></tr>"
                 for k, d in g["keys"]]
         out.append("</table>")
     video = g.get("video") or (TERRAIN_VIDEO if phase == "Terrain" else "")
     if video:
-        out.append(f"<h2>Video</h2><p><a href='{video}'>Watch it on "
-                   "YouTube</a></p>")
+        out.append(f"<h2>{tr('Video')}</h2><p><a href='{video}'>"
+                   + tr("Watch it on YouTube") + "</a></p>")
     return "".join(out)
 
 
@@ -926,7 +945,9 @@ class GuideWindow(QDialog):
     def __init__(self, element: str, parent=None) -> None:
         super().__init__(parent)
         phase, keys = _elements_of(element)
-        self.setWindowTitle(f"ArchXQ — Help · {phase or 'Tools'}")
+        from .i18n import tr
+        self.setWindowTitle("ArchXQ — " + tr("Help") + " · "
+                            + tr(phase or "Tools"))
         self.setStyleSheet(_CSS)
         self.resize(QSize(940, 660))
         lay = QHBoxLayout(self)
@@ -941,7 +962,7 @@ class GuideWindow(QDialog):
         right.addWidget(self.text)
         lay.addLayout(right, 1)
         for k in keys:
-            it = QListWidgetItem(_label(k))
+            it = QListWidgetItem(tr(_label(k)))
             it.setData(Qt.UserRole, k)
             self.list.addItem(it)
         self.list.currentItemChanged.connect(

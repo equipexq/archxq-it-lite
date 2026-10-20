@@ -20,7 +20,8 @@ from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 INK = QColor("#e6e8eb")
 ACCENT = QColor("#e8742c")
 #: the kinds the host's Move / Rotate move (their records follow: edits.py)
-MOVABLE = {"column", "beam", "footing", "slab", "ramp", "stair"}
+MOVABLE = {"column", "beam", "footing", "slab", "ramp", "stair", "guard",
+           "glazing"}
 R = 50            # the ring's radius (px)
 B = 34            # a button's size
 

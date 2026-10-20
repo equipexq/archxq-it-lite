@@ -70,7 +70,28 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Move", "along a wall — it shows where it fits"),
         ("Click", "place it there"),
         ("Tab", "a door: its hinge on the other side"),
+        ("Shift+Tab", "it opens in ↔ out (library: «Opens»)"),
         ("Library", "its type: swing, sliding, casement…"),
+        ("Placed", "select it: grips · double-click: its window"),
+        ("Esc", "done"))),
+    "guard": ("Low wall / guard", (
+        ("Click", "point after point — any angle"),
+        ("Type + Enter", "an exact length"),
+        ("Enter · double-click", "end it open · C closes it"),
+        ("Tab", "the other face of the line drawn"),
+        ("Library «How»", "Slab edge · Round an opening · Add a gap"),
+        ("Esc", "drop · again: done"))),
+    "guard_pick": ("Low wall — one click", (
+        ("Move", "what a click makes shows under the mouse"),
+        ("Click", "a slab · an opening · a low wall (a gap)"),
+        ("Gap", "its width on the right · drag its edges after"),
+        ("Library «How»", "Draw: back to point by point"),
+        ("Esc", "done"))),
+    "glazing": ("Glass grid", (
+        ("Click", "an Opening (a void) — the grid fills it"),
+        ("Click twice", "along a wall: the Opening is made there"),
+        ("Free", "two clicks: a partition anywhere"),
+        ("Library", "type, panes, frame, glass position"),
         ("Esc", "done"))),
     "ramp": ("Ramp / stair", (
         ("Click", "where it starts (its first edge)"),
@@ -95,6 +116,7 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Type + Enter", "an exact size while a grip moves"),
         ("Shift", "1 cm steps (else 5 cm)"),
         ("↑  →  ←", "a column's circle: up / down, one way"),
+        ("Delete on a grip", "low wall: a side → a gap · a gap's edge → shut"),
         ("Esc", "put it back · Ctrl+Z after"))),
     "radial": ("Radial menu", (
         ("Move · Copy", "IngeTrazo's own Move (Ctrl = copy)"),
@@ -185,6 +207,10 @@ class QuickCard(QFrame):
             t = QLabel(what)
             self.grid.addWidget(k, i, 0, Qt.AlignLeft | Qt.AlignVCenter)
             self.grid.addWidget(t, i, 1, Qt.AlignLeft | Qt.AlignVCenter)
+            # added to a card ALREADY shown (another tool's): Qt keeps them
+            # hidden — the card shrank to its title (his screen, 2026-10-16)
+            k.show()
+            t.show()
         self.never.blockSignals(True)
         self.never.setChecked(False)
         self.never.blockSignals(False)

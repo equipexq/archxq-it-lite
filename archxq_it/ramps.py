@@ -47,7 +47,7 @@ COLOR = (0.74, 0.74, 0.73)       # concrete, as the slabs
 DEFAULT = {"start": "level", "to": "", "to_z": -3.0, "w": 3.0,
            "slope": 20.0, "fix": "slope", "L": 15.0, "t": 0.15,
            "shape": "straight", "turn": "right", "landing": 3.0,
-           "anchor": "centre",
+           "anchor": "centre", "build": "slab",
            "cut": True}            # its opening in the slab (False: none)
 SLOPE_MIN, SLOPE_MAX = 1.0, 50.0  # % (a car ramp ~20, people ~8)
 
@@ -84,6 +84,15 @@ def from_level(r: dict):
     return r.get("from") or r.get("level")
 
 
+def level_under(zs_of: dict, z: float):
+    """The level an ELEVATION belongs to: the highest whose floor is at it
+    or under it (1 cm), else the lowest — the storey whose space it is."""
+    under = [(zl, lid) for lid, zl in zs_of.items() if zl <= z + 0.01]
+    if under:
+        return max(under)[1]
+    return min((zl, lid) for lid, zl in zs_of.items())[1]
+
+
 def owner(r: dict, doc: dict, elevations):
     """The level a ramp / stair belongs to: the LOWER of its two levels —
     the storey whose space it takes, drawn going up or down (his test,
@@ -91,6 +100,9 @@ def owner(r: dict, doc: dict, elevations):
     space but was listed under Basement 1). The start on the terrain: the
     ground floor; an elevation at its end: the level it starts on."""
     zs_of = level_z(doc, elevations)
+    if r.get("start") == "z":         # «By heights»: two elevations
+        zs, ze = heights(r, doc, elevations)
+        return level_under(zs_of, min(zs, ze))
     a = from_level(r)
     if r.get("start") == "terrain":
         a = next((lv["id"] for lv in doc["levels"] if lv["kind"] == "ground"),
@@ -114,6 +126,8 @@ def heights(r: dict, doc: dict, elevations, at=None) -> tuple[float, float]:
         from .terrain import ground_at
         p = at if at is not None else (float(r["x"]), float(r["y"]))
         zs = ground_at(doc["plot"], p)
+    elif r.get("start") == "z":       # «By heights» (2026-10-18): typed
+        zs = float(r.get("from_z", 0.0))
     else:
         zs = end_z(doc, elevations, from_level(r))
         if zs is None:
@@ -217,9 +231,39 @@ def piece_corners(p: dict) -> list:
     return pts if a > 0 else list(reversed(pts))
 
 
+def top_piece(r: dict, ps: list, zs: float, ze: float) -> dict | None:
+    """Its LANDING AT THE TOP (his idea, 2026-10-18 — a shop's entrance
+    steps end on a platform): a level piece ``top_landing`` long at its top
+    elevation — going up, past its last run's end; going down, behind its
+    first run's start (the click does not move). None: no landing. Kept OUT
+    of ``pieces`` (the middle landing's grips, the slab's cut and the guards
+    read those): only its build, plan, outline and grip use it."""
+    try:
+        ln = float(r.get("top_landing", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    runs = [p for p in ps if p.get("run", True)]
+    if ln < 0.01 or not runs:
+        return None
+    z = max(zs, ze)
+    if ze >= zs:                          # up: the last run's end
+        p = runs[-1]
+        (cx, cy), (dx, dy) = p["c"], p["d"]
+        c = (cx + dx * p["l"], cy + dy * p["l"])
+    else:                                 # down: behind the first run
+        p = runs[0]
+        (cx, cy), (dx, dy) = p["c"], p["d"]
+        c = (cx - dx * ln, cy - dy * ln)
+    return {"c": c, "d": (dx, dy), "l": ln, "w": p["w"], "z0": z, "z1": z,
+            "run": False, "top": True}
+
+
 def footprints(r: dict, zs: float, ze: float, L: float) -> list:
-    """Every piece's outline in plan (what the slab above loses)."""
-    return [piece_corners(p) for p in pieces(r, zs, ze, L)]
+    """Every piece's outline in plan (what the slab above loses) — its
+    landing at the top too (``top_piece``)."""
+    ps = pieces(r, zs, ze, L)
+    tp = top_piece(r, ps, zs, ze)
+    return [piece_corners(p) for p in ps + ([tp] if tp else [])]
 
 
 def footprint(r: dict, L: float) -> list:
@@ -263,7 +307,13 @@ def faces(r: dict, doc: dict, elevations) -> list:
     # a low wall keeps to the ramp's edge: the slab gives way 1 cm there
     lt, rt = RL.body_trim(r, ps, ze > zs, False, doc)[:2] if RL else (0, 0)
     walls = RL.wall_plan(r, ps, ze > zs, False, doc) if RL else None
-    for p in ps:
+    # SOLID (his ask, 2026-10-18): filled down to the lower floor, 1 mm
+    # over it — a wedge, not a sloped slab
+    solid = r.get("build") == "solid"
+    zf = min(zs, ze) + 0.001
+    # (its landing at the top, built as the middle one — ``top_piece``)
+    tp = top_piece(r, ps, zs, ze)
+    for p in ps + ([tp] if tp else []):
         (cx, cy), (dx, dy) = p["c"], p["d"]
         rx, ry = dy, -dx
 
@@ -272,15 +322,22 @@ def faces(r: dict, doc: dict, elevations) -> list:
         # its top 1 mm under the floor it leaves: never the same plane
         # (black squares — the 1 mm rule)
         z0, z1, l = p["z0"] - 0.001, p["z1"] - 0.001, p["l"]
+        b0 = zf if solid else z0 - t + 0.001
+        b1 = zf if solid else z1 - t + 0.001
         if p.get("run", True):
             a0, a1 = -p["w"] / 2 + lt, p["w"] / 2 - rt
         elif walls is not None:           # a landing: it gives way to them
             from .stairs import landing_round
-            out += landing_round(p, walls, z0 - t + 0.001, z0, COLOR + (1.0,))
+            out += landing_round(p, walls, b0, z0, COLOR + (1.0,))
             continue
         else:
             a0, a1 = -p["w"] / 2, p["w"] / 2
-        prof =[(0.0, z0 - t + 0.001), (l, z1 - t + 0.001), (l, z1), (0.0, z0)]
+        if solid and min(z0, z1) - zf < 0.002:
+            # the low end on the floor: a wedge, its thin edge on the floor
+            prof = [(0.0, zf), (l, zf), (l, max(z1, zf + 0.002)),
+                    (0.0, max(z0, zf + 0.002))]
+        else:
+            prof = [(0.0, b0), (l, b1), (l, z1), (0.0, z0)]
         out += _sweep(prof, a0, a1, P, COLOR + (1.0,))
     if RL is not None:
         out += RL.faces(r, ps, ze > zs, False, doc)
@@ -345,20 +402,37 @@ class _Ends:
         """``choice``: «Starts at» as chips (look.Chips — the windows of
         0.10.0) instead of a list."""
         self.doc, self.elevations = doc, elevations
+        self.form = form
         zs_of = level_z(doc, elevations)
+        # HOW its ends are given (his idea, 2026-10-18 — a shop's entrance
+        # steps took three hidden rules): by levels (a level, the terrain, an
+        # elevation), or by heights — two elevations, nothing else
+        self.f_mode = (choice or QComboBox)()
+        self.f_mode.addItem("By levels", "levels")
+        self.f_mode.addItem("By heights", "heights")
+        self.f_mode.setToolTip("By levels: its ends on levels, the terrain "
+                               "or an elevation. By heights: just the two "
+                               "elevations it goes between — it works out "
+                               "the rest")
         self.f_top = QComboBox()
         if doc.get("plot"):
             self.f_top.addItem("The terrain (the ground at its top)",
                                "terrain")
         self.f_bottom = QComboBox()
+        if doc.get("plot"):
+            # the ground at its FOOT (2026-10-18): an entrance's steps from
+            # the pavement — read where it is placed
+            self.f_bottom.addItem("The terrain (the ground at its foot)",
+                                  "terrain")
         # the highest level's top: a stair up inside it, no level over it
         hi = max(doc["levels"], key=lambda lv: zs_of[lv["id"]])
         self.f_top.addItem(f"Top of {hi['name']}  "
-                           f"({zs_of[hi['id']] + float(hi['height']):+.2f})",
+                           f"({compat.fmt_level(zs_of[hi['id']] + float(hi['height']), unit=False)})",  # noqa: E501
                            TOP + hi["id"])
         for box in (self.f_top, self.f_bottom):
             for lv in reversed(doc["levels"]):
-                box.addItem(f"{lv['name']}  ({zs_of[lv['id']]:+.2f})",
+                box.addItem(f"{lv['name']}  "
+                            f"({compat.fmt_level(zs_of[lv['id']], unit=False)})",
                             lv["id"])
             box.addItem("An elevation", "z")
         self.f_z = metres(float(rec.get("to_z", -3.0)), -100.0, 100.0)
@@ -378,36 +452,108 @@ class _Ends:
         za = None if a == "terrain" else end_z(doc, elevations, a)
         zb = float(rec.get("to_z", 0.0)) if b == "z" else end_z(doc,
                                                                elevations, b)
-        top_first = a == "terrain" or (za is not None and zb is not None
-                                       and za >= zb)
+        if a == "terrain" and doc.get("plot") and "x" in rec:
+            # the ground where it is: under the other end → its foot
+            try:
+                from .terrain import ground_at
+                za = ground_at(doc["plot"], (float(rec["x"]),
+                                             float(rec["y"])))
+            except Exception:  # noqa: BLE001 — as before: the top
+                za = None
+        top_first = (za is None and a == "terrain") or (
+            za is not None and zb is not None and za >= zb)
         top, bottom = (a, b) if top_first else (b, a)
         self.f_top.setCurrentIndex(max(self.f_top.findData(top), 0))
         self.f_bottom.setCurrentIndex(max(self.f_bottom.findData(bottom), 0))
         self.f_start.setCurrentIndex(1 if top_first else 0)
+        # «By heights»: the two elevations it has now
+        try:
+            z0, z1 = heights(dict(rec, x=rec.get("x", 0.0),
+                                  y=rec.get("y", 0.0)), doc, elevations)
+        except Exception:  # noqa: BLE001
+            z0, z1 = 0.0, 1.0
+        self.f_lo = metres(round(min(z0, z1), 3), -100.0, 100.0)
+        self.f_hi = metres(round(max(z0, z1), 3), -100.0, 100.0)
+        self.f_lo.setToolTip("Its foot: the elevation it starts from")
+        self.f_hi.setToolTip("Its top: the elevation it reaches")
+        if rec.get("start") == "z":
+            self.f_mode.setCurrentIndex(1)
+            self.f_start.setCurrentIndex(
+                1 if float(rec.get("from_z", 0.0)) >= float(
+                    rec.get("to_z", 0.0)) else 0)
+        # what it climbs, in big: «1.10 m · 7 risers of 15.7 cm»
+        self.f_note = QLabel("")
+        self.f_note.setStyleSheet("color: #ffb36b; font-weight: bold; "
+                                  "font-size: 13px;")
         # «From / To» as he reads them (2026-10-05): «To» — the upper end —
         # over «From» — the lower one — as a section reads
         self.f_top.setToolTip("The upper end: a level, the top of the "
                               "highest level, the terrain or an elevation")
-        self.f_bottom.setToolTip("The lower end: a level or an elevation")
+        self.f_bottom.setToolTip("The lower end: a level, the terrain (the "
+                                 "ground at its foot) or an elevation")
+        form.addRow("Set by", self.f_mode)
         form.addRow("To", self.f_top)
         form.addRow("From", self.f_bottom)
         form.addRow("Elevation", self.f_z)
+        form.addRow("Top at", self.f_hi)
+        form.addRow("Bottom at", self.f_lo)
         form.addRow("Starts at", self.f_start)
+        form.addRow("", self.f_note)
 
     def widgets(self):
-        return (self.f_top, self.f_bottom, self.f_start)
+        return (self.f_mode, self.f_top, self.f_bottom, self.f_start)
+
+    def values(self):
+        """Its typed fields (``valueChanged``)."""
+        return (self.f_z, self.f_lo, self.f_hi)
+
+    def by_heights(self) -> bool:
+        return self.f_mode.currentData() == "heights"
+
+    def note(self, text: str) -> None:
+        """The window's line of what it climbs (shown By heights)."""
+        self.f_note.setText(text)
+
+    def _row(self, w, on: bool) -> None:
+        try:
+            self.form.setRowVisible(w, on)
+        except (AttributeError, TypeError):   # an older Qt
+            w.setVisible(on)
+            lab = self.form.labelForField(w)
+            if lab is not None:
+                lab.setVisible(on)
 
     def sync(self) -> None:
+        hts = self.by_heights()
+        for w in (self.f_top, self.f_bottom, self.f_z):
+            self._row(w, not hts)
+        for w in (self.f_hi, self.f_lo, self.f_note):
+            self._row(w, hts)
+        if hts:                           # either end may be the clicked one
+            self.f_start.setEnabled(True)
+            return
         top, bot = self.f_top.currentData(), self.f_bottom.currentData()
         self.f_z.setEnabled("z" in (top, bot))
-        on_ground = top == "terrain"
-        if on_ground:                     # the ground is read at the click
+        if top == "terrain":              # the ground is read at the click
             self.f_start.setCurrentIndex(1)
-        self.f_start.setEnabled(not on_ground)
+        elif bot == "terrain":            # …its foot: the bottom step
+            self.f_start.setCurrentIndex(0)
+        self.f_start.setEnabled("terrain" not in (top, bot))
 
     def write(self, r: dict) -> None:
-        """Its ends into the record (start, from, to, to_z) — a top chosen
-        lower than the bottom is turned the right way round."""
+        """Its ends into the record (start, from, to, to_z — By heights:
+        start «z», from_z, to «z», to_z) — a top chosen lower than the
+        bottom is turned the right way round."""
+        if self.by_heights():
+            lo, hi = sorted((round(self.f_lo.value(), 3),
+                             round(self.f_hi.value(), 3)))
+            at_top = self.f_start.currentData() == "top"
+            r["start"] = "z"
+            r["from_z"], r["to_z"] = (hi, lo) if at_top else (lo, hi)
+            r["to"] = "z"
+            r["from"] = level_under(level_z(self.doc, self.elevations), lo)
+            return
+        r.pop("from_z", None)
         top, bot = self.f_top.currentData(), self.f_bottom.currentData()
         zs_of = level_z(self.doc, self.elevations)
         zt = end_z(self.doc, self.elevations, top)
@@ -415,7 +561,8 @@ class _Ends:
         if zt is not None and zb is not None and zt < zb and \
                 not str(top).startswith(TOP):
             top, bot = bot, top
-        at_top = top == "terrain" or self.f_start.currentData() == "top"
+        at_top = top == "terrain" or (bot != "terrain" and
+                                      self.f_start.currentData() == "top")
         start, other = (top, bot) if at_top else (bot, top)
         ground = next(lv["id"] for lv in self.doc["levels"]
                       if lv["kind"] == "ground")
@@ -429,10 +576,17 @@ class _Ends:
         r["to_z"] = round(self.f_z.value(), 3)
 
     def why_not(self) -> str | None:
+        if self.by_heights():
+            if abs(self.f_hi.value() - self.f_lo.value()) < 0.05:
+                return "The top and the bottom are at the same height"
+            return None
         top, bot = self.f_top.currentData(), self.f_bottom.currentData()
         if top == bot:
-            return "The top and the bottom are the same level"
-        at_top = top == "terrain" or self.f_start.currentData() == "top"
+            return ("The top and the bottom are both the terrain"
+                    if top == "terrain" else
+                    "The top and the bottom are the same level")
+        at_top = top == "terrain" or (bot != "terrain" and
+                                      self.f_start.currentData() == "top")
         if (top if at_top else bot) == "z":
             return ("It starts on a level (or the terrain) — an elevation "
                     "can only be its other end")
@@ -574,16 +728,17 @@ class _Profile(QWidget):
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor("#e6e6e6"))
-        zs_txt = f"{self.zs:+.2f}" + ("" if self.known else " (the ground)")
+        zs_txt = compat.fmt_level(self.zs, unit=False) + (
+            "" if self.known else " (the ground)")
         p.drawText(QRectF(a.x() - 10, a.y() - 26, 200, 20), Qt.AlignLeft,
                    zs_txt)
         p.drawText(QRectF(b.x() - 190, b.y() + th + 6, 200, 20),
-                   Qt.AlignRight, f"{self.ze:+.2f}")
+                   Qt.AlignRight, compat.fmt_level(self.ze, unit=False))
         mid = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
         p.setPen(QColor(ACCENT))
         p.drawText(QRectF(mid.x() - 120, mid.y() + (16 if down else -36), 240,
                           20), Qt.AlignCenter,
-                   f"{self.slope:g} %  ·  {self.L:.2f} m"
+                   f"{self.slope:g} %  ·  {compat.fmt_len(self.L)}"
                    + (" (runs)" if land else ""))
 
 
@@ -859,7 +1014,7 @@ class RailTab:
             self.rows[key].setVisible(shown)
         self.f_low.setVisible(k != "wall")
         self.fold_kind.set_pick(self.f_kind.currentText())
-        self.fold_sizes.set_pick(f"{r['rail_h']:.2f} high")
+        self.fold_sizes.set_pick(f"{compat.fmt_num(r['rail_h'])} high")
         side = next((c.currentText() for part, _l, c in self.opts
                      if part.key == "rail_sides"), "")
         self.fold_opts.set_pick(f"Sides: {side}" if side else "")
@@ -916,7 +1071,9 @@ class FlightPlan(QWidget):
             return
         r = dict(self.r, x=0.0, y=0.0, angle=90.0)
         ps = self.pieces(r)
-        polys = [piece_corners(pc) for pc in ps]
+        tp = top_piece(r, ps, self.zs, self.ze)   # its landing at the top
+        ps_all = ps + ([tp] if tp else [])
+        polys = [piece_corners(pc) for pc in ps_all]
         xs = [q[0] for pg in polys for q in pg]
         ys = [q[1] for pg in polys for q in pg]
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
@@ -927,7 +1084,7 @@ class FlightPlan(QWidget):
 
         def q(x, y):
             return QPointF(ox + (x - x0) * k, oy + (y1 - y) * k)
-        for pc, pg in zip(ps, polys):
+        for pc, pg in zip(ps_all, polys):
             run = pc.get("run", True)
             p.setPen(L.pen(L.INK, 1.5))
             p.setBrush(QColor("#34373c" if run else "#2a2c30"))
@@ -1168,18 +1325,44 @@ class RampDialog(QDialog):
         self.f_land.setToolTip("The level landing between the two runs (an "
                                "L's is never shorter than the ramp is wide)")
         form.addRow("Landing", self.f_land)
+        # its landing at the top (2026-10-18): accessibility wants a level
+        # stretch where it arrives — or push the grip on its top edge
+        self.f_tland = L.metres(float(rec.get("top_landing", 0.0) or 0.0),
+                                0.0, 20.0)
+        self.f_tland.setToolTip("A level platform where it arrives, this "
+                                "long (0: none) — or push the grip on its "
+                                "top edge")
+        form.addRow("Landing at the top", self.f_tland)
         gl.addWidget(self.fold_shape)
         gl.addStretch(1)
         self.tabs.addTab(geo, "Geometry", "geometry")
 
         # ---- Build ---------------------------------------------------------------
         bld, bl = L.page()
+        # a sloped slab, or SOLID down to the floor (his ask, 2026-10-18 —
+        # a shop's entrance ramp, a block under it)
+        self.fold_build = L.Fold("Structure", "ramp.build")
+        self.f_build = L.Chips()
+        self.f_build.addItem("Slab — a sloped slab", "slab",
+                             "A slab of the given thickness, open under it")
+        self.f_build.addItem("Solid — filled down to the floor", "solid",
+                             "A block under it, down to the lower floor: an "
+                             "entrance ramp on the ground")
+        self.f_build.setCurrentIndex(1 if rec.get("build") == "solid" else 0)
+        self.fold_build.box.addWidget(self.f_build)
+        bl.addWidget(self.fold_build)
         self.fold_cut = L.Fold("Opening in the slab", "ramp.cut")
         self.f_cut = L.Chips()
         self.f_cut.addItem("Auto — it opens the slab it passes through", True)
         self.f_cut.addItem("None", False)
         self.f_cut.setCurrentIndex(0 if rec.get("cut", True) else 1)
         self.fold_cut.box.addWidget(self.f_cut)
+        # room round it (as a stair's — his ask, 2026-10-15)
+        self.f_clear = L.metres(float(rec.get("clear", 0.0) or 0.0), 0.0, 1.0)
+        self.f_clear.setToolTip("The opening this much wider round the "
+                                "ramp — never on the side where it reaches "
+                                "the floor")
+        self.fold_cut.form().addRow("Clearance", self.f_clear)
         self.fold_cut.box.addWidget(L.hint(
             "None: the slab stays whole — draw an opening of your own "
             "(Structure › Slab › Opening, any shape)."))
@@ -1271,9 +1454,11 @@ class RampDialog(QDialog):
         lay.addLayout(acts)
 
         for w in self.ends.widgets() + (self.f_turn, self.f_shape,
-                                        self.f_cut, self.f_anchor):
+                                        self.f_cut, self.f_anchor,
+                                        self.f_build):
             w.currentIndexChanged.connect(self._sync)
-        for w in (self.ends.f_z, self.f_w, self.f_t, self.f_land):
+        for w in (*self.ends.values(), self.f_w, self.f_t, self.f_land,
+                  self.f_clear, self.f_tland):
             w.valueChanged.connect(self._sync)
         self.f_slope.valueChanged.connect(lambda _v: self._given("slope"))
         self.f_len.valueChanged.connect(lambda _v: self._given("length"))
@@ -1303,6 +1488,13 @@ class RampDialog(QDialog):
         r["anchor"] = self.f_anchor.currentData()
         self.rails.write(r)
         r["cut"] = bool(self.f_cut.currentData())
+        r["clear"] = round(self.f_clear.value(), 3)
+        r["build"] = self.f_build.currentData() or "slab"
+        tl = round(self.f_tland.value(), 3)
+        if tl >= 0.01:
+            r["top_landing"] = tl
+        else:
+            r.pop("top_landing", None)
         if self.edit:
             r["x"] = round(self.f_x.value(), 4)
             r["y"] = round(self.f_y.value(), 4)
@@ -1366,33 +1558,47 @@ class RampDialog(QDialog):
         def name(box):
             return box.currentText().split("  (")[0].strip()
         lo, hi = name(self.ends.f_bottom), name(self.ends.f_top)
+        if self.ends.by_heights():        # two elevations
+            lo = compat.fmt_level(min(zs, ze), unit=False)
+            hi = compat.fmt_level(max(zs, ze), unit=False)
+        self.ends.note(f"{compat.fmt_len(drop)} · {slope:.1f} % · "
+                       f"{compat.fmt_len(L)} long")
         shape = {"L": "L", "U": "U"}.get(r["shape"], "Straight")
         if turning:
             shape += f", turning {r['turn']}"
         self.head.set_summary([
-            f"{lo} → {hi}", "{" + f"{drop:.2f} m" + "}",
-            "{" + f"{slope:.1f} %" + "}", "{" + f"{L:.2f} m" + "} long",
+            f"{lo} → {hi}", "{" + compat.fmt_len(drop) + "}",
+            "{" + f"{slope:.1f} %" + "}", "{" + compat.fmt_len(L) + "} long",
             shape, self.rails.summary()])
         self.fold_lv.set_pick(f"{lo} → {hi}")
-        self.fold_size.set_pick(f"{r['w']:.2f} wide · {slope:.1f} %")
+        self.fold_size.set_pick(f"{compat.fmt_num(r['w'])} wide · "
+                                f"{slope:.1f} %")
         self.fold_shape.set_pick(shape)
-        self.fold_cut.set_pick("Auto" if r["cut"] else "None")
+        self.fold_build.set_pick("Solid" if r["build"] == "solid" else "Slab")
+        self.f_clear.setEnabled(r["cut"])
+        self.fold_cut.set_pick(("Auto" + (
+            f" {compat.fmt_level(r['clear'], unit=False)}"
+            if r["clear"] > 1e-6 else ""))
+                               if r["cut"] else "None")
         self.fold_anchor.set_pick(self.f_anchor.currentText())
-        self.d_lv.set(h=f"{drop:.2f}", lo=lo, hi=hi)
-        self.d_size.set(slope=f"{slope:.1f} %", L=f"{L:.2f} m")
+        self.d_lv.set(h=compat.fmt_num(drop), lo=lo, hi=hi)
+        self.d_size.set(slope=f"{slope:.1f} %", L=compat.fmt_len(L))
         if self.edit:
-            self.fold_place.set_pick(f"{r['x']:.2f}, {r['y']:.2f} · "
+            self.fold_place.set_pick(f"{compat.fmt_num(r['x'])}, "
+                                     f"{compat.fmt_num(r['y'])} · "
                                      f"{r['angle'] % 360:.0f}°")
             self.d_dial.set(a=r["angle"])
-        self.stats.set([(f"{slope:.1f} %", "slope"), (f"{L:.2f} m", "length"),
-                        (f"{drop:.2f} m", "height"),
-                        (f"{land:.2f} m", "landing") if turning
-                        else (f"{r['w']:.2f} m", "wide")])
+        self.stats.set([(f"{slope:.1f} %", "slope"),
+                        (compat.fmt_len(L), "length"),
+                        (compat.fmt_len(drop), "height"),
+                        (compat.fmt_len(land), "landing") if turning
+                        else (compat.fmt_len(r['w']), "wide")])
+        code = "ADA" if compat.imperial() else "NBR 9050"   # (1:12 both)
         if slope <= 8.335:
-            self.badge.set(True, "Accessible: NBR 9050 ≤ 8.33 %")
+            self.badge.set(True, f"Accessible: {code} ≤ 8.33 % (1:12)")
         elif slope <= 20.0:
             self.badge.set(True, "Vehicle ramp (≤ 20 %) — steeper than "
-                                 "NBR 9050's 8.33 % for people")
+                                 f"{code}'s 8.33 % for people")
         else:
             self.badge.set(False, "Steeper than 20 % — check it")
 
@@ -1522,7 +1728,8 @@ class RampTool(_PlotTool):
             return None
         ang = self._angle(self.hover)
         L, zs, ze = self.length_at(self.a)
-        return (f"{L:.2f} m  {zs:+.2f} → {ze:+.2f}"
+        return (f"{compat.fmt_len(L)}  {compat.fmt_level(zs, unit=False)} → "
+                f"{compat.fmt_level(ze, unit=False)}"
                 + (f"   {ang % 360:.0f}°" if ang is not None else ""), None)
 
     def status_clause(self) -> str:

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
 )
 
+from .i18n import tr
 from .style import CSS
 
 
@@ -62,7 +63,7 @@ class OptionsBar(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
         if caption:
-            cap = QLabel(caption)
+            cap = QLabel(tr(caption))
             cap.setObjectName("axq_caption")
             row.addWidget(cap)
         if field is not None:
@@ -81,7 +82,7 @@ class OptionsBar(QFrame):
             r.hide()
             r.deleteLater()
         self._rows = []
-        t = QLabel(title)
+        t = QLabel(tr(title))
         t.setObjectName("axq_title")
         self._items = [self._block("", t)]
         for o in options:
@@ -90,7 +91,7 @@ class OptionsBar(QFrame):
             elif o["kind"] == "segments":
                 field = self._popup(o)
             elif o["kind"] == "note":            # a line of words
-                field = QLabel(o["text"])
+                field = QLabel(tr(o["text"]))
                 field.setObjectName("axq_caption")
             elif o["kind"] == "button":          # one action, in words
                 field = self._action(o)
@@ -111,7 +112,7 @@ class OptionsBar(QFrame):
         b.setFocusPolicy(Qt.NoFocus)
         b.setIcon(icons.icon("help"))
         b.setIconSize(QSize(20, 20))
-        b.setToolTip(f"{title} — how it works (the guide)")
+        b.setToolTip(tr("{title} — how it works (the guide)", title=tr(title)))
 
         def go() -> None:
             from .guide import open_guide
@@ -125,17 +126,18 @@ class OptionsBar(QFrame):
         from PySide6.QtCore import QEvent, QObject, QTimer
         from PySide6.QtGui import QActionGroup
         from PySide6.QtWidgets import QMenu, QPushButton
-        text = dict(o["choices"])
+        text = {v: tr(t) for v, t in o["choices"]}
         b = QPushButton(f"{text.get(o['value'], '—')}  ▾")
         b.setProperty("axq", "chip")
         b.setFocusPolicy(Qt.NoFocus)
-        b.setToolTip(o.get("tip", ""))
+        b.setToolTip(tr(o.get("tip", "")))
         menu = QMenu(b)
         menu.setObjectName("axq_menu")
         menu.setStyleSheet(CSS)
         group = QActionGroup(menu)
         group.setExclusive(True)
         for value, label in o["choices"]:
+            label = tr(label)
             a = menu.addAction(label)
             a.setCheckable(True)
             a.setChecked(value == o["value"])
@@ -149,7 +151,7 @@ class OptionsBar(QFrame):
     def _action(self, o: dict):
         """A plain button: a click says ``on_change(key, True)``."""
         from PySide6.QtWidgets import QPushButton
-        b = QPushButton(o["text"])
+        b = QPushButton(tr(o["text"]))
         if o.get("outline"):
             # «More…»: an orange outline, to be seen (his call, 2026-10-14)
             from .library import ACTION_CSS
@@ -157,7 +159,7 @@ class OptionsBar(QFrame):
         else:
             b.setProperty("axq", "chip")
         b.setFocusPolicy(Qt.NoFocus)
-        b.setToolTip(o.get("tip", ""))
+        b.setToolTip(tr(o.get("tip", "")))
         b.clicked.connect(lambda _=False, key=o["key"]: self.on_change(key,
                                                                        True))
         return b
@@ -182,10 +184,10 @@ class OptionsBar(QFrame):
             if o["kind"] == "icons":
                 b.setIcon(icons.icon(item[1]))
                 b.setIconSize(QSize(22, 22))
-                b.setToolTip(item[2] if len(item) > 2 else "")
+                b.setToolTip(tr(item[2]) if len(item) > 2 else "")
             else:
-                b.setText(item[1])
-                b.setToolTip(o.get("tip", ""))
+                b.setText(tr(item[1]))
+                b.setToolTip(tr(o.get("tip", "")))
             b.setChecked(value == o["value"])
             b.clicked.connect(
                 lambda _=False, v=value, key=o["key"]: self.on_change(key, v))
@@ -245,7 +247,7 @@ class OptionsBar(QFrame):
         if kind == "choice":
             w = QComboBox()
             for value, text in o["choices"]:
-                w.addItem(text, value)
+                w.addItem(tr(text), value)
             i = next((k for k, (v, _t) in enumerate(o["choices"])
                       if v == o["value"]), 0)
             w.setCurrentIndex(i)
@@ -261,7 +263,8 @@ class OptionsBar(QFrame):
             w.valueChanged.connect(
                 lambda v, key=o["key"]: self.on_change(key, int(v)))
         else:                                        # a length (m)
-            w = QDoubleSpinBox()
+            from .look import LengthBox   # feet / inches in such a document
+            w = LengthBox()
             w.setDecimals(2)
             w.setRange(float(o.get("min", -1000.0)),
                        float(o.get("max", 1000.0)))
@@ -270,10 +273,10 @@ class OptionsBar(QFrame):
             w.setValue(float(o["value"]))
             w.setKeyboardTracking(False)
             # as wide as a value — its range (to 1000) made it far wider
-            w.setMaximumWidth(80)
+            w.setMaximumWidth(110 if w._host else 80)   # 10'11 15/16"
             w.valueChanged.connect(
                 lambda v, key=o["key"]: self.on_change(key, round(v, 3)))
-        w.setToolTip(o.get("tip", ""))
+        w.setToolTip(tr(o.get("tip", "")))
         w.setFocusPolicy(Qt.ClickFocus)
         # a field over the 3D view: while it has the keyboard, no key may
         # reach the host's shortcuts (the lesson of the stuck rename field)

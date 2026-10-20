@@ -74,7 +74,7 @@ def _cross(l1, l2):
 
 
 def _m(v: float) -> str:
-    return f"{v:,.2f} m"
+    return compat.fmt_len(v, group=True)
 
 
 def _xy(ctx) -> list[float]:
@@ -603,8 +603,11 @@ ELEV_INK = "#3f6b2a"        # the ground's elevations (natural terrain)
 
 def elev_text(z: float) -> str:
     """An elevation as a drawing writes it: ±0.00, +1.50, −3.00."""
+    metric = compat.doc_length_unit() == "m"
     if abs(z) < 0.005:
-        return "±0.00"
+        return "±0.00" if metric else "±0"
+    if not metric:                       # feet / inches: «+10'6"»
+        return compat.fmt_level(z, unit=False)
     return f"{'+' if z > 0 else '−'}{abs(z):.2f}"
 
 
@@ -792,8 +795,8 @@ def draw_dig_dims(viewport, painter, doc, z0: float = 0.0) -> None:
             continue
         lo, hi = min(deep), max(deep)
         arrow = "▲" if fill else "▼"
-        text = (f"{arrow} {hi:.2f}" if hi - lo < 0.005
-                else f"{arrow} {lo:.2f} … {hi:.2f}")
+        text = (f"{arrow} {compat.fmt_num(hi)}" if hi - lo < 0.005
+                else f"{arrow} {compat.fmt_num(lo)} … {compat.fmt_num(hi)}")
         painter.save()
         painter.setRenderHint(painter.RenderHint.Antialiasing)
         f = QFont(painter.font())
@@ -860,7 +863,7 @@ def draw_setbacks(viewport, painter, plot, z0: float = 0.0,
             for p in (pa, pb):
                 painter.setBrush(ink)
                 painter.drawEllipse(QPointF(*p), 2.5, 2.5)
-            text = f"{d:.2f}"
+            text = compat.fmt_num(d)
             w, h = fm.horizontalAdvance(text) + 8, fm.height() + 2
             c = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
             r = QRectF(c[0] + 6, c[1] - h / 2, w, h)
@@ -973,7 +976,7 @@ class PlotRectTool(_PlotTool):
             # typed before the first corner (his case, 2026-10-05): kept —
             # the click places it, the side the cursor goes to it grows
             self.pending = (w, h)
-            compat.flash(viewport, f"{w:.2f} × {h:.2f} m kept — click the "
+            compat.flash(viewport, f"{compat.fmt_wh(w, h)} kept — click the "
                          "first corner, then click the side it grows to", 8000)
             viewport.update()
             return True
@@ -1002,12 +1005,13 @@ class PlotRectTool(_PlotTool):
         w = abs(b[0] - a[0])
         h = abs(b[1] - a[1])
         # the host reads a tuple: (text, …) — a bare str shows its 1st char
-        return (f"{w:.2f} × {h:.2f} m   ({w * h:.1f} m²)", None)
+        return (f"{compat.fmt_wh(w, h)}   ({compat.fmt_area(w * h, 1)})",
+                None)
 
     def status_clause(self) -> str:
         if self.pending:
-            return (f"{self.noun} {self.pending[0]:.2f} × "
-                    f"{self.pending[1]:.2f} m: click "
+            return (f"{self.noun} "
+                    f"{compat.fmt_wh(self.pending[0], self.pending[1])}: click "
                     + ("the first corner" if self.first is None else
                        "the side it grows to") + "  ·  Esc = cancel")
         return (f"{self.noun}: click the first corner" if self.first is None
@@ -1149,7 +1153,7 @@ class PlotPolyTool(_PlotTool):
     def value_label(self):
         if not self.pts or self.hover is None:
             return None
-        return (f"{math.dist(self.pts[-1], self.hover):.2f} m", None)
+        return (compat.fmt_len(math.dist(self.pts[-1], self.hover)), None)
 
     def status_clause(self) -> str:
         if not self.pts:
@@ -1219,9 +1223,8 @@ class PlotCentreRectTool(_PlotTool):
         if self.centre is None:
             # typed before the centre: kept — the click places it
             self.pending = (abs(value[0]), abs(value[1]))
-            compat.flash(viewport, f"{self.pending[0]:.2f} × "
-                         f"{self.pending[1]:.2f} m kept — click its centre",
-                         8000)
+            compat.flash(viewport, f"{compat.fmt_wh(*self.pending)} kept — "
+                         "click its centre", 8000)
             viewport.update()
             return True
         self._place(abs(value[0]), abs(value[1]))
@@ -1245,12 +1248,13 @@ class PlotCentreRectTool(_PlotTool):
         a, b = self._loc(self.centre), self._loc(self.hover)
         w = 2 * abs(b[0] - a[0])
         d = 2 * abs(b[1] - a[1])
-        return (f"{w:.2f} × {d:.2f} m   ({w * d:.1f} m²)", None)
+        return (f"{compat.fmt_wh(w, d)}   ({compat.fmt_area(w * d, 1)})",
+                None)
 
     def status_clause(self) -> str:
         if self.pending and self.centre is None:
-            return (f"{self.noun} {self.pending[0]:.2f} × "
-                    f"{self.pending[1]:.2f} m: click its centre  ·  "
+            return (f"{self.noun} {compat.fmt_wh(*self.pending)}: click its "
+                    "centre  ·  "
                     "Esc = cancel")
         return (f"{self.noun}: click the centre" if self.centre is None else
                 f"{self.noun}: click a corner, or type width;depth + Enter  ·  "
@@ -1352,8 +1356,8 @@ class PlotRotRectTool(_PlotTool):
         if self.a is None or self.hover is None:
             return None
         if self.b is None:
-            return (f"{math.dist(self.a, self.hover):.2f} m", None)
-        return (f"{abs(self._width(self.hover)):.2f} m", None)
+            return (compat.fmt_len(math.dist(self.a, self.hover)), None)
+        return (compat.fmt_len(abs(self._width(self.hover))), None)
 
     def status_clause(self) -> str:
         if self.a is None:
@@ -1430,7 +1434,7 @@ class PlotCircleTool(_PlotTool):
         if self.centre is None or self.hover is None:
             return None
         r = math.dist(self.centre, self.hover)
-        return (f"R {r:.2f} m   (Ø {2 * r:.2f} m)", None)
+        return (f"R {compat.fmt_len(r)}   (Ø {compat.fmt_len(2 * r)})", None)
 
     def status_clause(self) -> str:
         return (f"{self.noun}: click the centre" if self.centre is None else
@@ -1563,8 +1567,9 @@ class PlotRampTool(_PlotTool):
         if r is None:
             return ("— it must go down —", None)
         _c, _b, L, z0, ze = r
-        return (f"{L:.2f} m  ·  {(z0 - ze) / L * 100:.1f}%  ·  "
-                f"{z0:+.2f} → {ze:+.2f}", None)
+        return (f"{compat.fmt_len(L)}  ·  {(z0 - ze) / L * 100:.1f}%  ·  "
+                f"{compat.fmt_level(z0, unit=False)} → "
+                f"{compat.fmt_level(ze, unit=False)}", None)
 
     def status_clause(self) -> str:
         return ("Ramp: click where it starts (the street side, on the ground)"

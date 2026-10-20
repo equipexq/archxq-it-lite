@@ -391,8 +391,8 @@ class SetbackTool(Tool):
             painter.drawLine(QPointF(*a), QPointF(*b))
             if role is not None:
                 own = plot["sb_custom"][k] is not None
-                text = f"{role.upper()}  {dists[k]:.2f}" + ("  ✎" if own
-                                                            else "")
+                text = f"{role.upper()}  {compat.fmt_num(dists[k])}" + (
+                    "  ✎" if own else "")
                 m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
                 w, h = fm.horizontalAdvance(text) + 10, fm.height() + 3
                 r = QRectF(m[0] - w / 2, m[1] + 8, w, h)
@@ -486,7 +486,8 @@ class SurveyTool(Tool):
             k += 1
         pts.append([p[0], p[1], round(float(z), 3), f"P{k}"])
         self.on_change(pts)
-        compat.flash(self.viewport, f"Point P{k} at {z:+.2f} m — type an "
+        compat.flash(self.viewport, f"Point P{k} at {compat.fmt_level(z)} "
+                     "— type an "
                      "elevation + Enter over it to change it · Ctrl+Z "
                      "undoes it", 5000)
 
@@ -530,7 +531,7 @@ class SurveyTool(Tool):
             pts[self.hot][2] = round(float(value), 3)
             self.on_change(pts)
             compat.flash(viewport, f"Point {pts[self.hot][3]} now at "
-                         f"{value:+.2f} m", 4000)
+                         f"{compat.fmt_level(value)}", 4000)
             return True
         if self.where is None or not self._inside(plot, self.where):
             compat.flash(viewport, "Point inside the plot, then type the "
@@ -834,7 +835,8 @@ class PlotEditTool(_PlotTool):
         pts, hs, cl, br = self.pending
         self._reset()
         self.on_change(pts, hs, cl, br)
-        compat.flash(self.viewport, f"Corner at {h:+.2f} m — Ctrl+Z puts "
+        compat.flash(self.viewport, f"Corner at {compat.fmt_level(h)} — "
+                     "Ctrl+Z puts "
                      "it back", 4000)
 
     def on_key(self, viewport, key, modifiers) -> bool:
@@ -893,8 +895,9 @@ class PlotEditTool(_PlotTool):
             return None
         if self.lock == "z" and self.pending is not None:
             h = self.pending[1][self.moving]
-            return (f"Z {h:+.2f} m  (Δ {h - self.h0:+.2f})", None)
-        return (f"{math.dist(self.origin, self.hover):.2f} m", None)
+            return (f"Z {compat.fmt_level(h)}  "
+                    f"(Δ {compat.fmt_level(h - self.h0, unit=False)})", None)
+        return (compat.fmt_len(math.dist(self.origin, self.hover)), None)
 
     def _labels(self):
         if self.moving is None or self.hover is None:

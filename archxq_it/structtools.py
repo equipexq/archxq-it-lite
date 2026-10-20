@@ -423,7 +423,10 @@ class ColumnTool(_PlotTool):
         if self.a is None or self.hover is None:
             return None
         if self.mode == "row":
-            return (f"{math.dist(self.a, self.hover):.2f} m", None)
+            return (compat.fmt_len(math.dist(self.a, self.hover)), None)
+        if compat.doc_length_unit() != "m":
+            return (f"{compat.fmt_len(abs(self.hover[0] - self.a[0]))} × "
+                    f"{compat.fmt_len(abs(self.hover[1] - self.a[1]))}", None)
         return (f"{abs(self.hover[0] - self.a[0]):.2f} × "
                 f"{abs(self.hover[1] - self.a[1]):.2f} m", None)
 

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from . import plotgeo, survey
+from . import compat, plotgeo, survey
 from .dialogs import FIELD_TABLE_CSS, PlotDialog, _metres, _show_row
 from .help import help_button
 
@@ -412,7 +412,8 @@ class ImportDialog(QDialog):
             zs = [p[2] for p in pts]
             self.inside.setText(
                 f"<b>{used}</b> of {n} inside the plot  ·  elevations "
-                f"{min(zs):+.2f} … {max(zs):+.2f} m")
+                f"{compat.fmt_level(min(zs), unit=False)} … "
+                f"{compat.fmt_level(max(zs))}")
         self.ok.setEnabled(bool(n))
         self.preview(pts)
 
