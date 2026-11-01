@@ -1,5 +1,46 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.11.0
+
+**An update for IngeTrazo 0.6.0:** ArchXQ IT Lite now works with its
+project tabs and respects its lock — please update before you open
+projects in tabs. It works with IngeTrazo 0.5.8 and 0.5.9 as before.
+Also here: everything since 0.10.3 for what the Lite draws (the plot and
+its excavations, levels, walls, columns).
+
+- **Ready for IngeTrazo 0.6.0's project tabs** — ArchXQ works on the
+  project in front: its bars, keys and mouse go with the tab, and each
+  project keeps its own phase, level and plan view as you switch between
+  tabs. Closing a tab is safe. (With 0.10.3, ArchXQ stayed on the first
+  tab: in a new tab its bars did not show, and a tool could act on the
+  first project.)
+- **IngeTrazo 0.6.0's lock is respected** — a locked wall or column (or
+  one on a locked layer) is no longer changed by ArchXQ: no arrows to
+  pull, its window does not open, and a change that would move or delete
+  it is refused. When a neighbour changes, its corner still follows, and
+  it stays locked.
+- **A new file starts with its Project** — the first tool that makes
+  something opens the Project window, already filled in: one OK and the
+  tool comes out. The levels and the ground's height are set before
+  anything stands on them.
+- **Curved walls snap into place** — a curve's end lines up with its
+  start and with the walls' ends (the red and green guides); the curve
+  sticks where it leaves a wall with no kink, or makes a half circle; from
+  its centre, the centre sticks square to a wall's end and the angle to
+  90°, 180° and 270°. A curve that runs on from a wall takes that wall's
+  thickness and alignment, so its faces run on with no step.
+- **NEW: draw walls in 3D too** — a click for the start, a click for the
+  end, straight in the 3D view, on the level you work on.
+- **NEW: one window edits the whole selection** — select several walls
+  (or columns) and change them all at once.
+- **NEW: the level's guide sheet** — an icon on each level shows a
+  see-through sheet on the level you work on (only an aid: switch it off
+  if you prefer).
+- **NEW: Split, Trim / Extend and Align walls.**
+- **The plan shows only the level you work on**, and walls join clean in
+  3D (three joins fixed).
+- And many smaller fixes.
+
 ## 0.10.3
 
 Everything since 0.10.2, for what the Lite draws (the plot and its

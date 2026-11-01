@@ -71,8 +71,9 @@ HELP: dict[str, tuple[str, str]] = {
         "Delete one you do not want — it stays away.<br><br>An "
         "<b>opening</b> (the last icon) is drawn inside a slab — "
         "<b>Drawn</b>: a rectangle, a rotated one, point by point or a "
-        "circle. It is closed from the slab's window: double-click it ▸ "
-        "«Close its opening(s)» ▸ OK."),
+        "circle. Click inside it: it is picked, with its grips; "
+        "<b>Delete</b> closes it (or the slab's window: double-click it ▸ "
+        "Openings ▸ «Close it» ▸ OK)."),
     "footing": (
         "Footing",
         "Footings hang under their level's slab: a <b>pad</b> under each "
@@ -99,10 +100,19 @@ HELP: dict[str, tuple[str, str]] = {
         "between. <b>Build ▸ Solid</b>: filled down to the floor.<br><br>"
         + RAILING_HELP),
     "glazing": (
-        "Glass grid",
+        "Grids",
         "Squared glass: a frame round it, a grid of muntins, a pane in "
         "every cell held by a <b>glazing bead</b> on both faces — inside "
         "or outside alike (Pro).<br><br>"
+        "Or <b>open</b>, no glass — a cobogó: <b>Square</b>, "
+        "<b>Diamond</b>, <b>Lattice</b>, <b>Vertical slats</b>, "
+        "<b>Horizontal slats</b>. The library: the cell (or the slats' "
+        "spacing), the bar's width and depth, a frame or none, the colour. "
+        "A grid too fine for the model (over 400 bars) has its cells made "
+        "bigger.<br><br>"
+        "<b>Security bars</b>: pick them, then click a window — they go on "
+        "it, outside, in the wall's thickness, its size: change the window "
+        "and they follow.<br><br>"
         "<b>In an Opening</b>: draw an Opening (a void) in a wall "
         "(Openings › Opening), then click it — the grid fills it, and "
         "follows it when the opening changes (its grips are the "
@@ -113,6 +123,25 @@ HELP: dict[str, tuple[str, str]] = {
         "<b>Glass from the outer face</b> to push the glass in or out "
         "inside the frame. Double-click it: its window — frame and muntin "
         "width / depth, the glass (tint, transparency, opaque), the beads."),
+    "street": (
+        "Surroundings — streets",
+        "A <b>street</b> round the plot: asphalt, a <b>curb</b> and a "
+        "<b>sidewalk</b> on each side (Pro) — the setting for a render.<br>"
+        "<br><b>Along the plot</b>: click a <b>side of the plot</b> — the "
+        "street runs along it, outside, 5 m past each corner; click the next "
+        "side and the same street <b>turns the corner</b>. It follows the "
+        "plot: change its widths and it stays off the plot.<br>"
+        "<b>By axis</b>: click its axis <b>point after point</b>, as walls "
+        "(<b>Enter</b> ends it, <b>C</b> closes it); <b>Line drawn</b>: "
+        "its axis, or its sidewalk's edge with the street <b>outside</b> "
+        "or <b>inside</b> it.<br><br>"
+        "Where two streets <b>cross or meet</b>, the asphalt runs on and "
+        "the curb turns the corner round (<b>Corner radius</b>, 5 m). The "
+        "library: road width, sidewalk, curb height, which sidewalks "
+        "(<b>Both</b> · <b>Plot side</b> · <b>None</b>), a yellow centre "
+        "line. Select it: grips on its axis (moving one frees it from the "
+        "plot). Double-click: its window — its <b>Road surface</b> level "
+        "and its three materials (asphalt, curb, pavers)."),
     "guard": (
         "Low walls & guards",
         "A <b>low wall</b>, a <b>low wall with a railing</b> over it, "
@@ -217,6 +246,20 @@ HELP: dict[str, tuple[str, str]] = {
         "the same rooms on the other levels (typical floors).<br><br>In the "
         "plan view each room shows its name and area; on the sheets too, "
         "with an <b>area schedule</b> (net and gross per level)."),
+    "separator": (
+        "Room separator",
+        "A line between two rooms where there is <b>no wall</b>: the living "
+        "room and the kitchen of an open plan become two rooms, each with "
+        "its own <b>name</b>, <b>area</b> and <b>floor</b>.<br><br>"
+        "<b>Draw</b>: click from wall to wall (more clicks bend it), Enter "
+        "to finish. <b>Delete</b>: click its dashed line.<br><br>"
+        "<b>Its shape</b> (the bar on top): point by point, a rectangle "
+        "(also from its centre, or rotated) or a circle — type «3.6;2.8» "
+        "or the radius + Enter. Drawn inside a room without touching its "
+        "walls, it makes a <b>zone</b>: a room of its own (a dining area, "
+        "a round lounge), its area taken from the room around it.<br><br>"
+        "Nothing of it is built in 3D: it is dashed in the plan and on the "
+        "plan sheets."),
     "section": (
         "Section line",
         "Draw a section where you want it: two clicks in plan. You look "
@@ -224,7 +267,19 @@ HELP: dict[str, tuple[str, str]] = {
         "up the plan); <b>Tab</b> turns the look round — the arrows at its "
         "ends show it. The section (C-C, D-D…) and its sheet are made at "
         "once, its mark appears on the plans.<br><br>The eraser removes "
-        "the sections you drew; A-A and B-B are always made."),
+        "the sections you drew; A-A and B-B are always made.<br><br>"
+        "<b>Move a line</b>: in the plan (Documentation — any level, the "
+        "Terrain too), click its <b>purple</b> line — drag "
+        "its <b>ends</b> or its <b>arrow</b> (or type the distance); the "
+        "small arrow on it flips the look; <b>Delete</b> removes "
+        "one you drew. Its sheet is made again at once. A-A or B-B moved "
+        "stays where you left it — the studio's <b>Back to automatic</b> "
+        "puts it through the middle again. One cut, the whole building: "
+        "IngeTrazo's own grey section marks are hidden while ArchXQ is on. "
+        "<b>Double-click</b> a line = its section, in the studio. "
+        "<b>See it in 3D</b>: with a line picked, leave the plan — the "
+        "building is cut there while you work; <b>Esc</b> takes the cut "
+        "off."),
     "export": (
         "Export",
         "<b>PDF</b>: every sheet of the document in ONE PDF, each page at "
@@ -270,7 +325,12 @@ HELP: dict[str, tuple[str, str]] = {
         "<b>Open</b> shows it open in 3D (0–100 %) — drag it with doors "
         "selected and they open as you go. In the plan a swing door is "
         "drawn with its leaf open and its swing; a sliding one with its "
-        "leaves and an arrow."),
+        "leaves and an arrow.<br><br>"
+        "<b>Its look</b>, in the library: the <b>Leaf</b> (Plain, Panels, "
+        "Half glass, Glass — a swing door in glass is a french door), the "
+        "<b>Handle</b> (none, Lever, Knob, Pull bar) and its colour, the "
+        "<b>leaf's</b> and the <b>frame's</b> colours. Each one keeps its "
+        "own colour in the Material tab (Leaf, Handles, Frame)."),
     "radial": (
         "Radial menu",
         "A click (Select tool) on a column, beam, footing, slab, ramp or "
@@ -326,11 +386,35 @@ HELP: dict[str, tuple[str, str]] = {
         "Library",
         "What you draw, in pictures: pick a <b>type</b> (the cards) and its "
         "<b>parts</b> (the chips under them), then draw — the sizes stay in "
-        "the options bar on top. The last type you used is already marked: "
-        "just draw if it is the one.<br><br>With elements <b>selected</b>, "
+        "the options bar on top. The last type you used is already marked "
+        "— its sizes too, even after IngeTrazo is closed: just draw if it "
+        "is the one.<br><br>"
+        "<b>Favourites</b>: the strip shows the types you keep there. "
+        "<b>More</b> (the last card, with the +) opens every type — search it, "
+        "pick a category; the <b>star</b> on a card puts it on the strip "
+        "or takes it off, a click picks it without keeping it. On the "
+        "strip, the mouse over a card shows a small <b>trash</b>: off "
+        "the strip, nothing deleted. A type in use that is not a "
+        "favourite shows dashed at the end, its star pins it. Your own "
+        "wall and slab types are always all shown, under «Your types» — "
+        "their trash DELETES the type (asked first; its walls keep the "
+        "layers). <b>+ New type</b>, or a <b>double-click</b> on one of "
+        "them, opens its window: the name, the layers and its section, "
+        "large."
+        "<br><br>With elements <b>selected</b>, "
         "their type is marked: click another card or chip and they change "
         "(one Ctrl+Z). The options bar shows their sizes too — change "
-        "one and they follow.<br><br><b>Size bars</b> (doors, windows, "
+        "one and they follow.<br><br>"
+        "<b>Editing many at once</b>: select several of a kind — "
+        "Shift+click, the library's link «Select all … on this level» "
+        "(one selected), or right-click ▸ Select all… Then a "
+        "double-click on any of them opens its window for ALL of them: "
+        "only what you change there goes to each (one Ctrl+Z). The name "
+        "and the place stay each one's own. A value that differs among "
+        "them is outlined in amber — left as it is, each keeps its own. "
+        "One it doesn't fit (no room in its wall) stays as it was, named "
+        "in the message. With one selected, its window offers «Select "
+        "all …» on top.<br><br><b>Size bars</b> (doors, windows, "
         "stairs, ramps): drag — the selected ones follow live, the bar pulls "
         "to the usual sizes (a door's 0.80, 0.90…), <b>Shift</b> = "
         "centimetre by centimetre; it stops where the wall has no more "
@@ -355,16 +439,30 @@ HELP: dict[str, tuple[str, str]] = {
         "the level's floor: the wall is cut for it (with its sill and "
         "lintel), and a frame with glass goes in.<br><br>Its <b>type</b>, "
         "in the library: <b>Fixed</b> · <b>Sliding</b> (2, 3 or 4 glazed "
-        "leaves in two tracks) · <b>Casement</b> (1 or 2 hinged leaves, "
-        "opening <b>In</b> or <b>Out</b> — <b>Shift+Tab</b> while placing; "
-        "one leaf: its hinge Left / Right) "
+        "leaves in two tracks) · <b>Casement</b> (1 to 6 leaves, each "
+        "<b>Fixed</b> or hinged on its left / right — «Leaf 1…6», seen from "
+        "inside, a mullion between two that do not part in the middle; they "
+        "open <b>In</b> or <b>Out</b> — <b>Shift+Tab</b> while placing) "
         "· <b>Awning</b> (maxim-ar: one leaf hinged at its top, pushed out) "
         "· <b>Shop window</b>. <b>Open</b> shows it open in 3D. White "
-        "aluminium by default — the Material tab changes it."),
+        "aluminium by default — the Material tab changes it.<br><br>"
+        "<b>Pivot</b> (basculante): horizontal panes, each turning on its "
+        "middle — the panes by its height, or 2 to 6. A sliding window can "
+        "have <b>Louvres</b> (veneziana): 3 leaves (2 louvred + 1 glass) or "
+        "6 (4 + 2), the louvres outside. A casement can have a lever; the "
+        "<b>Frame colour</b> chips: White, Black, Bronze, Silver, Wood."
+        "<br><br><b>Shape</b>: Rectangle, Round arch, Segmental arch, "
+        "Pointed arch, Gable top, Trapezoid, Triangle, Circle, Oval — its "
+        "width × height is the shape's box; an arch's or a gable top's "
+        "<b>Rise</b>, a trapezoid's <b>Top width</b>. Under an arch or a "
+        "gable top the leaves stay in the rectangle, a fixed light over "
+        "them; the other shapes are fixed glass."),
     "void": (
         "Opening",
         "An opening with nothing in it — a passage, an arch without a "
-        "door: the wall is simply cut, from its sill to its head."),
+        "door: the wall is simply cut, from its sill to its head.<br><br>"
+        "Its window (double-click) gives it a <b>Shape</b> too — a round "
+        "arch, a circle, an oval…"),
     "wall": (
         "Wall",
         "A wall is the <b>line you drew</b>, a <b>thickness</b> and a "
@@ -375,7 +473,21 @@ HELP: dict[str, tuple[str, str]] = {
         "<b>Side</b> says which side of the line is the building's inside.<br>"
         "<br><b>Height</b>: the level's (it follows the level) or its own (a "
         "low wall, a parapet). <b>Length</b> stretches a straight wall from "
-        "its end; its start stays."),
+        "its end; its start stays.<br><br><b>Top</b> (a straight wall): "
+        "<b>Flat</b>, <b>Sloped</b> (its height at each end) or a <b>Gable"
+        "</b> (and its ridge: how high, where). In 3D, drag the arrow up at "
+        "one end: the wall slopes — Shift when you take it, and the joined "
+        "wall's end goes too.<br><br><b>Drawing in 3D</b>: picked, the wall "
+        "tool opens the plan; leave the plan and it goes on drawing in 3D, "
+        "on the floor of the level you work on — whatever the cursor is "
+        "over. Look down at the floor: a camera too low refuses. The plan "
+        "stays the precise way.<br><br>"
+        "<b>The look of YOUR wall types</b>: on a wall of one of your "
+        "types, the textures and colours picked in its window's Material "
+        "tab are the TYPE's — every wall of that type takes them at once, "
+        "and the next ones drawn with it come out already dressed. A split "
+        "or a copy keeps the look too. To give some walls another look, "
+        "save them as a new type."),
     "north": (
         "North",
         "The angle of the project north, clockwise from the top of the "
@@ -519,6 +631,23 @@ HELP: dict[str, tuple[str, str]] = {
         "levels strip): that level drawn in light blue in the plan of the "
         "one you work on — to line walls and columns up with it. Turn on as "
         "many as you like; only seen, never picked.<br><br>"
+        "<b>Guide sheet</b> (the grid icon on the row): that level's floor "
+        "in 3D as a see-through blue plate with a 1 m grid — stronger, with "
+        "a cross at the cursor, while you draw walls on it in 3D. Off, it "
+        "never shows. Only seen: not in the model, the sheets or the "
+        "snap.<br><br>"
+        "Only the sheet of the level you work on shows, and it lies BEHIND "
+        "what stands on that floor — walls, columns, stairs and the levels "
+        "above hide it, as a real floor plate.<br><br>"
+        "Switching a level's sheet on makes it the level you work on, so "
+        "the sheet shows at once.<br><br>"
+        "The plan shows <b>only the level you work on</b> — nothing of "
+        "the levels over or under it, whatever hole or stair; the Terrain "
+        "is a level too (on it: the plot, its pits, the streets, and "
+        "whatever is not ArchXQ's: people, objects of your own — on any "
+        "other level all of that is hidden, its figures too; it shows in "
+        "3D). Another one shows only as a "
+        "ghost; the Terrain's ghost is its outlines.<br><br>"
         "Open this window with the ✎ on the level's row in the levels "
         "strip (N), or double-click the row."),
     "level_height": (

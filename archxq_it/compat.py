@@ -210,6 +210,19 @@ def set_ghosts(viewport, key: str, ids) -> None:
     viewport.update()
 
 
+def set_sheets(viewport, key: str, ids) -> None:
+    """The levels whose guide sheet shows in 3D (levelsheet.py) — view
+    state, written straight in, never an undo step (as the ghosts)."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["sheets"] = sorted({str(i) for i in ids if i})
+    data[key] = doc
+    bump = getattr(viewport.scene, "bump_view", None)
+    if callable(bump):
+        bump()
+    viewport.update()
+
+
 def show_folds(viewport, group, corners, breaks, on: bool) -> None:
     """Fold lines drawn or not on the plot's surface, without rebuilding
     it: their edges hard (drawn) or soft (not)."""
@@ -307,6 +320,28 @@ def tool_cursor(viewport) -> None:
             return
 
 
+#: the host's «Section Planes» switch (View menu), in its languages
+SECTION_PLANES_WORDS = ("section planes", "planos de sección",
+                        "planos de seccion", "planos de corte",
+                        "schnittebenen")
+
+
+def show_section_planes(viewport, on: bool) -> None:
+    """The host's section planes seen or not — by its own «Section Planes»
+    switch, so its menu's tick stays true (setting the scene's flag alone
+    left it ticked)."""
+    from PySide6.QtGui import QAction
+    sc = viewport.scene
+    for act in viewport.window().findChildren(QAction):
+        if act.isCheckable() and act.text().replace("&", "").strip() \
+                .lower() in SECTION_PLANES_WORDS:
+            act.setChecked(on)              # (its «toggled» sets the flag)
+            break
+    if bool(getattr(sc, "show_section_planes", on)) != on:
+        sc.show_section_planes = on
+    viewport.update()
+
+
 def back_to_select(viewport) -> None:
     """Leave the drawing tool the way the user would: pick Select."""
     from PySide6.QtGui import QAction
@@ -322,6 +357,17 @@ def back_to_select(viewport) -> None:
 def typed_value(viewport) -> str:
     """What the user is typing in the measurements box (VCB), or ""."""
     return str(getattr(viewport, "_value_buffer", "") or "")
+
+
+def clear_typed(viewport) -> None:
+    """Empty the measurements box (a value ArchXQ read itself)."""
+    try:
+        viewport._set_value_buffer("")
+    except Exception:  # noqa: BLE001 — an older host: the attribute
+        try:
+            viewport._value_buffer = ""
+        except Exception:  # noqa: BLE001
+            pass
 
 
 #: tests only: a unit to answer instead of the document's (tests/test_units)
@@ -584,6 +630,16 @@ def layer_visible(viewport, name: str) -> bool:
     return True if L is None else bool(L.visible)
 
 
+def shown(viewport, g) -> bool:
+    """A group on screen: not hidden itself, and its layer (a level's eye
+    in the levels strip) showing — his test, 29/10: openings of levels
+    hidden by the eye were still picked in 3D, «fantasmas»."""
+    if getattr(g, "hidden", False):
+        return False
+    name = getattr(g, "layer", None)
+    return not name or layer_visible(viewport, name)
+
+
 def set_layer_visible(viewport, name: str, on: bool) -> None:
     """Show / hide a layer — view state, kept in the file, not an undo
     step (the host's Layers panel works the same way)."""
@@ -595,6 +651,16 @@ def set_layer_visible(viewport, name: str, on: bool) -> None:
     if callable(bump):
         bump()
     _refresh_host_layers(viewport)
+    viewport.update()
+
+
+def fresh_frame(viewport) -> None:
+    """The next frame drawn in full. The host keeps its last frame and
+    gives it back while its key (camera, selection, scene) is the same —
+    one kept scrambled stayed on screen until a click changed the
+    selection (his screen, 29/10: Tools ▸ Along a path in the plan)."""
+    if hasattr(viewport, "_frame_cache"):
+        viewport._frame_cache = None
     viewport.update()
 
 
@@ -736,6 +802,62 @@ def remove_context_menu(viewport, fn) -> None:
     lst = getattr(viewport.window(), "_ext_context_menus", None)
     if isinstance(lst, list):
         lst[:] = [f for f in lst if f != fn]
+
+
+def add_pickable(app, viewport, pick, on_select, delete) -> bool:
+    """ArchXQ's own items (an empty Opening's hole) selected with the
+    host's Select tool — the extension API's pickables (issue #205): Esc,
+    a click elsewhere and Supr are the host's. Ours first taken out (the
+    API adds, never removes). False: a host without it."""
+    remove_pickable(app, viewport)
+    if not hasattr(app, "add_pickable"):
+        return False
+    app.add_pickable(pick, on_select, delete)
+    return True
+
+
+def remove_pickable(app, viewport) -> None:
+    lst = getattr(viewport, "_ext_pickables", None)
+    if isinstance(lst, list):
+        lst[:] = [e for e in lst
+                  if not (isinstance(e, dict) and e.get("key") == app.key)]
+
+
+def take_pick(app, viewport, item) -> bool:
+    """Our item selected (as a click on it would): after our own change,
+    which drops the host's pick."""
+    lst = getattr(viewport, "_ext_pickables", None) or []
+    entry = next((e for e in lst if isinstance(e, dict)
+                  and e.get("key") == app.key), None)
+    if entry is None or not hasattr(viewport, "set_extension_pick"):
+        return False
+    viewport.set_extension_pick((entry, item))
+    return True
+
+
+def release_pick(app) -> None:
+    if hasattr(app, "release_pick"):
+        app.release_pick()
+
+
+def pixel_ray(viewport, x: float, y: float):
+    """(origin, unit direction) of the camera ray through a pixel, as
+    tuples — or None."""
+    try:
+        o, d = viewport._pixel_to_ray(x, y)
+    except Exception:  # noqa: BLE001
+        return None
+    if o is None or d is None:
+        return None
+    return (o.x(), o.y(), o.z()), (d.x(), d.y(), d.z())
+
+
+def ray_distance(viewport, origin, d):
+    """Distance along the ray to the nearest VISIBLE face — or None."""
+    try:
+        return viewport.ray_distance(vec(*origin), vec(*d))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def group_at(viewport, x: float, y: float):
@@ -918,6 +1040,7 @@ def commit_terrain(viewport, key: str, doc: dict, z0: float,
     if not (doc.get("view") or {}).get("folds", True):
         show_folds(viewport, plot_g, p["corners"], p["breaks"], False)
     old = terrain_groups(viewport)
+    keep_locks(old, new)
 
     class _SwapTerrain(Command):
         def do(self, scene) -> None:
@@ -1041,7 +1164,8 @@ WALL_COLOR = (0.88, 0.86, 0.82)     # a plain wall: warm light grey
 
 #: what the building is made of — every one rebuilt together
 BUILT_KINDS = ("wall", "column", "beam", "slab", "footing", "opening",
-               "roof", "ramp", "stair", "guard", "glazing")
+               "roof", "ramp", "stair", "guard", "glazing", "street",
+               "profile", "copy")
 KIND_COLOR = {
     "roof": (0.66, 0.36, 0.27),        # tiles (each face has its own)
     "opening": (0.94, 0.94, 0.92),     # frames (each face has its own)
@@ -1056,11 +1180,39 @@ KIND_COLOR = {
     #                                    has its own colour)
     "glazing": (0.05, 0.05, 0.06),     # a glass grid (glazing.py: each
     #                                    part has its own colour)
+    "street": (0.22, 0.22, 0.23),      # asphalt (streets.py: each part
+    #                                    has its own colour)
+    "profile": (0.96, 0.96, 0.95),     # a white moulding (along.py: each
+    #                                    profile has its own colour)
+    "copy": (0.30, 0.31, 0.33),        # copies along a path (copies.py:
+    #                                    each object has its own colours)
 }
 
 
 def _rec(g) -> dict:
     return (getattr(g, "ext", None) or {}).get(EXT_KEY) or {}
+
+
+def locked(viewport, g) -> bool:
+    """IngeTrazo 0.6.0's lock: the group's own, or its layer's."""
+    try:
+        f = getattr(viewport.scene, "entity_locked", None)
+        if callable(f):
+            return bool(f(g))
+    except Exception:  # noqa: BLE001 — unsure: not locked
+        pass
+    return bool(getattr(g, "locked", False))
+
+
+def keep_locks(old, new) -> None:
+    """A group made again in place of a LOCKED one stays locked (the same
+    element: its kind and id) — the lock is never lost to a rebuild."""
+    keys = {(kind_of(g), _rec(g).get("id")) for g in old
+            if getattr(g, "locked", False)}
+    if keys:
+        for g in new:
+            if (kind_of(g), _rec(g).get("id")) in keys:
+                g.locked = True
 
 
 def wall_groups(viewport, level_id: str | None = None,
@@ -1230,6 +1382,7 @@ def commit_some(viewport, key: str, doc: dict, elevations, level_layer_of,
         new.append(g)
     old = [g for g in viewport.scene.groups
            if kind_of(g) in BUILT_KINDS and _rec(g).get("id") in ids]
+    keep_locks(old, new)
 
     class _SwapSome(Command):
         def do(self, scene) -> None:
@@ -1258,9 +1411,12 @@ def commit_some(viewport, key: str, doc: dict, elevations, level_layer_of,
     return doc
 
 
-def mesh_of(faces):
+def mesh_of(faces, hide=()):
     """A host mesh from ArchXQ's faces (plain loops, or {loop, holes,
-    color} dicts)."""
+    color} dicts). ``hide``: edges (``seams.edge_key``) not drawn — a
+    wall's joints with its neighbours. Set HERE, on the new mesh: the
+    host draws a mesh's edges once (an edge hidden later still showed,
+    tried live 2026-10-25)."""
     from core.mesh import Mesh
     from PySide6.QtGui import QVector3D
     mesh = Mesh()
@@ -1283,7 +1439,42 @@ def mesh_of(faces):
         else:
             mesh.add_face([QVector3D(*q) for q in f])
     _soften_flat_seams(mesh, smooth)
+    if hide:
+        from .seams import edge_key
+        for e in mesh.edges:
+            a, b = e.v0.position, e.v1.position
+            if edge_key((a.x(), a.y(), a.z()), (b.x(), b.y(), b.z())) in hide:
+                # hidden, not soft: a soft edge would blend the top's
+                # shading into the joint's
+                e.hidden = True
     return mesh
+
+
+def _mesh_points(mesh) -> list:
+    return [(v.x(), v.y(), v.z()) for f in getattr(mesh, "faces", ())
+            for v in f.vertices]
+
+
+def _freed_frames(viewport, doc: dict, old: list, new: list,
+                  kept: set) -> list:
+    """The door / window groups of ``old`` whose wall was EXPLODED in the
+    host (explode.py): their record gone, no wall of ours at them, the
+    loose mesh at them. Left as plain groups, never taken away."""
+    from . import explode as X
+    ops = {o.get("id") for o in doc.get("openings") or []}
+    frames = {id(g): X.box_of(_mesh_points(g.mesh)) for g in old
+              if kind_of(g) == "opening" and _rec(g).get("id") not in ops
+              and getattr(g, "xform", None) is None}
+    if not frames:
+        return []
+    walls = [X.box_of(_mesh_points(g.mesh))
+             for g in wall_groups(viewport, None, ("wall",))
+             if id(g) in kept] + [X.box_of(_mesh_points(g.mesh))
+                                  for g in new if kind_of(g) == "wall"]
+    free = X.freed(frames, walls, _mesh_points(viewport.scene.mesh))
+    # a door is several groups (frame, leaf, glass): one free, all free
+    eids = {_rec(g).get("id") for g in old if id(g) in free}
+    return [g for g in old if id(g) in frames and _rec(g).get("id") in eids]
 
 
 def building_swap(viewport, doc: dict, elevations, level_layer_of):
@@ -1322,17 +1513,28 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     kept = set()
     new = []
     nth: dict = {}               # the groups of one element: 0, 1…
-    for e in S.build(doc, elevations):
+    built = S.build(doc, elevations)
+    # the walls' joints drawn clean (seams.py; Cesar's ticket, 2026-10-25)
+    try:
+        from .seams import hidden_edges
+        joints = hidden_edges(built, lambda el, color:
+                              materials.wall_face_mat(doc, el, color))
+    except Exception:  # noqa: BLE001 — the lines drawn, as before
+        joints = {}
+    for i, e in enumerate(built):
         k = nth[e["id"]] = nth.get(e["id"], -1) + 1
+        hide = joints.get(i, ())
         sig = hashlib.blake2b(repr((
             e["faces"], e["name"], e["kind"], e["id"], e["level"],
             layers.get(e["level"]), bool(e.get("inwall")), e.get("okind"),
-            k, mats)).encode(), digest_size=16).hexdigest()
+            k, mats, e.get("floor"),
+            sorted(sorted(p) for p in hide) if hide else None)).encode(),
+            digest_size=16).hexdigest()
         same = have.get(sig)
         if same:
             kept.add(id(same.pop()))          # unchanged: left in place
             continue
-        g = Group(mesh_of(e["faces"]), name=e["name"])
+        g = Group(mesh_of(e["faces"], hide), name=e["name"])
         g.material = {"color": KIND_COLOR[e["kind"]], "opacity": 1.0}
         g.layer = layers[e["level"]]
         extra = {}
@@ -1340,15 +1542,28 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
             extra["inwall"] = True
         if e.get("okind"):               # door | window
             extra["okind"] = e["okind"]
+        if e.get("floor"):               # a room's floor on a layered slab
+            extra["floor"] = e["floor"]
         # (its build's fingerprint: kept in its tag — saved with the file)
         tag(g, e["kind"], id=e["id"], level=e["level"], sig=sig, **extra)
         # where it was built: the host's Move / Rotate / Copy is read from
         # it (edits.py)
         edits.stamp(g, k)
-        materials.paint(viewport.scene, g, e["kind"], e["id"], doc)
+        if e.get("floor"):
+            materials.paint(viewport.scene, g, "floor", e["floor"], doc)
+        else:
+            materials.paint(viewport.scene, g, e["kind"], e["id"], doc)
         new.append(g)
     old = [g for g in wall_groups(viewport, None, BUILT_KINDS)
            if id(g) not in kept]
+    keep_locks(old, new)
+    # the doors / windows of a wall EXPLODED in the host stay, as plain
+    # groups (explode.py) — taken out of ``old``, their tag dropped
+    try:
+        free = _freed_frames(viewport, doc, old, new, kept)
+    except Exception:  # noqa: BLE001 — unsure: they go with their wall
+        free = []
+    old = [g for g in old if not any(g is f for f in free)]
 
     class _SwapWalls(Command):
         def do(self, scene) -> None:
@@ -1359,8 +1574,14 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
                     scene.groups.remove(g)
             scene.groups.extend(new)
             _unselect(scene, old)
+            self._ext = [(g, g.ext) for g in free]
+            for g in free:
+                g.ext = {k: v for k, v in (g.ext or {}).items()
+                         if k != EXT_KEY}
 
         def undo(self, scene) -> None:
+            for g, ext in getattr(self, "_ext", ()):
+                g.ext = ext
             for g in new:
                 if g in scene.groups:
                     scene.groups.remove(g)
@@ -1525,6 +1746,23 @@ def log_error(where: str) -> None:
 def document_path(window) -> str:
     """The open document's file ("" when it was never saved)."""
     return str(getattr(window, "_current_path", None) or "")
+
+
+def frames_for_textures(viewport, left: int = 6, ms: int = 60) -> None:
+    """A few more frames while the host still has textures to load: it
+    loads ``_TEX_PER_FRAME`` (2) a frame and asks for no next one — a
+    street (asphalt, concrete, pavers: 3) stayed unseen, only its outline
+    selected, until the camera moved (his test, 2026-10-28)."""
+    def again():
+        try:
+            viewport.update()
+            # (its flag is the LAST frame's: the first two always go on)
+            if left > 1 and (left > 4 or getattr(viewport, "_tex_deferred",
+                                                 False)):
+                frames_for_textures(viewport, left - 1, ms)
+        except RuntimeError:            # the viewport gone (the app closed)
+            pass
+    QTimer.singleShot(ms, again)
 
 
 def flash(viewport, text: str, ms: int = 4000) -> None:

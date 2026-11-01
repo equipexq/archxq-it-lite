@@ -19,6 +19,7 @@ import math
 from PySide6.QtCore import Qt
 
 from . import compat, plottools, structure as S, walls as W
+from .place3d import OnPlane
 from .plottools import _PlotTool, _m
 from .walltools import WallChainTool
 
@@ -74,13 +75,24 @@ def row_stations(length: float, o: dict) -> list[float]:
     return [(start + k) / slots for k in range(n)]
 
 
-class ColumnDrawTool(plottools.PlotRectTool):
+def _upright(viewport, painter, loops, z, rise) -> None:
+    """3D: the columns standing — their outlines up to ``rise`` over the
+    floor ``z`` (in the plan they are seen from the top: nothing more)."""
+    from . import place3d as P3
+    if rise and P3.in_3d(viewport):
+        P3.draw3d(viewport, painter,
+                  [ln for lp in loops for ln in P3.box_lines(lp, z, z + rise)],
+                  INK, 1.4)
+
+
+class ColumnDrawTool(OnPlane, plottools.PlotRectTool):
     """DRAW a column: two opposite corners — its size and its place."""
     name = "ArchXQ column"
     axq_element = "column"
     noun = "Column"
     face_x: list = []
     face_y: list = []
+    rise = 0.0                # ui sets: how tall it stands (the 3D preview)
 
     def __init__(self, on_done, on_cancelled, z: float) -> None:
         super().__init__(on_done, on_cancelled)
@@ -100,6 +112,13 @@ class ColumnDrawTool(plottools.PlotRectTool):
     def draw_overlay(self, viewport, painter) -> None:
         super().draw_overlay(viewport, painter)
         draw_guides(viewport, painter, self.guides, self.hover, self.z)
+        if self.first is not None and self.hover is not None:
+            try:
+                _upright(viewport, painter,
+                         [self._rect(self.first, self.hover)], self.z,
+                         self.rise)
+            except Exception:  # noqa: BLE001 — a preview never breaks paint
+                pass
 
 
 FACE_PX = 10           # how near (on screen) a face is pulled flush
@@ -165,7 +184,7 @@ def draw_guides(viewport, painter, guides, at, z) -> None:
     painter.restore()
 
 
-class ColumnTool(_PlotTool):
+class ColumnTool(OnPlane, _PlotTool):
     name = "ArchXQ column"
     axq_element = "column"
     adjust = staticmethod(lambda c: c)   # ui: fitted inside the walls
@@ -173,6 +192,7 @@ class ColumnTool(_PlotTool):
     icon = "rectangle_center"
     vcb_label = "Length"
     diagonal = True
+    rise = 0.0                # ui sets: how tall they stand (3D preview)
 
     def __init__(self, mode, on_done, on_cancelled, z, opts, existing):
         """``mode`` single | row | grid; ``opts()`` → the options bar's
@@ -366,6 +386,8 @@ class ColumnTool(_PlotTool):
 
     # -- input -----------------------------------------------------------------------
     def on_click(self, ctx) -> None:
+        if self._grazes(ctx):                # 3D: a ray along the floor
+            return
         p = self._pick(ctx)
         if self.mode != "single" and self.a is None:
             self.a = p
@@ -455,22 +477,41 @@ class ColumnTool(_PlotTool):
     def draw_overlay(self, viewport, painter) -> None:
         if self.hover is not None:
             try:
-                _draw_loops(viewport, painter,
-                            [S.column_outline(self.adjust(c), 0.0)
-                             for c in self.columns(self.hover)], self.z,
-                            fill=True)
+                loops = [S.column_outline(self.adjust(c), 0.0)
+                         for c in self.columns(self.hover)]
+                _draw_loops(viewport, painter, loops, self.z, fill=True)
+                _upright(viewport, painter, loops, self.z, self.rise)
             except Exception:  # noqa: BLE001 — a preview never breaks paint
                 pass
             draw_guides(viewport, painter, self.guides, self.hover, self.z)
         super().draw_overlay(viewport, painter)
 
 
-class BeamTool(WallChainTool):
+class BeamTool(OnPlane, WallChainTool):
     """Point by point, like a run of walls: each line a beam, joined to
-    the level's other beams by the walls engine (the preview too)."""
+    the level's other beams by the walls engine (the preview too). In 3D
+    it is pointed at its own height — its underside, on the columns' tops
+    (PLANO_ABERTURAS_3D.md D10): beams go column to column as seen."""
     name = "ArchXQ beam"
     axq_element = "beam"
     noun = "Beam"
+    #: ui sets: the floor (the plan's plane) and () → the beam's underside
+    z_floor = None
+    under = None
+
+    def _plane_z(self) -> None:
+        from . import place3d as P3
+        if self.z_floor is None:
+            self.z_floor = self.z
+        z = self.z_floor
+        if self.under is not None and P3.in_3d(self.viewport):
+            try:
+                z = float(self.under())
+            except Exception:  # noqa: BLE001 — the floor, as in the plan
+                z = self.z_floor
+        if abs(z - self.z) > 1e-9:
+            self.z = z
+            self._sync()            # the points already placed, at it too
     #: the centres of the columns it may rest on — this level's and the
     #: ones below reaching up to it (ui sets it): the cursor is pulled onto
     #: them, the host's snap only catches their corners and faces (his
@@ -519,6 +560,37 @@ class BeamTool(WallChainTool):
         if self.opts().get("insert") in ("left", "right"):
             s = s.replace("Tab = other side", "Tab = other face")
         return s
+
+
+class PadTool(ColumnTool):
+    """A pad footing DRAWN: a click each (his ask, 2026-11-01: on a level
+    with no columns the one-click pads made nothing, and nothing could be
+    drawn). The column tool's square, pulled onto the columns' centres and
+    the walls' corners; on a column, ui sizes it round that column."""
+    name = "ArchXQ footing"
+    axq_element = "footing"
+    noun = "Pad footing"
+
+    def __init__(self, on_done, on_cancelled, z, opts, existing):
+        super().__init__("single", on_done, on_cancelled, z,
+                         lambda: {"section": "rect", "w": opts()["w"],
+                                  "d": opts()["w"], "angle": 0.0,
+                                  "anchor": "centre"}, existing)
+
+    def status_clause(self) -> str:
+        return ("Pad footing: click where it goes — on a column it is "
+                "centred under it  ·  Esc = done")
+
+
+class StripTool(BeamTool):
+    """A strip footing DRAWN point by point, like a run of walls — joined
+    to the level's other strips (L, T, X); width from the bar's «Strip»."""
+    name = "ArchXQ footing"
+    axq_element = "footing"
+    noun = "Strip footing"
+
+    def status_clause(self) -> str:
+        return super().status_clause().replace("Beam:", "Strip footing:")
 
 
 def offset_chain(pts, d: float, closed: bool) -> list:
@@ -601,4 +673,5 @@ def near(p, q, tol: float = 0.01) -> bool:
     return math.dist(p, q) <= tol
 
 
-__all__ = ["ColumnTool", "BeamTool", "SLAB_TOOLS", "beams_as_walls", "W"]
+__all__ = ["ColumnTool", "BeamTool", "PadTool", "StripTool", "SLAB_TOOLS",
+           "beams_as_walls", "W"]

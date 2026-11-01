@@ -44,8 +44,45 @@ from PySide6.QtWidgets import (
 
 GOLD = "#e8b33c"
 BLUE = "#5bc8e8"
-ACCENT = "#e8742c"
+#: ArchXQ's own orange — kept for the marks drawn ON the model (previews,
+#: grips, the picked edges): colours with a meaning there
+ORANGE = "#e8742c"
 OK = "#5cc472"
+
+
+def _mix(a: str, b: str, k: float) -> str:
+    """``a`` over ``b`` at ``k`` (0..1), «#rrggbb»."""
+    ca, cb = QColor(a), QColor(b)
+    return QColor(round(ca.red() * k + cb.red() * (1 - k)),
+                  round(ca.green() * k + cb.green() * (1 - k)),
+                  round(ca.blue() * k + cb.blue() * (1 - k))).name()
+
+
+def host_accent() -> str:
+    """The ACCENT the user chose in IngeTrazo (Preferences ▸ General ▸
+    Accent — 0.5.9; 0.15.0, C3): the interface's picked / active / Apply
+    follow it. IngeTrazo's own orange (its default) keeps ours; an older
+    host, or none: ours."""
+    try:
+        from views import theme
+        if getattr(theme, "saved_accent", lambda: "orange")() == "orange":
+            return ORANGE
+        c = theme.accent_color()
+        if c is not None and c.isValid():
+            return c.name()
+    except Exception:  # noqa: BLE001 — no host accent: ours
+        pass
+    return ORANGE
+
+
+#: the interface's accent (read as ArchXQ starts: a new one chosen in
+#: IngeTrazo's Preferences shows from the next start)
+ACCENT = host_accent()
+#: the filled button, hovered · a picked chip's ground (ours: as always)
+ACCENT_HOVER = "#f08a48" if ACCENT == ORANGE else _mix("#ffffff", ACCENT,
+                                                         0.18)
+ACCENT_DARK = "#4a3324" if ACCENT == ORANGE else _mix(ACCENT, "#2a2c30",
+                                                        0.2)
 WIN = "#26282c"
 PANEL = "#2e3135"
 FIELD = "#1f2124"
@@ -99,7 +136,7 @@ QFrame#axqFold QLabel {{ border: none; }}
 QToolButton#axqChip, QPushButton#axqChip {{ background: #34373c; color: #d5d8dc;
     border: 1px solid {LINE}; border-radius: 5px; padding: 4px 10px; }}
 QToolButton#axqChip:hover, QPushButton#axqChip:hover {{ border-color: #5b6470; }}
-QToolButton#axqChip:checked, QPushButton#axqChip:checked {{ background: #4a3324;
+QToolButton#axqChip:checked, QPushButton#axqChip:checked {{ background: {ACCENT_DARK};
     border-color: {ACCENT}; color: white; font-weight: bold; }}
 QToolButton#axqChip:disabled, QPushButton#axqChip:disabled {{ color: {DIM};
     border-color: #33363b; }}
@@ -114,7 +151,7 @@ QDialog#axqLook QLabel#axqBadge[state="warn"] {{ background: #3a2f1c;
 QDialog#axqLook QLabel#axqHint {{ color: {MUTED}; }}
 QPushButton#axqOk {{ background: {ACCENT}; border: 1px solid {ACCENT}; color: white;
     font-weight: bold; padding: 5px 24px; border-radius: 5px; }}
-QPushButton#axqOk:hover {{ background: #f08a48; }}
+QPushButton#axqOk:hover {{ background: {ACCENT_HOVER}; }}
 QPushButton#axqDanger {{ color: #ff8a80; }}
 QDialog#axqLook QTabWidget::pane {{ border: none; border-top: 1px solid {LINE};
     top: -1px; }}
@@ -126,7 +163,7 @@ QDialog#axqLook QTabWidget > QTabBar::tab:selected {{ color: {TEXT};
 QDialog#axqLook QTabWidget > QTabBar::tab:hover:!selected {{ color: {TEXT}; }}
 QDialog#axqLook QTableWidget {{ background: {FIELD}; alternate-background-color: #24272b;
     color: {TEXT}; gridline-color: {LINE}; border: 1px solid {LINE};
-    border-radius: 5px; selection-background-color: #4a3324;
+    border-radius: 5px; selection-background-color: {ACCENT_DARK};
     selection-color: white; }}
 QDialog#axqLook QHeaderView::section {{ background: {PANEL}; color: {GOLD};
     border: none; border-bottom: 1px solid {LINE}; border-right: 1px solid {LINE};
@@ -953,6 +990,48 @@ class Drawing(QWidget):
             p.end()
 
 
+def draw_layers_cut(p, r: QRectF, _hot, data: dict) -> None:
+    """Layers across, LARGE (``Drawing``): ``layers`` the first side on top,
+    each band as tall as its share (never under 4 px), its name and
+    thickness on it; ``sides`` the two words. A real wall's 20 cm hides
+    them in a plan — zoomed they are seen (his, 2026-10-28)."""
+    from .i18n import tr
+    layers = data.get("layers") or []
+    sides = data.get("sides") or ("", "")
+    p.fillRect(r, QColor(FIELD))
+    if not layers:
+        return
+    f = QFont(p.font())
+    f.setPointSizeF(8.0)
+    p.setFont(f)
+    top, bottom = r.top() + 18, r.bottom() - 18
+    x0, x1 = r.left() + 14, r.right() - 14
+    tot = sum(float(la["t"]) for la in layers) or 1.0
+    hs = [max((bottom - top) * float(la["t"]) / tot, 4.0) for la in layers]
+    k = (bottom - top) / sum(hs)                      # the minimums fitted
+    p.setPen(QColor(MUTED))
+    p.drawText(QRectF(x0, r.top() + 2, x1 - x0, 14), Qt.AlignLeft,
+               tr(sides[0]))
+    y = top
+    for la, h in zip(layers, hs):
+        h *= k
+        core = la.get("role") == "core"
+        band = QRectF(x0, y, x1 - x0, h)
+        p.fillRect(band, QColor("#b5654a" if core else "#d9d4c7"))
+        p.setPen(pen("#1d1f22", 1.0))
+        p.drawRect(band)
+        if h >= 11:
+            name = la.get("name") or tr("Core" if core else "Finish")
+            p.setPen(QColor("#1d1f22"))
+            p.drawText(band.adjusted(4, 0, -4, 0),
+                       Qt.AlignVCenter | Qt.AlignLeft,
+                       f"{name}  {float(la['t']) * 100:.1f}")
+        y += h
+    p.setPen(QColor(MUTED))
+    p.drawText(QRectF(x0, bottom + 2, x1 - x0, 14), Qt.AlignLeft,
+               tr(sides[1]))
+
+
 class _Hot(QObject):
     def __init__(self, drawing: Drawing, key: str) -> None:
         super().__init__()
@@ -982,6 +1061,7 @@ class Card(QFrame):
         head = QHBoxLayout()
         t = QLabel(title)
         t.setObjectName("axqCardTitle")
+        self.title = t
         head.addWidget(t)
         head.addStretch(1)
         if right is not None:
@@ -1042,3 +1122,17 @@ class Badge(QLabel):
         self.style().unpolish(self)
         self.style().polish(self)
         self.setText(f"{mark}&nbsp; {text_}")
+
+    def set_lines(self, head: tuple, lines: list) -> None:
+        """A check of several lines: ``head`` (ok, text) in bold, then each
+        (ok, text) with its own mark."""
+        def mark(ok):
+            return (f"<b style='color:{OK}'>✓</b>" if ok
+                    else "<b style='color:#f0b44c'>!</b>")
+        ok, text_ = head
+        self.setProperty("state", "ok" if ok else "warn")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        rows = [f"{mark(ok)}&nbsp; <b>{text_}</b>"]
+        rows += [f"{mark(o)}&nbsp; {t}" for o, t in lines]
+        self.setText("<br>".join(rows))

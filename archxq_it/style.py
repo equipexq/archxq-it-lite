@@ -40,6 +40,14 @@ QPushButton#axq_present[faint="true"] {{ background: transparent;
 QPushButton#axq_present[faint="true"]:hover {{
     background: rgba(32, 35, 40, 235); color: #f3f4f6;
     border: 2px solid {PLAN}; }}
+QPushButton#axq_levels_tab {{
+    background: rgba(32, 35, 40, 225); color: #d6d9dd;
+    border: 1px solid rgba(255, 255, 255, 22); border-radius: 7px;
+    padding: 4px 10px; font-weight: bold; }}
+QPushButton#axq_levels_tab:hover {{ background: rgba(60, 64, 70, 240);
+    color: #f3f4f6; border: 2px solid {PLAN}; }}
+QPushButton#axq_levels_tab[hint="true"] {{ background: rgba(32, 35, 40, 240);
+    color: #f3f4f6; border: 2px solid {PLAN}; }}
 QLabel#axq_sep {{ color: #6b7280; padding: 0 1px; }}
 QLabel#axq_caption {{ color: #9aa5b1; padding: 0 4px 0 10px; }}
 QLabel#axq_title {{ color: #e8eaed; font-weight: bold; padding: 2px 8px 4px 8px; }}

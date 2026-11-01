@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .i18n import tr
-from .phases import ELEMENTS, PHASES
+from .phases import ELEMENTS, PHASES, TOOLS
 from .style import CSS
 
 MARK = {"done": "✔", "current": "●", "open": "○", "locked": "○"}
@@ -95,7 +95,9 @@ class Hub(QFrame):
         for key, text, el in (("import_dxf", "Import DXF → walls…",
                                "wall_import"), (None, None, None),
                               ("pdf", "Export sheets to PDF…", "export"),
-                              ("dxf", "Export drawings to DXF…", "export")):
+                              ("dxf", "Export drawings to DXF…", "export"),
+                              ("quantities", "Export quantities (CSV)…",
+                               "export")):
             if key is None:
                 menu.addSeparator()
                 continue
@@ -191,7 +193,8 @@ class Hub(QFrame):
         if dot is None:
             dot = self._upd_dot = QLabel(self.power)
             dot.setFixedSize(8, 8)
-            dot.setStyleSheet("background: #e8742c; border-radius: 4px;")
+            from .look import ACCENT
+            dot.setStyleSheet(f"background: {ACCENT}; border-radius: 4px;")
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         dot.move(self.power.width() - 10, 2)
         dot.show()
@@ -248,6 +251,22 @@ class Hub(QFrame):
             b.installEventFilter(self)
             self.phases.addWidget(b)
             self._buttons[key] = b
+        if rows:
+            # «Tools ▾» (his call, 2026-10-29): apart from the phases — no ✔,
+            # its name alone (the bar is full); a drop-down of tools
+            sep = QLabel("│")
+            sep.setObjectName("axq_sep")
+            self.phases.addWidget(sep)
+            b = QPushButton(tr(TOOLS.label) + "  ▾")
+            b.setFlat(True)
+            b.setProperty("axq", "phase")
+            b.setProperty("state", "current" if self.owner.element
+                          in TOOLS.elements else "open")
+            b.setProperty("phase", TOOLS.key)
+            b.clicked.connect(lambda _=False: self.open_sub(TOOLS.key))
+            b.installEventFilter(self)
+            self.phases.addWidget(b)
+            self._buttons[TOOLS.key] = b
         self.relayout()
         QTimer.singleShot(0, self.relayout)
 
@@ -262,11 +281,12 @@ class Hub(QFrame):
                 w = self.sub_lay.takeAt(0).widget()
                 if w is not None:
                     w.deleteLater()
-            for ekey in PHASES[key].elements:
+            tools = key == TOOLS.key
+            for ekey in (TOOLS if tools else PHASES[key]).elements:
                 it = QPushButton(tr(ELEMENTS[ekey].label) + _pro_mark(ekey))
                 it.setFlat(True)
                 it.setCheckable(True)
-                it.setChecked(key == self.owner.current
+                it.setChecked((tools or key == self.owner.current)
                               and ekey == self.owner.element)
                 it.setProperty("axq", "item")
                 it.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -290,6 +310,11 @@ class Hub(QFrame):
 
     def _pick(self, phase: str, element: str) -> None:
         self.close_sub()
+        if phase == TOOLS.key:              # a tool: the phase stays
+            # (after the list is gone and the view under it drawn again —
+            # the tool takes a moment to start: his screen, 29/10)
+            QTimer.singleShot(30, lambda: self.owner.pick_tool(element))
+            return
         self.owner.pick(phase, element)
 
     def _maybe_close(self) -> None:

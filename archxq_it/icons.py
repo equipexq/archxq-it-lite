@@ -410,6 +410,33 @@ def _foot_strips(p) -> None:
     p.drawLine(QPointF(4, 58), QPointF(60, 58))
 
 
+def _foot_pad(p) -> None:
+    """A pad drawn by hand (plan): the pad, its column, the click on it."""
+    p.setPen(_pen(ACCENT, 4))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(10, 10, 44, 44))
+    p.setPen(Qt.NoPen)
+    p.setBrush(INK)
+    p.drawRect(QRectF(26, 26, 12, 12))
+    p.setPen(_pen(INK, 2.5))
+    p.drawLine(QPointF(32, 2), QPointF(32, 20))
+    p.drawLine(QPointF(32, 44), QPointF(32, 62))
+
+
+def _foot_strip(p) -> None:
+    """A strip drawn point by point (plan): a band turning a corner, its
+    clicks marked."""
+    from PySide6.QtGui import QPolygonF
+    run = QPolygonF([QPointF(8, 54), QPointF(8, 14), QPointF(54, 14)])
+    p.setPen(_pen(ACCENT, 10))
+    p.setBrush(Qt.NoBrush)
+    p.drawPolyline(run)
+    p.setPen(_pen(INK, 2.5))
+    p.drawPolyline(run)
+    for x, y in ((8, 54), (8, 14), (54, 14)):
+        _dot(p, x, y, 4.5, INK)
+
+
 def _ghost(p) -> None:
     """The ghost level, OFF: two floors in thin dim outline."""
     dim = QColor(INK)
@@ -431,6 +458,35 @@ def _ghost_on(p) -> None:
     p.setPen(_pen(INK, 5))
     p.setBrush(QColor(INK).darker(400))
     p.drawRect(QRectF(8, 26, 36, 30))
+
+
+def _sheet(p, on: bool) -> None:
+    """The level's GUIDE SHEET (levelsheet.py): a plate in perspective with
+    its grid — dim outline off, filled in the brand's blue on."""
+    blue = QColor("#2f7df6")
+    pts = [QPointF(14, 22), QPointF(58, 22), QPointF(50, 52),
+           QPointF(6, 52)]
+    from PySide6.QtGui import QPolygonF
+    if on:
+        fill = QColor(blue)
+        fill.setAlpha(150)
+        p.setPen(Qt.NoPen)
+        p.setBrush(fill)
+        p.drawPolygon(QPolygonF(pts))
+    ink = QColor(INK)
+    if not on:
+        ink.setAlpha(110)
+    p.setBrush(Qt.NoBrush)
+    p.setPen(_pen(ink, 3.0 if on else 2.6))
+    p.drawPolygon(QPolygonF(pts))
+    p.setPen(_pen(ink, 1.6))
+    for t in (1 / 3, 2 / 3):          # the grid: across and along
+        a = pts[0] + (pts[1] - pts[0]) * t
+        b = pts[3] + (pts[2] - pts[3]) * t
+        p.drawLine(a, b)
+        c = pts[0] + (pts[3] - pts[0]) * t
+        d = pts[1] + (pts[2] - pts[1]) * t
+        p.drawLine(c, d)
 
 
 def _foot_rows(p) -> None:
@@ -493,7 +549,74 @@ def _glazing(p) -> None:
         p.drawLine(QPointF(8, k), QPointF(56, k))
 
 
+def _wall_split(p) -> None:
+    """A wall in plan cut in two, the cut marked — «Split»."""
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(4, 24, 24, 16))
+    p.drawRect(QRectF(36, 24, 24, 16))
+    p.setPen(_pen(ACCENT, 4))
+    p.drawLine(QPointF(32, 10), QPointF(32, 54))
+
+
+def _wall_trim(p) -> None:
+    """A wall reaching on to another's face (an arrow) — «Trim / Extend»."""
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(44, 6, 14, 52))                 # the wall it goes to
+    p.drawRect(QRectF(4, 26, 24, 12))                 # the wall that goes
+    p.setPen(_pen(ACCENT, 3.5, dash=True))
+    p.drawLine(QPointF(28, 32), QPointF(42, 32))
+    p.setPen(_pen(ACCENT, 3.5))
+    p.drawLine(QPointF(36, 26), QPointF(43, 32))
+    p.drawLine(QPointF(36, 38), QPointF(43, 32))
+
+
+def _align(p) -> None:
+    """A reference line (dashed) and a block moving onto it — «Align»."""
+    p.setPen(_pen(ACCENT, 3.5, dash=True))
+    p.drawLine(QPointF(44, 4), QPointF(44, 60))
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(8, 20, 20, 24))
+    p.setPen(_pen(ACCENT, 3))
+    p.drawLine(QPointF(30, 32), QPointF(41, 32))
+    p.drawLine(QPointF(35, 27), QPointF(41, 32))
+    p.drawLine(QPointF(35, 37), QPointF(41, 32))
+
+
+def _surroundings(p) -> None:
+    """A street turning a corner round a plot — «Surroundings»."""
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(8, 8, 28, 28))                 # the plot
+    p.setPen(_pen(ACCENT, 4))
+    p.drawLine(QPointF(4, 46), QPointF(36, 46))      # the street's curb
+    p.drawArc(QRectF(26, 26, 20, 20), 270 * 16, 90 * 16)
+    p.drawLine(QPointF(46, 36), QPointF(46, 4))
+    p.setPen(_pen(INK, 2.5, dash=True))
+    p.drawLine(QPointF(4, 56), QPointF(40, 56))      # its centre line
+    p.drawLine(QPointF(56, 40), QPointF(56, 4))
+
+
+def _block(p) -> None:
+    """A box in perspective, its top orange — the «Block» element."""
+    from PySide6.QtGui import QPolygonF
+    p.setPen(_pen(INK, 3))
+    p.setBrush(ACCENT)
+    p.drawPolygon(QPolygonF([QPointF(8, 24), QPointF(22, 12), QPointF(56, 12),
+                             QPointF(42, 24)]))
+    p.setBrush(Qt.NoBrush)
+    p.drawPolygon(QPolygonF([QPointF(8, 24), QPointF(42, 24), QPointF(42, 54),
+                             QPointF(8, 54)]))
+    p.drawPolygon(QPolygonF([QPointF(42, 24), QPointF(56, 12), QPointF(56, 42),
+                             QPointF(42, 54)]))
+
+
 _CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
+           "wall_split": _wall_split, "wall_trim": _wall_trim,
+           "align": _align, "block": _block,
+           "surroundings": _surroundings,
            "glazing": _glazing, "survey": _survey, "add_point": _add_point, "fit": _fit,
            "excavate": _excavate, "eye": _eye, "eye_off": _eye_off,
            "eye_part": _eye_part,
@@ -508,7 +631,10 @@ _CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
            "web": _web, "grid_snap": _grid_snap,
            "op_window": _op_window, "op_void": _op_void,
            "foot_pads": _foot_pads, "foot_strips": _foot_strips,
-           "foot_rows": _foot_rows, "ghost": _ghost, "ghost_on": _ghost_on}
+           "foot_rows": _foot_rows, "foot_pad": _foot_pad,
+           "foot_strip": _foot_strip, "ghost": _ghost, "ghost_on": _ghost_on,
+           "sheet": lambda p: _sheet(p, False),
+           "sheet_on": lambda p: _sheet(p, True)}
 _cache: dict[str, QIcon] = {}
 
 

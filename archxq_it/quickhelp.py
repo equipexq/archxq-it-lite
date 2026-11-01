@@ -59,7 +59,8 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Drawn (bar)", "rectangle · rotated · points · circle"),
         ("Click", "inside the slab, its corners / centre"),
         ("Type + Enter", "the sizes or the radius"),
-        ("Close it", "the slab's window ▸ «Close its opening(s)»"),
+        ("Click in it", "picks it: its grips · Delete closes it"),
+        ("Close it", "the slab's window ▸ Openings ▸ «Close it»"),
         ("Esc", "cancel"))),
     "slab_edit": ("Edit slabs", (
         ("Click", "a corner or a side, then where it goes"),
@@ -69,6 +70,7 @@ QUICK: dict[str, tuple[str, tuple]] = {
     "opening": ("Door / window", (
         ("Move", "along a wall — it shows where it fits"),
         ("Click", "place it there"),
+        ("Type + Enter", "its edge that far from the orange corner (1.05c: its centre)"),
         ("Tab", "a door: its hinge on the other side"),
         ("Shift+Tab", "it opens in ↔ out (library: «Opens»)"),
         ("Library", "its type: swing, sliding, casement…"),
@@ -81,17 +83,42 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Tab", "the other face of the line drawn"),
         ("Library «How»", "Slab edge · Round an opening · Add a gap"),
         ("Esc", "drop · again: done"))),
+    "street": ("Street", (
+        ("Click", "a side of the plot — the street along it"),
+        ("Next side", "the same street turns the corner"),
+        ("By axis", "point after point · Enter ends it"),
+        ("Library", "widths, sidewalks, corner radius"),
+        ("Placed", "select it: grips · double-click: its window"),
+        ("Esc", "done"))),
+    "profile": ("Profile along", (
+        ("By room", "click inside a room — round its walls, doors skipped"),
+        ("Point by point", "along a wall's face · Enter ends · C closes"),
+        ("By wall face", "click a face · Shift + click: the next one joins"),
+        ("By element", "a column or a beam — Floor: its base, Ceiling: "
+                       "its top"),
+        ("Tab", "the profile on the other side of the line"),
+        ("Library", "the profile · where it sits · continuous or repeat"),
+        ("Placed", "it follows the room's walls when they move"),
+        ("Esc", "done"))),
+    "copy": ("Copy along", (
+        ("Point by point", "the path · Enter ends · C closes"),
+        ("By room", "click inside a room — round its walls"),
+        ("By wall face", "click a face · Shift + click: the next one joins"),
+        ("Tab", "the copies on the other side of the line"),
+        ("Library", "the object · count, spacing or gap"),
+        ("Your object", "select it in the model, then its card"),
+        ("Esc", "done"))),
     "guard_pick": ("Low wall — one click", (
         ("Move", "what a click makes shows under the mouse"),
         ("Click", "a slab · an opening · a low wall (a gap)"),
         ("Gap", "its width on the right · drag its edges after"),
         ("Library «How»", "Draw: back to point by point"),
         ("Esc", "done"))),
-    "glazing": ("Glass grid", (
+    "glazing": ("Grids", (
         ("Click", "an Opening (a void) — the grid fills it"),
         ("Click twice", "along a wall: the Opening is made there"),
         ("Free", "two clicks: a partition anywhere"),
-        ("Library", "type, panes, frame, glass position"),
+        ("Library", "glass or open (cobogó, lattice, slats), cells, bars"),
         ("Esc", "done"))),
     "ramp": ("Ramp / stair", (
         ("Click", "where it starts (its first edge)"),

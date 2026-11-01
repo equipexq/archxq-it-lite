@@ -152,8 +152,11 @@ def slope_tans(dig: dict) -> list[float | None]:
 
 def outline(dig: dict, doc: dict):
     """Where the excavation meets the ground: its drawn outline, pushed
-    out on every sloped side as far as the slope climbs to the ground
-    (the deepest end of the side decides). None when it can't be made."""
+    out on every sloped side as far as the slope climbs to the ground —
+    at EACH END of the side by that end's depth (a ramp's batter widens
+    with it; 0.15.0, C5 — it took the deepest end all along, a strip at
+    the ground's height left in the opening by the entrance). None when it
+    can't be made."""
     tans = slope_tans(dig)
     if all(t is None for t in tans):
         return dig["corners"]
@@ -168,9 +171,9 @@ def outline(dig: dict, doc: dict):
             continue
         j = (i + 1) % n
         sign = -1.0 if is_fill(dig) else 1.0       # a fill: its height
-        depth = max(sign * ((ground_at(plot, pts[k]) if plot else 0.0)
-                            - bots[k]) for k in (i, j))
-        offs.append(-max(depth, 0.0) / t)          # negative = outward
+        da, db = (max(sign * ((ground_at(plot, pts[k]) if plot else 0.0)
+                              - bots[k]), 0.0) for k in (i, j))
+        offs.append((-da / t, -db / t))            # negative = outward
     top = plotgeo.buildable(pts, offs)
     return top
 

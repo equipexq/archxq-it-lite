@@ -122,6 +122,37 @@ def closers(doc: dict, level_id: str) -> list[dict]:
                         "a": [a[0], a[1]], "b": [b[0], b[1]], "t": t,
                         "align": "centre", "side": 1, "level": level_id,
                         "height": "level", "base": 0.0})
+    return out + separator_walls(doc, level_id)
+
+
+#: m — how thick a ROOM SEPARATOR counts when it closes a room: the walls
+#: engine's thinnest wall (``walls.why_not``) — half a cm off each room
+SEP_T = 0.01
+
+
+def separator_walls(doc: dict, level_id: str) -> list[dict]:
+    """The level's ROOM SEPARATORS (separators.py) as hairline walls — an
+    open living room and kitchen: two rooms. Their ends a little longer,
+    as a guard's: one drawn up to a wall's face still meets the wall."""
+    out = []
+    for s in doc.get("separators") or []:
+        if s.get("level") != level_id:
+            continue
+        pts = [tuple(p) for p in s.get("pts") or []]
+        lines = list(zip(pts, pts[1:]))
+        for k, (a, b) in enumerate(lines):
+            L = ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+            if L < 1e-3:
+                continue
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            if k == 0:
+                a = (a[0] - ux * EXTEND, a[1] - uy * EXTEND)
+            if k == len(lines) - 1:
+                b = (b[0] + ux * EXTEND, b[1] + uy * EXTEND)
+            out.append({"id": f"sep:{s.get('id')}:{k}", "kind": "line",
+                        "a": [a[0], a[1]], "b": [b[0], b[1]], "t": SEP_T,
+                        "align": "centre", "side": 1, "level": level_id,
+                        "height": "level", "base": 0.0})
     return out
 
 
@@ -135,11 +166,16 @@ def of_level(doc: dict, level_id: str) -> list[dict]:
         walls = walls + closers(doc, level_id)
     recs = [r for r in doc.get("rooms") or [] if r["level"] == level_id]
     out, n = [], 0
-    for room in found(walls):
-        rec = next((r for r in recs
-                    if room["poly"].contains(Point(r["x"], r["y"]))), None)
+    rooms = [(room, next((r for r in recs if room["poly"].contains(
+        Point(r["x"], r["y"]))), None)) for room in found(walls)]
+    # a name given that IS a «Room n» (a floor painted in a room not named
+    # yet keeps its label): the others never take it again
+    used = {rec["name"] for _r, rec in rooms if rec is not None}
+    for room, rec in rooms:
         if rec is None:
             n += 1
+            while _room(n) in used:
+                n += 1
         out.append(dict(room, rec=rec,
                         name=rec["name"] if rec else _room(n)))
     return out

@@ -157,10 +157,20 @@ BUILDING_ELEMENTS = [
                                    "wall with a railing, glass or steel: "
                                    "point by point, any angle (balconies, "
                                    "voids, open stairs)"),
-    ("glazing", "Glass grid", "glazing", "Squared glass — a frame, a grid of "
-                                         "muntins, a bead holding every "
-                                         "pane: it fills a wall's Opening, "
-                                         "or stands free as a partition"),
+    ("glazing", "Grids", "glazing", "Grids — squared glass, or open (a "
+                                    "cobogó, a lattice, slats): it fills a "
+                                    "wall's Opening, or stands free as a "
+                                    "partition or a screen"),
+    # (0.15.0, B5: a slab as tall as you like — a platform, a bench, a mass)
+    ("block", "Block", "block", "A block — a platform, a bench, a mass: draw "
+                                "it (a rectangle, or point by point), its "
+                                "height and base on the library's bars"),
+    # all that is OUTSIDE the building, under one name (his ask,
+    # 2026-10-25): a street first — paths, parking, gardens later
+    ("surroundings", "Surroundings", "surroundings",
+     "Surroundings — a street round the plot: asphalt, curbs and "
+     "sidewalks, along a side of the plot in one click or by its axis; "
+     "where two meet the corner turns round"),
 ]
 
 
@@ -259,6 +269,45 @@ class PresentButton(QPushButton):
         self.adjustSize()
 
 
+class LevelsTab(QPushButton):
+    """The levels strip hidden (N): a small tab stays on the right edge — a
+    click brings the strip back (a customer pressed N by accident and could
+    not find it again; his ask, 2026-10-23). Just hidden, it says for a few
+    seconds which key does it; then only «◂ Levels»."""
+
+    HINT_MS = 5000
+
+    def __init__(self, owner) -> None:
+        super().__init__()
+        self.setObjectName("axq_levels_tab")
+        self.setStyleSheet(CSS)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Show the levels strip again (N)")
+        self.clicked.connect(lambda: owner.toggle_levels_strip())
+        self._owner = owner
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(lambda: self.set_hint(False))
+        self.set_hint(False)
+
+    def set_hint(self, on: bool) -> None:
+        self.setText("◂  Levels strip hidden — press N or click here to "
+                     "show it" if on else "◂  Levels")
+        self.setProperty("hint", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.adjustSize()
+        if on:
+            self._timer.start(self.HINT_MS)
+        else:
+            self._timer.stop()
+        try:
+            self._owner.layout_floating()
+        except Exception:  # noqa: BLE001 — (while being built / torn down)
+            pass
+
+
 #: the plan and the four sides (his idea, 2026-10-10): shown under «Plan
 #: view» while it is on — (key, tooltip)
 #: the sides CLOCKWISE round the square, as the eye goes (his call,
@@ -333,11 +382,12 @@ class ViewsStrip(QFrame):
             b.setAutoRaise(True)
             b.setFocusPolicy(Qt.NoFocus)
             b.setToolTip(tip)
+            from .look import ACCENT, ACCENT_DARK
             b.setStyleSheet("QToolButton { border: 1px solid transparent; "
                             "border-radius: 4px; padding: 2px; }"
                             "QToolButton:hover { border-color: #6b7178; }"
                             "QToolButton:checked { border: 1px solid "
-                            "#e8742c; background: #4a3324; }")
+                            f"{ACCENT}; background: {ACCENT_DARK}; }}")
             b.clicked.connect(lambda _c=False, k=key: owner.show_view(k))
             self.group.addButton(b)
             self.buttons[key] = b
@@ -408,12 +458,16 @@ class ViewBar(QFrame):
         from .i18n import N_, tr
         # the camera's own words («Top» is also a fill's top elsewhere —
         # «Oberkante» in German: a view needs «Oben»)
+        # (the picked view stays lit until the camera turns — his ask,
+        # 2026-10-25: only «Perspective» kept its mark)
+        self.views: dict[str, QPushButton] = {}
         for name, text in (("top", N_("Top view")), ("front", N_("Front view")),
                            ("right", N_("Right view")), ("iso", "Iso")):
             shown = tr(text)
-            b = _chip(text.replace(" view", "") if shown == text else shown,
-                      checkable=False)
+            b = _chip(text.replace(" view", "") if shown == text else shown)
+            b.setChecked(False)
             b.clicked.connect(lambda _=False, n=name: owner.on_camera(n))
+            self.views[name] = b
             lay.addWidget(b)
         ext = _chip("Extents", checkable=False)
         ext.setToolTip("Zoom to the whole model")
@@ -427,6 +481,14 @@ class ViewBar(QFrame):
         self.persp.blockSignals(True)
         self.persp.setChecked(perspective)
         self.persp.blockSignals(False)
+
+    def mark_view(self, name: str | None) -> None:
+        """The standard view the camera is in (None: turned away)."""
+        for k, b in self.views.items():
+            if b.isChecked() != (k == name):
+                b.blockSignals(True)
+                b.setChecked(k == name)
+                b.blockSignals(False)
 
 
 # ---- Right: properties ---------------------------------------------------------------

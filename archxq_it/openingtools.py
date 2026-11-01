@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt
 
-from . import compat, structure as S, walls as W
+from . import compat, opendims as D, structure as S, walls as W
 from .plottools import _PlotTool
 
 REACH = 0.40          # m from a wall's face the cursor still finds it
@@ -105,7 +105,8 @@ def _window_lines(o, wall, P, s0, s1, t, u, n) -> list:
     if op == "sliding":
         d, lap = 0.03, 0.05
         lw = (s1 - s0 + (k - 1) * lap) / k
-        tracks = S.WIN_TRACKS[k]
+        # a louvred one may have 6 leaves: alternate past the table
+        tracks = S.WIN_TRACKS.get(k) or [("B", "F")[i % 2] for i in range(k)]
         out = []
         for i in range(k):
             a = s0 + i * (lw - lap)
@@ -115,21 +116,29 @@ def _window_lines(o, wall, P, s0, s1, t, u, n) -> list:
         m = (s0 + s1) / 2
         return out + _arrow(P, m - 0.15, m + 0.15, t + 0.08)
     if op == "casement":
+        # each leaf by its role (2026-10-31): a hinged one's swing, a fixed
+        # one's glass along the wall — the same widths as in 3D, the plan's
+        # leaves meeting with no gap (1 and 2 leaves as they always were)
         inside = S.door_side(o, wall)
-        if k == 1:
-            left = o.get("swing", "left") == "left"
-            hinge = s0 if left else s1
-            return _swing_lines(P, hinge, 1.0 if left else -1.0, inside, t,
-                                s1 - s0, u, n)
-        m = (s0 + s1) / 2
-        return (_swing_lines(P, s0, 1.0, inside, t, m - s0, u, n)
-                + _swing_lines(P, s1, -1.0, inside, t, m - s0, u, n))
-    # awning: three short dashes outward, the way it opens
+        leaves, _m = S.casement_layout(S.casement_roles(o), s0, s1, gap=0.0)
+        out = []
+        for a, b, r in leaves:
+            if r == "F":
+                out.append((P(a, 0.0), P(b, 0.0)))
+            elif r == "L":
+                out += _swing_lines(P, a, 1.0, inside, t, b - a, u, n)
+            else:
+                out += _swing_lines(P, b, -1.0, inside, t, b - a, u, n)
+        return out
+    # awning: three short dashes outward, the way it opens; PIVOT: its
+    # panes turn on their middle — dashes to both sides
     so = -S.door_side(dict(o, out=False), wall)
     out = [(P(s0, 0.0), P(s1, 0.0))]
+    sides = (so, -so) if op == "pivot" else (so,)
     for f in (0.25, 0.5, 0.75):
         s = s0 + (s1 - s0) * f
-        out.append((P(s, so * (t + 0.03)), P(s, so * (t + 0.15))))
+        for sd in sides:
+            out.append((P(s, sd * (t + 0.03)), P(s, sd * (t + 0.15))))
     return out
 
 
@@ -245,12 +254,45 @@ def draw_lines(viewport, painter, lines, z, ink, width=1.6) -> None:
     painter.restore()
 
 
+class _TypedEnter(QObject):
+    """Enter with a distance typed: the opening tool's, BEFORE the host's
+    value box reads it (it takes «60» for 60 m and refuses «1.05c» — tried
+    2026-10-25; a tool's ``on_key`` comes after)."""
+
+    def __init__(self, tool) -> None:
+        super().__init__()
+        self.tool = tool
+
+    def eventFilter(self, obj, event) -> bool:
+        try:
+            if event.type() == QEvent.KeyPress                     and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                typed = compat.typed_value(obj)
+                if typed and D.parse(typed) is not None:
+                    compat.clear_typed(obj)
+                    self.tool.place_typed(typed)
+                    obj.update()
+                    return True
+        except Exception:  # noqa: BLE001 — never in the host's way
+            compat.log_error("opening typed distance")
+        return False
+
+
 class OpeningTool(_PlotTool):
     name = "ArchXQ opening"
     noun = "Opening"
     icon = "rectangle"
-    vcb_label = ""
     claimed_keys = frozenset({Qt.Key_Tab, Qt.Key_Backtab})
+    #: placed in the plan OR straight in 3D (PLANO_ABERTURAS_3D.md, his OK
+    #: 29/10): in 3D the wall is the one the camera's ray meets (place3d)
+    stays_in_view = True
+    #: ui sets: every level's shown walls (place3d.wall_entry) and every
+    #: level's openings — the ray's walls and the lines to align with
+    walls_3d = staticmethod(lambda: [])
+    openings_3d = staticmethod(lambda: [])
+    level_id = None
+    other = None            # 3D: the level of the wall met, not this one
+    guides3d: list = []     # 3D: the lines it was pulled into line with
+    _ray_wall = None        # 3D: the wall the ray met (this level's)
 
     def __init__(self, kind, on_done, on_cancelled, z, opts, walls,
                  openings, wall_height):
@@ -266,10 +308,23 @@ class OpeningTool(_PlotTool):
         self.openings = openings
         self.wall_height = wall_height
         self.here = None                 # (wall, seg, record) under cursor
+        self.dims = None                 # (face, lo, hi, cursor) of it
+
+    def on_activate(self, viewport) -> None:
+        super().on_activate(viewport)
+        self._enter = _TypedEnter(self)
+        viewport.installEventFilter(self._enter)
+
+    def on_deactivate(self, viewport) -> None:
+        f = self.__dict__.pop("_enter", None)
+        if f is not None:
+            viewport.removeEventFilter(f)
+        super().on_deactivate(viewport)
 
     def _reset(self) -> None:
         self.diag = None
         self.here = None
+        self.dims = None
         self._sync()
 
     def _busy(self) -> bool:
@@ -278,16 +333,74 @@ class OpeningTool(_PlotTool):
     def _sync(self) -> None:
         self._sync_protocol([], self.hover)
 
+    def _span(self, wall, pos) -> tuple:
+        """``S.opening_span`` for the cursor's bay, kept per wall while the
+        tool runs (the walls don't change under it; ~20 ms each)."""
+        spans = self.__dict__.setdefault("_spans", {})
+        for b0, b1, span in spans.get(wall["id"], ()):
+            if b0 - 1e-6 <= pos <= b1 + 1e-6:
+                return span
+        b0, b1 = S.wall_bay({"walls": self.walls()}, wall, pos)
+        span = (b0 + S.END_GAP, b1 - S.END_GAP)
+        spans.setdefault(wall["id"], []).append((b0, b1, span))
+        return span
+
+    def _pick(self, ctx):
+        """In 3D: the point on the face of the wall the camera's ray meets
+        — this level's, nothing in front of it — pulled into line with the
+        openings above / below / beside it; None: no wall of this level
+        there (``other``: the level it is on). The plan: as ever."""
+        from . import place3d as P3
+        self.other, self.guides3d, self._ray_wall = None, [], None
+        if not P3.in_3d(self.viewport):
+            return super()._pick(ctx)
+        ray = P3.ray_of(self.viewport, ctx)
+        if ray is None:
+            return super()._pick(ctx)
+        entries = self.walls_3d()
+        got = P3.walls_hit(entries, ray)
+        if got is None:
+            return None
+        k, e, _h, s, side = got
+        near = compat.ray_distance(self.viewport, *ray)
+        if near is not None and near < k - 0.05:
+            return None                 # something in front: a column, a slab
+        if e["level"] != self.level_id:
+            self.other = e["name"]
+            return None
+        w = e["wall"]
+        seg = W.centre(w)
+        half = float(self.opts()["w"]) / 2
+        try:
+            lines = P3.lines_on_wall(w, entries, self.openings_3d())
+            hx, hy = P3.face_point(w, s, side)
+            tol = P3.ALIGN_PX * P3.metres_per_px(
+                self.viewport, hx, hy, _h[2], seg.u)
+            s2, line = P3.snap_along(s, half, [c[0] for c in lines], tol)
+            if line is not None:
+                self.guides3d = [c for c in lines if abs(c[0] - line) < 1e-6]
+                s = s2
+        except Exception:  # noqa: BLE001 — the line is a help, never a stop
+            compat.log_error("opening 3D align")
+        self._ray_wall = w["id"]
+        return P3.face_point(w, min(max(s, 0.0), seg.L), side)
+
     def record(self, p):
         """The opening the cursor at ``p`` would place, on its wall."""
-        got = find_wall(p, self.walls())
+        if p is None:
+            return None
+        walls = self.walls()
+        if self._ray_wall is not None:      # 3D: the wall the ray met
+            walls = [w for w in walls if w["id"] == self._ray_wall]
+        got = find_wall(p, walls)
         if got is None:
             return None
         wall, seg, pos = got
         o = dict(self.opts())
-        half = o["w"] / 2 + S.END_GAP
-        pos = min(max(pos, half), seg.L - half) if seg.L > 2 * half \
-            else seg.L / 2
+        lo, hi = self._span(wall, pos)
+        half = o["w"] / 2
+        pos = min(max(pos, lo + half), hi - half) if hi - lo > 2 * half \
+            else (lo + hi) / 2
         rec = {"kind": self.kind, "wall": wall["id"],
                "pos": round(pos, 4), "w": o["w"], "h": o["h"],
                "sill": 0.0 if self.kind == "door" else o.get("sill", 0.0),
@@ -298,6 +411,8 @@ class OpeningTool(_PlotTool):
             rec["leaf"] = o.get("leaf", "solid")
             rec["open"] = o.get("open", 0.0)
             rec["out"] = bool(o.get("out", False))   # opens to the outside
+            if rec["op"] == "swing" and o.get("top") == "arched":
+                rec["top"] = "arched"                # (0.15.0: under an arch)
             if rec["op"] == "garage":                # a garage door's kind
                 rec["garage"] = S.garage_kind(o)
                 rec["gfinish"] = S.garage_finish(o)
@@ -308,24 +423,107 @@ class OpeningTool(_PlotTool):
             rec["leaves"] = S.window_leaves(o)
             rec["out"] = bool(o.get("out", False))
             rec["open"] = o.get("open", 0.0)
+            if o["op"] == "casement" and rec["leaves"] > 1:
+                # each leaf fixed or hinged (2026-10-31)
+                rec.update({f"role{i + 1}": r for i, r in
+                            enumerate(S.casement_roles(o))})
         if o.get("op") == "shop" and self.kind in ("door", "window"):
             from .shopfront import DEFAULTS          # a shopfront's own
             rec["op"] = "shop"
             rec.update({k: o.get(k, v) for k, v in DEFAULTS.items()})
         if o.get("glass") == "opaque":               # opaque panes
             rec["glass"] = "opaque"
+        if self.kind in ("window", "void") and rec.get("op") != "shop" \
+                and o.get("oshape", "rect") != "rect":   # its shape (10-31)
+            from .shapes import clean as shape_keys
+            rec.update(shape_keys(dict(rec, shape=o["oshape"],
+                                       rise=o.get("rise"),
+                                       top_w=o.get("top_w"))))
+            if rec.get("shape") == "circle":         # as high as wide
+                rec["h"] = rec["w"]
         from .trim import keys_of                    # its trim and sill
         rec.update(keys_of(dict(o, op=rec.get("op")), self.kind))
+        from .openfinish import keys_of as finish_keys   # colours, handle
+        rec.update(finish_keys(dict(o, kind=self.kind, op=rec.get("op"))))
         return wall, seg, rec
+
+    def _bay(self, wall, pos, face) -> tuple:
+        """``wall_bay`` on the cursor's face, kept like ``_span``."""
+        bays = self.__dict__.setdefault("_bays", {})
+        for b0, b1 in bays.get((wall["id"], face), ()):
+            if b0 - 1e-6 <= pos <= b1 + 1e-6:
+                return b0, b1
+        got = S.wall_bay({"walls": self.walls()}, wall, pos, face)
+        bays.setdefault((wall["id"], face), []).append(got)
+        return got
+
+    def _dims(self, p, got):
+        """(face, lo, hi, cursor along the wall) for the opening ``got``
+        previewed under the cursor ``p`` — what its dimensions measure."""
+        wall, _seg, rec = got
+        face = D.face_of(wall, p)
+        cur = W.centre(wall).project(p)[0] * W.centre(wall).L
+        lo, hi = D.refs(self.walls(), wall, rec["pos"], face,
+                        self.openings(),
+                        bay=self._bay(wall, rec["pos"], face))
+        return face, lo, hi, cur
 
     def on_hover(self, ctx) -> None:
         super().on_hover(ctx)
         self.here = self.record(self.hover) if self.hover else None
+        try:
+            self.dims = self._dims(self.hover, self.here) \
+                if self.here else None
+        except Exception:  # noqa: BLE001 — dimensions never stop the tool
+            self.dims = None
+
+    vcb_label = "Distance"
+
+    def place_typed(self, text: str) -> bool:
+        """A typed distance + Enter (PLANO_COTAS_ABERTURAS.md): the edge —
+        or, «…c», the centre — that far from the hot dimension's corner
+        or neighbour. False: not a distance / nowhere to put it."""
+        got = D.parse(text)
+        if got is None or self.here is None or self.dims is None:
+            return False
+        d, centre = got
+        wall, _seg, rec = self.here
+        face, lo, hi, cur = self.dims
+        side = D.hot_side(cur, lo, hi)
+        rec = dict(rec, pos=D.pos_for(d, side, lo, hi, rec["w"], centre))
+        why = S.opening_room(rec, wall, self.openings(),
+                             self.wall_height(wall))
+        if why is None and not (lo - 1e-6 <= rec["pos"] - rec["w"] / 2
+                                and rec["pos"] + rec["w"] / 2 <= hi + 1e-6):
+            why = "It doesn't fit there"
+        if why:
+            compat.flash(self.viewport, f"{why} — try another distance", 5000)
+            return True
+        self.viewport.update()
+        self.on_done(rec)
+        return True
+
+    def on_value(self, viewport, value) -> bool:
+        # (the host read the number itself: «60» = 60 m in a metres
+        # document — a door's distance over 10 m is centimetres)
+        if not isinstance(value, (int, float)):
+            return False
+        v = float(value)
+        if compat.doc_length_unit() == "m" and v > 10:
+            v /= 100.0
+        return self.place_typed(f"{v}m")
+
+    def _other_say(self) -> str:
+        from .place3d import other_level_say
+        return other_level_say(self.other)
 
     def on_click(self, ctx) -> None:
         p = self._pick(ctx)
         got = self.record(p)
         if got is None:
+            if self.other:                 # 3D: the level rules (D4)
+                compat.flash(self.viewport, self._other_say(), 5000)
+                return
             compat.flash(self.viewport, f"{self.noun}: click ON a straight "
                          "wall of this level", 4000)
             return
@@ -348,6 +546,17 @@ class OpeningTool(_PlotTool):
         return self.kind == "window" and o.get("op") == "casement"
 
     def on_key(self, viewport, key, modifiers) -> bool:
+        typed = compat.typed_value(viewport)
+        if typed and key in (Qt.Key_Return, Qt.Key_Enter):
+            # read here, not by the host: «60» = 60 cm, «1.05c» = centre
+            if D.parse(typed) is not None:
+                compat.clear_typed(viewport)
+                self.place_typed(typed)
+                viewport.update()
+                return True
+            return False
+        if typed:
+            return False             # the value box's keys
         backtab = key == Qt.Key_Backtab or (
             key == Qt.Key_Tab and modifiers & Qt.ShiftModifier)
         if backtab and self._opens_both_ways():
@@ -377,6 +586,8 @@ class OpeningTool(_PlotTool):
 
     def value_label(self):
         if self.here is None:
+            if self.other:
+                return (self._other_say(), None)
             return None
         wall, _seg, o = self.here
         text = (f"{o['w']:.2f} × {o['h']:.2f} m"
@@ -395,7 +606,8 @@ class OpeningTool(_PlotTool):
         if self._opens_both_ways():
             tail += "  ·  Shift+Tab = opens " + (
                 "in" if self.opts().get("out") else "out")
-        return (f"{self.noun}: move along a wall and click where it goes"
+        return (f"{self.noun}: move along a wall and click where it goes "
+                f"(or type the distance from the orange corner + Enter)"
                 f"{tail}  ·  Esc = done")
 
     def draw_overlay(self, viewport, painter) -> None:
@@ -406,6 +618,27 @@ class OpeningTool(_PlotTool):
                                     self.wall_height(wall)) is None
                 draw_lines(viewport, painter, symbol_lines(rec, wall, seg),
                            self.z, INK if ok else "#d23c3c", 2.2)
+                from . import place3d as P3
+                if P3.in_3d(viewport):
+                    # standing in the wall (D5): its outline on both faces
+                    zb = self.z + W.opening_lift(wall) + float(
+                        rec.get("sill", 0.0) or 0.0)
+                    s0 = rec["pos"] - rec["w"] / 2
+                    P3.draw3d(viewport, painter, P3.opening_frame(
+                        wall, s0, s0 + rec["w"], zb, zb + rec["h"]),
+                        INK if ok else "#d23c3c", 2.2)
+                    # the line it was pulled into: from the other opening
+                    # up / down to this one
+                    P3.draw3d(viewport, painter, [
+                        ((xy[0], xy[1], min(zlo, zb)),
+                         (xy[0], xy[1], max(zhi, zb + rec["h"])))
+                        for _s, xy, zlo, zhi in self.guides3d],
+                        "#2f7df6", 1.4, dash=True)
+                if self.dims is not None:
+                    face, lo, hi, cur = self.dims
+                    D.draw(viewport, painter, wall, face, self.z, rec["pos"],
+                           rec["w"], lo, hi, D.hot_side(cur, lo, hi),
+                           compat.typed_value(viewport))
             except Exception:  # noqa: BLE001 — a preview never breaks paint
                 pass
         super().draw_overlay(viewport, painter)

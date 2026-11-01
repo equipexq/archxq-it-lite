@@ -20,6 +20,8 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QHBoxLayout,
     QHeaderView,
     QLineEdit,
     QTreeWidget,
@@ -31,7 +33,12 @@ from PySide6.QtWidgets import (
 from . import icons
 
 KEY = Qt.UserRole
+SHOWN = Qt.UserRole + 1          # an item's eye open (the filter reads it)
 EYE_COL = 1
+#: what the list keeps (his ask, 2026-10-05: slabs hidden with the eye
+#: could hardly be found again to show them)
+FILTERS = (("all", "All items"), ("shown", "Shown only"),
+           ("hidden", "Hidden only"))
 
 CSS = """
 QTreeWidget { background: #24272c; border: none; }
@@ -60,7 +67,18 @@ class Outliner(QWidget):
         self.search.setPlaceholderText("Search the model…")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
-        lay.addWidget(self.search)
+        top = QHBoxLayout()
+        top.setSpacing(4)
+        top.addWidget(self.search, 1)
+        self.which = QComboBox()
+        for v, text in FILTERS:
+            self.which.addItem(text, v)
+        self.which.setToolTip("All the items — only the ones shown — only "
+                              "the HIDDEN ones (to bring them back)")
+        self.which.currentIndexChanged.connect(
+            lambda _i: self._filter(self.search.text()))
+        top.addWidget(self.which)
+        lay.addLayout(top)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(2)
         self.tree.setHeaderHidden(True)
@@ -101,6 +119,7 @@ class Outliner(QWidget):
                                  if n.get("count") is not None else "")
         it = QTreeWidgetItem([text, ""])
         it.setData(0, KEY, n["key"])
+        it.setData(0, SHOWN, bool(n["visible"]))
         it.setToolTip(0, n.get("tip", ""))
         if n["kind"] in ("level", "terrain", "other"):
             f = QFont(it.font(0))
@@ -169,14 +188,25 @@ class Outliner(QWidget):
 
     # ---- search -----------------------------------------------------------------------
     def _filter(self, text: str) -> None:
+        """The search's words and the Shown / Hidden choice: an item that
+        fits stays, with the rows above it (opened, to be seen)."""
         t = text.strip().lower()
+        which = self.which.currentData() if hasattr(self, "which") else "all"
 
         def walk(it) -> bool:
-            own = not t or t in it.text(0).lower()
             kids = [walk(it.child(i)) for i in range(it.childCount())]
+            own = not t or t in it.text(0).lower()
+            if which != "all":
+                # a row of its own (no rows under it) fits by its eye — a
+                # level / category, only through what it holds
+                if it.childCount():
+                    own = False
+                else:
+                    own = own and bool(it.data(0, SHOWN)) == (which ==
+                                                              "shown")
             show = own or any(kids)
             it.setHidden(not show)
-            if t and any(kids):
+            if (t or which != "all") and any(kids):
                 it.setExpanded(True)
             return show
 

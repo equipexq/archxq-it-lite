@@ -28,6 +28,8 @@ DEFAULTS: dict[str, tuple[object, type]] = {
     "sheets_lang": ("interface", str),
     # Settings ▸ Units: the unit chosen there for new documents too
     "units_for_new": (True, bool),
+    # a stair's code check (stairrules.py): auto = by the units / language
+    "stair_code": ("auto", str),
     # Defaults for new things
     "ground_thickness": (0.50, float),   # m, under the plot
     "floor_height": (3.00, float),       # m, a new storey

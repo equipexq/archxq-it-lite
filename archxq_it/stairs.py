@@ -169,9 +169,9 @@ def faces(r: dict, doc: dict, elevations) -> list:
     open_ = r.get("build") == "open"
     floor = min(zs, ze) if r.get("build") == "solid" else None
     # its landing at the top (``R.top_piece``, 2026-10-18): a slab «t»
-    # thick — or, solid, down to the floor: steps and platform one block
-    tp = R.top_piece(r, ps, zs, ze)
-    for pc in ps + ([tp] if tp else []):
+    # thick — or, solid, down to the floor: steps and platform one block;
+    # at the bottom (``R.foot_piece``, 2026-10-23): a slab «t» on its floor
+    for pc in ps + R.end_pieces(r, ps, zs, ze):
         (cx, cy), (dx, dy) = pc["c"], pc["d"]
         rx, ry = dy, -dx
 
@@ -191,13 +191,33 @@ def faces(r: dict, doc: dict, elevations) -> list:
             # riser; its top 1 mm under (never the floor's plane) — solid:
             # down to the lower floor
             z = pc["z0"] - 0.001
-            zb = floor + SOLID_LIFT if floor is not None \
+            zb = z - t if pc.get("foot") \
+                else floor + SOLID_LIFT if floor is not None \
                 else z - t if pc.get("top") \
                 else z - (t + abs(pc["h"]))
+            # the landing at the top: its edge on the flight one riser
+            # deeper, a tread long — the last riser climbs up to it (his
+            # screen, 2026-10-23: a riser over «t» left a slot between the
+            # last tread and the landing's underside)
+            lip = pc.get("top") and floor is None and ps \
+                and abs(ps[0]["h"]) > t - 0.002
             if walls is not None:
+                if lip:
+                    zb -= abs(ps[0]["h"])
                 out += landing_round(pc, walls, zb, z)
                 continue
             prof = [(0.0, zb), (pc["l"], zb), (pc["l"], z), (0.0, z)]
+            if lip:
+                l, zl = pc["l"], zb - abs(ps[0]["h"])
+                k = min(ps[0]["p"], l)
+                if k >= l - 1e-6:
+                    prof = [(0.0, zl), (l, zl), (l, z), (0.0, z)]
+                elif ze > zs:          # up: the flight at its start
+                    prof = [(0.0, zl), (k, zl), (k, zb), (l, zb), (l, z),
+                            (0.0, z)]
+                else:                  # down: the flight at its end
+                    prof = [(0.0, zb), (l - k, zb), (l - k, zl), (l, zl),
+                            (l, z), (0.0, z)]
             a0, a1 = -pc["w"] / 2, pc["w"] / 2
         out += _sweep(prof, a0, a1, P, COLOR + (1.0,))
     if RL is not None:
@@ -276,8 +296,8 @@ def landing_round(pc: dict, walls, z0: float, z1: float,
 def footprints(r: dict, doc: dict, elevations) -> list:
     zs, ze = R.heights(r, doc, elevations)
     ps = layout(r, zs, ze)
-    tp = R.top_piece(r, ps, zs, ze)          # its landing at the top too
-    return [R.piece_corners(pc) for pc in ps + ([tp] if tp else [])]
+    # its landings at the top / bottom too
+    return [R.piece_corners(pc) for pc in ps + R.end_pieces(r, ps, zs, ze)]
 
 
 def well(r: dict, doc: dict, elevations) -> list:
@@ -313,6 +333,30 @@ def well_of(r: dict, ps: list, up: bool) -> list:
         except Exception:  # noqa: BLE001 — the pieces as they are
             pass
     return out
+
+
+# ---- its code check (stairrules.py) ----------------------------------------------------
+def code_lines(r: dict, s: dict, doc: dict, elevations, zs: float, ze: float,
+               placed: bool = True, key: str | None = None) -> tuple:
+    """((ok, «Within NBR 9050» / «2 of 6 outside …»), [(ok, line)…]) —
+    ``placed``: where it stands is known (the headroom under the beams)."""
+    from . import stairrules as SR
+    key = key or SR.current()
+    head = None
+    extra = []
+    if placed:
+        try:
+            head = SR.headroom_of(layout(r, zs, ze),
+                                  SR.beams_over(doc, elevations, zs, ze))
+        except Exception:  # noqa: BLE001 — a check never breaks the window
+            head = None
+        if not r.get("cut", True):
+            from .i18n import tr
+            extra.append((False, tr("No opening in the slab above — check "
+                                    "the headroom")))
+    lines = SR.check(r, s, key, headroom=head, fmt_cm=compat.fmt_cm,
+                     fmt_len=compat.fmt_len) + extra
+    return SR.summary(lines, key), lines
 
 
 # ---- its window ------------------------------------------------------------------------
@@ -629,6 +673,13 @@ class StairDialog(QDialog):
                                 "long (0: none) — or push the grip on its "
                                 "last step's front face")
         form.addRow("Landing at the top", self.f_tland)
+        # …and where it starts (his ask, 2026-10-23)
+        self.f_fland = L.metres(float(rec.get("foot_landing", 0.0) or 0.0),
+                                0.0, 20.0)
+        self.f_fland.setToolTip("A level platform where it starts, this "
+                                "long (0: none) — or push the grip on its "
+                                "first step")
+        form.addRow("Landing at the bottom", self.f_fland)
         gl.addWidget(self.fold_shape)
         gl.addStretch(1)
         self.tabs.addTab(geo, "Geometry", "geometry")
@@ -721,6 +772,22 @@ class StairDialog(QDialog):
         card.box.addWidget(self.stats)
         self.badge = L.Badge()
         card.box.addWidget(self.badge)
+        # the code it is checked against (stairrules.py): the user's, for
+        # every project — Auto: by the units and the language
+        from . import stairrules as SR
+        code_row = QHBoxLayout()
+        code_row.setContentsMargins(0, 0, 0, 0)
+        code_row.addWidget(QLabel("Code"))
+        self.f_code = QComboBox()
+        for key, text in SR.CHOICES:
+            if key == "auto":
+                text = f"Auto ({SR.RULES[SR.auto_rule_now()]['name']})"
+            self.f_code.addItem(text, key)
+        self.f_code.setCurrentIndex(max(0, self.f_code.findData(SR.chosen())))
+        self.f_code.setToolTip("A guide, never a rule: check the stair with "
+                               "your engineer and your local code")
+        code_row.addWidget(self.f_code, 1)
+        card.box.addLayout(code_row)
         self.side = card
         body.addWidget(card, 4)
         lay.addLayout(body, 1)
@@ -753,15 +820,22 @@ class StairDialog(QDialog):
                                         self.f_build, self.f_cut,
                                         self.f_anchor):
             w.currentIndexChanged.connect(self._sync)
+        self.f_code.currentIndexChanged.connect(self._code)
         for w in (*self.ends.values(), self.f_w, self.f_riser, self.f_tread,
                   self.f_t, self.f_land, self.f_split, self.f_gap,
-                  self.f_nos, self.f_clear, self.f_tland):
+                  self.f_nos, self.f_clear, self.f_tland, self.f_fland):
             w.valueChanged.connect(self._sync)
         if edit:
             self.f_a.valueChanged.connect(self._sync)
         self.f_tread.valueChanged.connect(self._typed_tread)
         self.b_auto.toggled.connect(self._sync)
         self._quiet = False
+        self._sync()
+
+    def _code(self, *_a) -> None:
+        """Another code: kept for every project (Settings), checked now."""
+        from . import prefs
+        prefs.put("stair_code", self.f_code.currentData() or "auto")
         self._sync()
 
     def _pick_view(self, *_a) -> None:
@@ -796,6 +870,11 @@ class StairDialog(QDialog):
             r["top_landing"] = tl
         else:
             r.pop("top_landing", None)
+        fl = round(self.f_fland.value(), 3)
+        if fl >= 0.01:
+            r["foot_landing"] = fl
+        else:
+            r.pop("foot_landing", None)
         self.rails.write(r)
         r["cut"] = bool(self.f_cut.currentData())
         r["clear"] = round(self.f_clear.value(), 3)
@@ -898,20 +977,10 @@ class StairDialog(QDialog):
                         (compat.fmt_len(s['L']),
                          "run" + ("" if known else " ≈")),
                         last])
-        v = 2 * abs(s["h"]) + s["p"]
-        if compat.imperial():
-            # an American document: the residential code's limits (IRC
-            # R311.7: riser 7 3/4" at most, tread 10" at least)
-            ok = abs(s["h"]) <= 0.19685 + 1e-4 and s["p"] >= 0.254 - 1e-4
-            self.badge.set(ok, f"Riser {hc} · tread {pc} — "
-                               + ("within IRC (≤ 7 3/4\", ≥ 10\")" if ok else
-                                  "outside IRC (riser ≤ 7 3/4\", tread "
-                                  "≥ 10\")"))
-            return
-        ok = 0.625 <= v <= 0.655
-        self.badge.set(ok, f"Blondel: 2 R + T = {compat.fmt_cm(v)} "
-                           + ("(NBR 9050: 63–65)" if ok else
-                              "— outside 63–65 cm (NBR 9050)"))
+        # the CODE CHECK (stairrules.py): each of the code's numbers, and
+        # the headroom under a beam crossing over it (a stair placed only)
+        self.badge.set_lines(*code_lines(r, s, self.doc, self.elevations,
+                                         zs, ze, placed=self.edit))
 
     def _ok(self) -> None:
         r = self._record()
@@ -986,7 +1055,21 @@ class StairTool(R.RampTool):
         return (f"{s['n']} risers · run {compat.fmt_len(s['L'])}  "
                 f"{compat.fmt_level(zs, unit=False)} → "
                 f"{compat.fmt_level(ze, unit=False)}"
-                + (f"   {ang % 360:.0f}°" if ang is not None else ""), None)
+                + (f"   {ang % 360:.0f}°" if ang is not None else "")
+                + self._code_note(s), None)
+
+    def _code_note(self, s: dict) -> str:
+        """«  ·  ✓ NBR 9050», or the first number outside it."""
+        try:
+            from . import stairrules as SR
+            key = SR.current()
+            lines = SR.check(self.rec, s, key, fmt_cm=compat.fmt_cm,
+                             fmt_len=compat.fmt_len)
+        except Exception:  # noqa: BLE001 — the label without it
+            return ""
+        bad = SR.first_bad(lines)
+        return ("  ·  ✓ " + SR.RULES[key]["name"] if bad is None
+                else "  ·  ! " + bad)
 
     def status_clause(self) -> str:
         return super().status_clause().replace("Ramp:", "Stair:").replace(

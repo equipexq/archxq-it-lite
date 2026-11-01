@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QEvent, QObject, Qt
 
+from . import paintlog
 from . import walls as W
 
 # (bigger, his ask 2026-10-15: while recording he missed them too often —
@@ -83,14 +84,38 @@ def wall_grips(w: dict, z0: float, top: float) -> list[Grip]:
         return []
     u = _unit2((b[0] - a[0], b[1] - a[1]))
     n = (-u[1], u[0])
-    z = z0 + top
+    own = W.top_of(w)
+
+    def hz(s):                          # how high it is there (its own top)
+        return z0 + (W.top_h(w, s) if own is not None else top)
     m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-    return [Grip("a", (a[0], a[1], z), (-u[0], -u[1], 0.0), L,
-                 tip="Its length — the corner's walls follow"),
-            Grip("b", (b[0], b[1], z), (u[0], u[1], 0.0), L,
-                 tip="Its length — the corner's walls follow"),
-            Grip("across", (m[0], m[1], z), (n[0], n[1], 0.0), 0.0, "move",
-                 True, "Move it across — the walls joined to it stretch")]
+    out = [Grip("a", (a[0], a[1], hz(0.0)), (-u[0], -u[1], 0.0), L,
+                tip="Its length — the corner's walls follow"),
+           Grip("b", (b[0], b[1], hz(L)), (u[0], u[1], 0.0), L,
+                tip="Its length — the corner's walls follow"),
+           Grip("across", (m[0], m[1], hz(L / 2)), (n[0], n[1], 0.0), 0.0,
+                "move", True, "Move it across — the walls joined to it "
+                "stretch")]
+    if w.get("cw"):
+        return out
+    # its TOP (PLANO_PAREDE_TOPO, 2026-10-31): an arrow up at each end — a
+    # flat wall dragged there becomes sloped — and a gable's ridge (up,
+    # and along the wall); a little in from the ends (the length's grips)
+    k = min(0.30, L / 4)
+    tip = "Its height at this end — it slopes · Shift when you take it: " \
+        "the joined wall's end goes too"
+    for key, s in (("h0", k), ("h1", L - k)):
+        end = 0.0 if key == "h0" else L
+        out.append(Grip(key, (a[0] + u[0] * s, a[1] + u[1] * s, hz(s)),
+                        (0.0, 0.0, 1.0), hz(end) - z0, arrow=True, tip=tip))
+    if own is not None and own["kind"] == "gable":
+        sp = own["at"] * L
+        P = (a[0] + u[0] * sp, a[1] + u[1] * sp, z0 + own["hp"])
+        out.append(Grip("hp", P, (0.0, 0.0, 1.0), own["hp"], arrow=True,
+                        tip="Its ridge's height"))
+        out.append(Grip("at", P, (u[0], u[1], 0.0), sp,
+                        tip="Slide its ridge along it"))
+    return out
 
 
 def opening_grips(o: dict, w: dict, z0: float) -> list[Grip]:
@@ -102,6 +127,7 @@ def opening_grips(o: dict, w: dict, z0: float) -> list[Grip]:
     u = seg.u
     pos, ow = float(o["pos"]), float(o["w"])
     sill, h = float(o.get("sill", 0.0)), float(o["h"])
+    z0 += W.opening_lift(w)              # a raised wall: from its floor
 
     def at(s, z):
         return (seg.p0[0] + u[0] * s, seg.p0[1] + u[1] * s, z)
@@ -118,6 +144,37 @@ def opening_grips(o: dict, w: dict, z0: float) -> list[Grip]:
     out.append(Grip("pos", at(pos, zm), (u[0], u[1], 0.0), 0.0, "move",
                     tip="Slide it along its wall"))
     return out
+
+
+def opening_hit(o: dict, w: dict, z0: float, origin, d) -> float | None:
+    """Where a camera ray (``origin``, unit ``d``) meets the HOLE of an
+    opening — its rectangle on either face of the wall: the distance
+    along the ray, or None (a ray along the wall's faces — the plan — never
+    meets it: the plan picks by its symbol)."""
+    if not straight(w):
+        return None
+    seg = W.centre(w)
+    u = seg.u
+    n = (-u[1], u[0])
+    s0 = float(o["pos"]) - float(o["w"]) / 2
+    s1 = float(o["pos"]) + float(o["w"]) / 2
+    zs = z0 + W.opening_lift(w) + float(o.get("sill", 0.0))
+    zt = zs + float(o["h"])
+    dn = d[0] * n[0] + d[1] * n[1]
+    if abs(dn) < 1e-6:
+        return None
+    best = None
+    for c in (float(w["t"]) / 2, -float(w["t"]) / 2):
+        px, py = seg.p0[0] + n[0] * c, seg.p0[1] + n[1] * c
+        t = ((px - origin[0]) * n[0] + (py - origin[1]) * n[1]) / dn
+        if t <= 0:
+            continue
+        hx, hy = origin[0] + d[0] * t, origin[1] + d[1] * t
+        hz = origin[2] + d[2] * t
+        s = (hx - seg.p0[0]) * u[0] + (hy - seg.p0[1]) * u[1]
+        if s0 <= s <= s1 and zs <= hz <= zt and (best is None or t < best):
+            best = t
+    return best
 
 
 def _col_axes(c: dict):
@@ -208,9 +265,12 @@ def slab_grips(s: dict, z: float) -> list[Grip]:
     side's middle (the side moves parallel to itself)."""
     pts = [tuple(p) for p in s["corners"]]
     out = []
+    zc = s.get("zc") or []                    # a block's corners up / down
+    if len(zc) != len(pts):
+        zc = [0.0] * len(pts)
     for i, p in enumerate(pts):
-        out.append(Grip(f"v{i}", (p[0], p[1], z), (1.0, 0.0, 0.0), 0.0,
-                        "point", tip="Its corner — drag it anywhere"))
+        out.append(Grip(f"v{i}", (p[0], p[1], z + zc[i]), (1.0, 0.0, 0.0),
+                        0.0, "point", tip="Its corner — drag it anywhere"))
     for i, p in enumerate(pts):
         q = pts[(i + 1) % len(pts)]
         n = _outward(pts, i)
@@ -227,6 +287,16 @@ def slab_grips(s: dict, z: float) -> list[Grip]:
                     tip="Its thickness — its top stays"))
     for j, h in enumerate(s.get("holes") or []):
         out += hole_grips(j, [tuple(p) for p in h], z)
+    if s.get("block") and not s.get("holes"):
+        # a BLOCK: an arrow up at each corner — its top there up / down
+        # (his ask 21/10; 2026-10-31), a little in towards its middle
+        for i, p in enumerate(pts):
+            k = min(0.25, 0.25 * math.dist(p, (cx, cy)))
+            L = math.dist(p, (cx, cy)) or 1.0
+            q = (p[0] + (cx - p[0]) / L * k, p[1] + (cy - p[1]) / L * k)
+            out.append(Grip(f"c{i}", (q[0], q[1], z + zc[i]),
+                            (0.0, 0.0, 1.0), zc[i], arrow=True,
+                            tip="This corner up / down — its top slopes"))
     return out
 
 
@@ -292,6 +362,28 @@ def hole_changed(h: list, key: str, v) -> list:
     for k in (i, (i + 1) % len(pts)):
         pts[k] = [round(pts[k][0] + n[0] * v, 4), round(pts[k][1] + n[1] * v, 4)]
     return pts
+
+
+def slab_hole_hit(s: dict, top: float, origin, d):
+    """Where a camera ray (``origin``, unit ``d``) goes through one of a
+    slab's OPENINGS — inside its outline on the slab's top or underside:
+    (distance along the ray, the opening's index), the nearest; None (his
+    ask, 2026-10-26: a click in a slab's hole picked nothing — a wall's
+    empty Opening picks so)."""
+    from shapely.geometry import Point, Polygon
+    if abs(d[2]) < 1e-9:
+        return None
+    best = None
+    for z in (top, top - float(s.get("t", 0.2))):
+        t = (z - origin[2]) / d[2]
+        if t <= 0:
+            continue
+        pt = Point(origin[0] + d[0] * t, origin[1] + d[1] * t)
+        for j, h in enumerate(s.get("holes") or []):
+            if len(h) >= 3 and Polygon(h).buffer(1e-6).contains(pt) \
+                    and (best is None or t < best[0]):
+                best = (t, j)
+    return best
 
 
 def _hole_key(key: str):
@@ -387,7 +479,7 @@ def glazing_changed(doc: dict, e: dict, key: str, v, grip=None):
     elif key == "base":
         top = float(e.get("base", 0.0)) + float(e.get("h", 2.10))
         if top - v < 0.2:
-            return doc, "Too low for a glass grid"
+            return doc, "Too low for a grid"
         r["base"], r["h"] = round(v, 4), round(top - v, 4)
     why = S.why_not(r)
     if why:
@@ -635,6 +727,29 @@ def flight_grips(r: dict, ps: list, zs: float, ze: float) -> list[Grip]:
         out.append(Grip("top", (p[0], p[1], max(zs, ze)),
                         (ax[0], ax[1], 0.0), tl,
                         tip="Its landing at the top — push it out (0: none)"))
+    # its LANDING AT THE BOTTOM (his ask, 2026-10-23): a grip on the face of
+    # its foot — none yet: on its first step's edge, a quarter across (the
+    # «move» grip has that edge's middle; a down ramp's length its end)
+    foot = R.foot_piece(dict(r, foot_landing=max(float(
+        r.get("foot_landing", 0.0) or 0.0), 0.02)), ps, zs, ze)
+    if foot is not None:
+        (cx, cy), (dx, dy) = foot["c"], foot["d"]
+        fl = float(r.get("foot_landing", 0.0) or 0.0)
+        if ze >= zs:                      # up: behind the click
+            p, ax = (cx, cy), (-dx, -dy)
+            if fl < 0.01:
+                p = (cx + dx * foot["l"], cy + dy * foot["l"])
+        else:                             # down: its far face, out along d
+            p, ax = (cx + dx * foot["l"], cy + dy * foot["l"]), (dx, dy)
+            if fl < 0.01:
+                p = (cx, cy)
+        if fl < 0.01:
+            q = float(foot["w"]) / 4
+            p = (p[0] + dy * q, p[1] - dx * q)
+        out.append(Grip("foot", (p[0], p[1], min(zs, ze)),
+                        (ax[0], ax[1], 0.0), fl,
+                        tip="Its landing at the bottom — push it out "
+                        "(0: none)"))
     return out
 
 
@@ -737,9 +852,9 @@ def flight_magnets(doc: dict, r: dict, key: str, grip, ps: list) -> list:
             if v >= 0.5:
                 out.append((round(v, 4), anchor(p0, wu, L, P)))
         return out
-    if key == "top":
-        # its landing at the top onto a face ACROSS its way, ahead (the
-        # façade it reaches, a slab's edge): that long
+    if key in ("top", "foot"):
+        # its landing at the top (bottom) onto a face ACROSS its way, ahead
+        # (the façade it reaches, a slab's edge, the shaft's wall): that long
         a = (grip.axis[0], grip.axis[1])
         P = grip.p
         for p0, wu, L in faces:
@@ -887,6 +1002,9 @@ def flight_changed(doc: dict, e: dict, key: str, v, grip=None):
     elif key == "top":                    # its landing at the top
         r["top_landing"] = round(max(float(v), 0.0), 4) \
             if float(v) >= 0.05 else 0.0
+    elif key == "foot":                   # …and at the bottom
+        r["foot_landing"] = round(max(float(v), 0.0), 4) \
+            if float(v) >= 0.05 else 0.0
     else:
         return doc, None
     why = R.why_not(r) if e["type"] == "ramp" else None
@@ -918,6 +1036,9 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         return flight_changed(doc, e, key, v, grip)
     if t == "guard":
         return guard_changed(doc, e, key, v)
+    if t == "street":                    # streets.py (Pro)
+        from .streets import grip_changed
+        return grip_changed(doc, e, key, v)
     if t == "glazing":
         return glazing_changed(doc, e, key, v, grip)
     if t == "roof" and key.startswith("e"):   # an eave's overhang
@@ -992,10 +1113,34 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         r[key] = [round(e[key][0] + v[0], 4), round(e[key][1] + v[1], 4)]
     elif t == "slab" and key == "z":      # up / down (its «Top»)
         r["offset"] = round(float(e.get("offset", 0.0)) + v, 4)
+        # (a block's base / a ceiling's height go with it: its top follows
+        # them — 0.15.0)
+        if e.get("block"):
+            r["base"] = round(float(e.get("base", 0.0)) + v, 4)
+        elif e.get("ceiling"):
+            r["ch"] = round(float(e.get("ch", 2.60)) + v, 4)
     elif t == "slab" and key == "t":      # its thickness
         if v < 0.02:
             return doc, "Too thin for a slab"
         r["t"] = round(v, 4)
+        # (its top stays — a block's base / a ceiling's height move under
+        # it, 0.15.0)
+        top = float(e.get("offset", 0.0))
+        if e.get("block"):
+            r["base"] = round(top - v, 4)
+        elif e.get("ceiling"):
+            r["ch"] = round(top - v, 4)
+    elif t == "slab" and key.startswith("c"):   # a block's corner up / down
+        i = int(key[1:])
+        zc = list(e.get("zc") or [0.0] * len(e["corners"]))
+        if i >= len(zc):
+            return doc, "Gone"
+        if float(e["t"]) + v < 0.02:
+            return doc, "Too low — under its foot"
+        zc[i] = round(v, 4)
+        r["zc"] = zc if any(abs(x) > 1e-6 for x in zc) else None
+        if r["zc"] is None:
+            r.pop("zc")
     elif t == "slab" and key.startswith("h"):   # one of its openings
         j, k = _hole_key(key)
         holes = [list(h) for h in e.get("holes") or []]
@@ -1188,6 +1333,76 @@ def vertical_magnets(doc: dict, kind: str, eid: str, key: str,
             out += [(zz - top, A) for zz, A in floors]
         return [(round(v, 4), A) for v, A in out]
     return []
+
+
+def wall_top_magnets(doc: dict, wid: str, key: str, info: dict, p,
+                     wall_h, guides=()) -> list:
+    """(value, anchor) for a wall's top arrows (h0 / h1 / hp): the heights
+    of the walls near it at their ends (its own other end, its ridge), the
+    floors and the slabs' undersides, the beams' undersides of its level
+    near it, and the host's GUIDES — a guide point near it, a level guide
+    line passing it (his ask, 2026-10-30). ``wall_h(wall)``: a flat
+    wall's height; ``guides``: the host's (``point`` + ``direction``)."""
+    walls = doc.get("walls") or []
+    w = next((x for x in walls if x["id"] == wid), None)
+    if w is None or w["level"] not in info:
+        return []
+    z0 = info[w["level"]]["z0"]
+    out = [(li["z0"], None) for li in info.values()] + \
+        [(li["under"], None) for li in info.values()]
+    for x in walls:
+        if x["level"] != w["level"] or not straight(x) or x.get("cw"):
+            continue
+        L = math.dist(x["a"], x["b"])
+        for end, s in (("a", 0.0), ("b", L)):
+            if x["id"] == wid and end == ("a" if key == "h0" else "b"):
+                continue                  # the end being dragged
+            P = x[end]
+            if math.dist(P, p[:2]) > NEAR_COL:
+                continue
+            h = W.top_h(x, s) if W.top_of(x) is not None else wall_h(x)
+            out.append((z0 + h, (P[0], P[1], z0 + h)))
+        top = W.top_of(x)
+        if top is not None and top["kind"] == "gable" and \
+                not (x["id"] == wid and key == "hp"):
+            u = _unit2((x["b"][0] - x["a"][0], x["b"][1] - x["a"][1]))
+            q = (x["a"][0] + u[0] * top["at"] * L,
+                 x["a"][1] + u[1] * top["at"] * L)
+            if math.dist(q, p[:2]) <= NEAR_COL:
+                out.append((z0 + top["hp"], (q[0], q[1], z0 + top["hp"])))
+    for o in doc.get("structure") or []:
+        if o.get("type") == "beam" and o["level"] == w["level"] \
+                and "a" in o:
+            q = _nearest_on(o["a"], o["b"], p[:2])
+            if math.dist(q, p[:2]) <= NEAR_BEAM:
+                zb = z0 + info[o["level"]]["height"] - float(o["h"])
+                out.append((zb, (q[0], q[1], zb)))
+    for g in guides or ():
+        try:
+            P = g.point
+            P = (float(P.x()), float(P.y()), float(P.z())) \
+                if hasattr(P, "x") else tuple(P)
+            d = g.direction
+            if d is None:                 # a guide point near it
+                if math.dist(P[:2], p[:2]) <= NEAR_COL:
+                    out.append((P[2], P))
+                continue
+            d = (float(d.x()), float(d.y()), float(d.z())) \
+                if hasattr(d, "x") else tuple(d)
+            if abs(d[2]) > 1e-6:
+                continue                  # not level: no one height
+            dd = math.hypot(d[0], d[1])
+            if dd < 1e-9:
+                continue
+            # its distance in plan from the arrow (an infinite line)
+            off = abs((p[0] - P[0]) * d[1] - (p[1] - P[1]) * d[0]) / dd
+            if off <= 1.0:
+                t = ((p[0] - P[0]) * d[0] + (p[1] - P[1]) * d[1]) / dd ** 2
+                q = (P[0] + d[0] * t, P[1] + d[1] * t, P[2])
+                out.append((P[2], q))
+        except Exception:  # noqa: BLE001 — a guide of another shape
+            continue
+    return [(round(zz - z0, 4), A) for zz, A in out if zz - z0 > 0.1]
 
 
 def beam_end_magnets(doc: dict, bid: str, key: str, z: float) -> list:
@@ -1535,20 +1750,87 @@ def opening_changed(doc: dict, oid: str, key: str, v: float,
     why = S.opening_room(n, w, ops, wall_height)
     if why:
         return doc, why
+    if key in ("left", "right", "pos") and w.get("kind", "line") == "line":
+        # 5 cm off a corner's face (0.15.0, S.opening_span) — an edge
+        # already nearer may only move away from it
+        lo, hi = S.opening_span(doc, w, pos)
+        e0, e1 = n["pos"] - n["w"] / 2, n["pos"] + n["w"] / 2
+        if (e0 < lo - 1e-6 and e0 < pos - ow / 2 - 1e-6) or \
+                (e1 > hi + 1e-6 and e1 > pos + ow / 2 + 1e-6):
+            return doc, "Too close to the corner"
     return dict(doc, openings=[n if x["id"] == oid else x for x in ops]), None
 
 
-def wall_changed(doc: dict, wid: str, key: str, v: float):
+def _with_top(w: dict, key: str, v: float, flat_h: float):
+    """(wall with its top's ``key`` at v, why not or None) — h0 / h1: an
+    end's height (a flat wall becomes SLOPED: his OK, 2026-10-30); hp: a
+    gable's ridge; at: where the ridge is, v along it (m)."""
+    top = W.top_of(w)
+    if top is None:
+        if key not in ("h0", "h1"):
+            return w, "Gone"
+        top = {"kind": "slope", "h0": flat_h, "h1": flat_h,
+               "was": w.get("height", "level")}
+    top = dict(top)
+    L = W.drawn(w).L
+    if key == "at":
+        if not 0.05 * L - 1e-6 <= v <= 0.95 * L + 1e-6:
+            return w, "Its ridge stays inside the wall"
+        top["at"] = v / L
+    else:
+        if v - max(float(w.get("base", 0.0)), 0.0) < 0.10:
+            return w, "Too low for a wall"
+        if v > W.TOP_H[1]:
+            return w, "Too high"
+        top[key] = v
+        if top["kind"] == "gable" and key != "hp" and v > top["hp"]:
+            return w, "Over its ridge — raise the ridge first"
+        if key == "hp" and v < max(top["h0"], top["h1"]):
+            return w, "Under its ends"
+    top = W.clean_top(top, top.get("was", "level"))
+    return dict(w, top=top, height=W.top_peak(top)), None
+
+
+def joined_end(doc: dict, w: dict, end: str) -> list:
+    """[(wall id, its end)] of the straight walls of its level whose end
+    is at this wall's ``end`` (a corner)."""
+    P = tuple(w[end])
+    return [(x["id"], e) for x in doc.get("walls") or []
+            if x["id"] != w["id"] and x["level"] == w["level"]
+            and straight(x) and not x.get("cw")
+            for e in ("a", "b") if math.dist(x[e], P) <= TOL]
+
+
+def wall_changed(doc: dict, wid: str, key: str, v: float,
+                 flat_h=None, carry: bool = False):
     """(the document with the wall's grip ``key`` at value ``v``, why not
     or None). An END: the wall's new length; the corner's walls follow —
     one in line with it keeps its line (it gets shorter / longer), one at
     an angle is MOVED (wallmove: the walls joined to it stretch, the
-    rectangle stays a rectangle). ACROSS: moved by v (wallmove)."""
+    rectangle stays a rectangle). ACROSS: moved by v (wallmove). Its TOP
+    (h0 / h1 / hp / at): ``flat_h(wall)`` = a flat wall's height now;
+    ``carry`` (Shift when taken): the joined walls' end at that corner
+    goes up / down with it."""
     from . import wallmove
     walls = doc.get("walls") or []
     w = next((x for x in walls if x["id"] == wid), None)
     if w is None or not straight(w):
         return doc, "Gone"
+    if key in ("h0", "h1", "hp", "at"):
+        fh = flat_h or (lambda x: float(x["height"])
+                        if x.get("height", "level") != "level" else 3.0)
+        new_w, why = _with_top(w, key, v, fh(w))
+        if why:
+            return doc, why
+        repl = {wid: new_w}
+        if carry and key in ("h0", "h1"):
+            for xid, e in joined_end(doc, w, "a" if key == "h0" else "b"):
+                x = next(y for y in walls if y["id"] == xid)
+                x2, why = _with_top(x, "h0" if e == "a" else "h1", v, fh(x))
+                if why:
+                    return doc, f"«{x.get('name', 'Wall')}»: {why}"
+                repl[xid] = x2
+        return dict(doc, walls=[repl.get(x["id"], x) for x in walls]), None
     if key == "across":
         if abs(v) < 1e-9:
             return doc, None
@@ -1674,7 +1956,7 @@ def opening_magnets(doc: dict, z0s: dict, oid: str, key: str) -> list:
     u = seg.u
     pos, ow = float(o["pos"]), float(o["w"])
     sill, h = float(o.get("sill", 0.0)), float(o["h"])
-    z0 = z0s[w["level"]]
+    z0 = z0s[w["level"]] + W.opening_lift(w)     # raised walls: their floor
     out = []
     for p in ops:
         pw = walls.get(p["wall"])
@@ -1683,7 +1965,7 @@ def opening_magnets(doc: dict, z0s: dict, oid: str, key: str) -> list:
             continue
         ps = W.centre(pw)
         pu = ps.u
-        pz0 = z0s[pw["level"]]
+        pz0 = z0s[pw["level"]] + W.opening_lift(pw)
         pp, pwd = float(p["pos"]), float(p["w"])
         psill, ph = float(p.get("sill", 0.0)), float(p["h"])
 
@@ -2159,6 +2441,12 @@ class GripControl(QObject):
                 if g is None:
                     return False
                 self._start(tg, g, p.x(), p.y())
+                if event.modifiers() & Qt.ShiftModifier and \
+                        g.key in ("h0", "h1"):
+                    # Shift when taken: the joined wall's end goes too
+                    from dataclasses import replace
+                    self.drag["g"] = replace(g, extra=dict(g.extra,
+                                                           carry=True))
                 self.eat_release = True
                 return True
             if t == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
@@ -2246,6 +2534,20 @@ class GripControl(QObject):
             from .library import parse_measure
             g = self.drag["g"]
             typed, self._typed = self._typed.strip(), ""
+            if self.drag["kind"] == "opening" and g.key == "pos"                     and typed[:1] not in "+-":
+                # (PLANO_COTAS_ABERTURAS.md) no sign: the edge that far
+                # from the hot dimension's corner — «…c»: the centre
+                v = self._opening_typed(typed)
+                if v is None:
+                    return True
+                self.drag["stuck"], self.drag["anchor"] = False, None
+                self._set(v)
+                if self.drag["why"] is None:
+                    self._drop()
+                else:
+                    from . import compat
+                    compat.flash(self.owner.viewport, self.drag["why"], 3000)
+                return True
             v = parse_measure(typed, "m" if self.drag["kind"] == "opening"
                               else "len")
             if v is None:
@@ -2278,11 +2580,76 @@ class GripControl(QObject):
             return True
         s = event.text()
         # digits, a unit (cm / mm / m), feet and inches (2'6 1/2")
-        if s and (s.isdigit() or s in ".,-/'\" " or s.lower() in "cmftin"):
+        # (+: a move that way — «+0.10» — 2026-10-25)
+        if s and (s.isdigit() or s in ".,+-/'\" " or s.lower() in "cmftin"):
             self._typed += s
             self.owner.viewport.update()
             return True
         return True                     # nothing else while a grip moves
+
+    # -- a door's / window's dimensions (opendims) --------------------------------------
+    def _opening_dims(self, oid: str, v: float = 0.0):
+        """(wall, face, z0, pos, w, lo, hi) of opening ``oid`` moved ``v``
+        along its wall — its dimensions on the wall's inside face — or None.
+        The face's bays are kept while the level's walls stay the same."""
+        from . import opendims as D, structure as S
+        doc = self.owner.doc()
+        o = next((x for x in doc.get("openings") or [] if x["id"] == oid),
+                 None)
+        w = o and next((x for x in doc["walls"] if x["id"] == o["wall"]),
+                       None)
+        if not w or not straight(w):
+            return None
+        walls = [x for x in doc["walls"] if x["level"] == w["level"]]
+        face = -1.0 if float(w.get("side", 1)) < 0 else 1.0
+        pos = float(o["pos"]) + v
+        key = (w["id"], face, repr([(x.get("a"), x.get("b"), x.get("t"),
+                                     x.get("side"), x.get("align"))
+                                    for x in walls]))
+        cache = self.__dict__.setdefault("_bays", {})
+        bay = next(((b0, b1) for b0, b1 in cache.get(key, ())
+                    if b0 - 1e-6 <= pos <= b1 + 1e-6), None)
+        if bay is None:
+            bay = S.wall_bay({"walls": walls}, w, pos, face)
+            if len(cache) > 64:
+                cache.clear()
+            cache.setdefault(key, []).append(bay)
+        lo, hi = D.refs(walls, w, pos, face, doc.get("openings") or [],
+                        skip=oid, bay=bay)
+        z0 = None
+        t = self._targets()
+        for g in (t[2] if t else ()):
+            if g.key == "pos":
+                z0 = g.p[2] - float(o.get("sill", 0.0)) - float(o["h"]) / 2
+        if z0 is None:
+            return None
+        return w, face, z0, pos, float(o["w"]), lo, hi
+
+    def _opening_typed(self, typed: str):
+        """The middle grip's move for a typed distance (no sign), or None."""
+        from . import opendims as D
+        got = D.parse(typed)
+        dims = self._opening_dims(self.drag["id"], self.drag["v"] or 0.0)
+        if got is None or dims is None:
+            return None
+        _w, _f, _z, pos, ow, lo, hi = dims
+        base = pos - (self.drag["v"] or 0.0)
+        new = D.pos_for(got[0], D.hot_side(pos, lo, hi), lo, hi, ow, got[1])
+        return round(new - base, 4)
+
+    def _draw_opening_dims(self, viewport, painter, t) -> None:
+        from . import opendims as D
+        d = self.drag
+        moving = d is not None and d["g"].key == "pos"
+        if d is not None and not moving:
+            return                       # a size grip: its own value shows
+        dims = self._opening_dims(t[1], d["v"] if moving else 0.0)
+        if dims is None:
+            return
+        w, face, z0, pos, ow, lo, hi = dims
+        D.draw(viewport, painter, w, face, z0, pos, ow, lo, hi,
+               D.hot_side(pos, lo, hi) if moving else None,
+               self._typed if moving else "")
 
     # -- drawn over the view ------------------------------------------------------------
     def draw(self, viewport, painter) -> None:
@@ -2307,6 +2674,12 @@ class GripControl(QObject):
                          g.p[2] + g.axis[2] * off)
             grips = [Grip(g.key, moved, g.axis, g.base, g.mode, g.arrow,
                           g.tip, g.extra)]
+        if t[0] == "opening":
+            try:
+                self._draw_opening_dims(viewport, painter, t)
+            except Exception:  # noqa: BLE001 — never break the host's paint
+                from . import compat
+                compat.log_error("opening dims")
         painter.save()
         painter.setRenderHint(painter.RenderHint.Antialiasing)
         try:
@@ -2352,6 +2725,8 @@ class GripControl(QObject):
                             "  ·  lined up" if (d.get("anchor")
                                                 or d.get("anchors"))
                             else "  ·  joins")
+                    if d["g"].extra.get("carry") and not self._typed:
+                        text += "  ·  with the joined wall"
                     if d.get("lock") and not self._typed:
                         text += {"z": "  ·  up / down (↑)",
                                  "x": "  ·  locked (→)",
@@ -2371,7 +2746,7 @@ class GripControl(QObject):
                     painter.setPen(QColor("#ffb27a" if d["why"] else "#ffffff"))
                     painter.drawText(box, Qt.AlignCenter, text)
         except Exception:  # noqa: BLE001 — never break the host's paint
-            pass
+            paintlog.failed()
         painter.restore()
 
     def _guide(self, painter, anchor, p) -> None:

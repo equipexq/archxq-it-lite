@@ -231,6 +231,66 @@ def piece_corners(p: dict) -> list:
     return pts if a > 0 else list(reversed(pts))
 
 
+def ghost_fit(corners: list, loops: list, px, cross: float,
+              line: float) -> tuple[float, float]:
+    """How far to move a whole flight (its plan ``corners``) so it sits on
+    the GHOST level's outlines (his ask, 2026-10-26: «stacking it on the
+    stair below, on the corner of the wall below, it does not pull») — one
+    of its corners on a ghost corner within ``cross`` px, else a corner on
+    a ghost edge within ``line`` px (and on a second edge across the
+    first, as into a corner). ``px(x, y)`` → screen point. (0, 0): none."""
+    if not corners or not loops:
+        return 0.0, 0.0
+    cs = [(c, px(*c)) for c in corners]
+    cs = [(c, s) for c, s in cs if s]
+    best = None
+    for loop in loops:
+        for g in loop:
+            sg = px(g[0], g[1])
+            if not sg:
+                continue
+            for c, sc in cs:
+                d = math.dist(sc, sg)
+                if d <= cross and (best is None or d < best[0]):
+                    best = (d, g[0] - c[0], g[1] - c[1])
+    if best is not None:
+        return best[1], best[2]
+
+    def edge(moved, skip=None):
+        out = None
+        for loop in loops:
+            for a, b in zip(loop, list(loop[1:]) + [loop[0]]):
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                L = math.hypot(dx, dy)
+                if L < 1e-6:
+                    continue
+                u = (dx / L, dy / L)
+                if skip is not None and abs(u[0] * skip[1]
+                                            - u[1] * skip[0]) < 0.5:
+                    continue              # the second: across the first
+                for c, _s in moved:
+                    t = (c[0] - a[0]) * u[0] + (c[1] - a[1]) * u[1]
+                    if not -1e-6 <= t <= L + 1e-6:
+                        continue
+                    q = (a[0] + u[0] * t, a[1] + u[1] * t)
+                    sc, sq = px(*c), px(*q)
+                    if not sc or not sq:
+                        continue
+                    d = math.dist(sc, sq)
+                    if d <= line and (out is None or d < out[0]):
+                        out = (d, q[0] - c[0], q[1] - c[1], u)
+        return out
+    e1 = edge(cs)
+    if e1 is None:
+        return 0.0, 0.0
+    mx, my = e1[1], e1[2]
+    moved = [((c[0] + mx, c[1] + my), None) for c, _s in cs]
+    e2 = edge(moved, e1[3])
+    if e2 is not None:
+        mx, my = mx + e2[1], my + e2[2]
+    return mx, my
+
+
 def top_piece(r: dict, ps: list, zs: float, ze: float) -> dict | None:
     """Its LANDING AT THE TOP (his idea, 2026-10-18 — a shop's entrance
     steps end on a platform): a level piece ``top_landing`` long at its top
@@ -258,12 +318,44 @@ def top_piece(r: dict, ps: list, zs: float, ze: float) -> dict | None:
             "run": False, "top": True}
 
 
+def foot_piece(r: dict, ps: list, zs: float, ze: float) -> dict | None:
+    """Its LANDING AT THE BOTTOM (his ask, 2026-10-23 — stairs stacked in a
+    shaft: the floor where the next flight starts, carried by the stair, so
+    a copied level brings it): a level piece ``foot_landing`` long at its
+    LOW elevation — going up, behind its first run's start; going down, past
+    its last run's end. None: no landing. Out of ``pieces``, as
+    ``top_piece``: it never cuts a slab."""
+    try:
+        ln = float(r.get("foot_landing", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    runs = [p for p in ps if p.get("run", True)]
+    if ln < 0.01 or not runs:
+        return None
+    z = min(zs, ze)
+    if ze >= zs:                          # up: behind the first run
+        p = runs[0]
+        (cx, cy), (dx, dy) = p["c"], p["d"]
+        c = (cx - dx * ln, cy - dy * ln)
+    else:                                 # down: the last run's end
+        p = runs[-1]
+        (cx, cy), (dx, dy) = p["c"], p["d"]
+        c = (cx + dx * p["l"], cy + dy * p["l"])
+    return {"c": c, "d": (dx, dy), "l": ln, "w": p["w"], "z0": z, "z1": z,
+            "run": False, "foot": True}
+
+
+def end_pieces(r: dict, ps: list, zs: float, ze: float) -> list:
+    """Its landings at the top and at the bottom (those it has)."""
+    return [p for p in (top_piece(r, ps, zs, ze), foot_piece(r, ps, zs, ze))
+            if p is not None]
+
+
 def footprints(r: dict, zs: float, ze: float, L: float) -> list:
-    """Every piece's outline in plan (what the slab above loses) — its
-    landing at the top too (``top_piece``)."""
+    """Every piece's outline in plan (its ghost) — its landings at the top
+    and at the bottom too (``end_pieces``)."""
     ps = pieces(r, zs, ze, L)
-    tp = top_piece(r, ps, zs, ze)
-    return [piece_corners(p) for p in ps + ([tp] if tp else [])]
+    return [piece_corners(p) for p in ps + end_pieces(r, ps, zs, ze)]
 
 
 def footprint(r: dict, L: float) -> list:
@@ -311,9 +403,8 @@ def faces(r: dict, doc: dict, elevations) -> list:
     # over it — a wedge, not a sloped slab
     solid = r.get("build") == "solid"
     zf = min(zs, ze) + 0.001
-    # (its landing at the top, built as the middle one — ``top_piece``)
-    tp = top_piece(r, ps, zs, ze)
-    for p in ps + ([tp] if tp else []):
+    # (its landings at the top / bottom, built as the middle one)
+    for p in ps + end_pieces(r, ps, zs, ze):
         (cx, cy), (dx, dy) = p["c"], p["d"]
         rx, ry = dy, -dx
 
@@ -324,6 +415,11 @@ def faces(r: dict, doc: dict, elevations) -> list:
         z0, z1, l = p["z0"] - 0.001, p["z1"] - 0.001, p["l"]
         b0 = zf if solid else z0 - t + 0.001
         b1 = zf if solid else z1 - t + 0.001
+        foot = p.get("foot", False)
+        if foot:
+            # the landing at the bottom: on the low floor already — a slab
+            # «t», 1 mm under that floor (solid or not: nothing to fill)
+            b0, b1 = z0 - t + 0.001, z1 - t + 0.001
         if p.get("run", True):
             a0, a1 = -p["w"] / 2 + lt, p["w"] / 2 - rt
         elif walls is not None:           # a landing: it gives way to them
@@ -332,7 +428,7 @@ def faces(r: dict, doc: dict, elevations) -> list:
             continue
         else:
             a0, a1 = -p["w"] / 2, p["w"] / 2
-        if solid and min(z0, z1) - zf < 0.002:
+        if solid and not foot and min(z0, z1) - zf < 0.002:
             # the low end on the floor: a wedge, its thin edge on the floor
             prof = [(0.0, zf), (l, zf), (l, max(z1, zf + 0.002)),
                     (0.0, max(z0, zf + 0.002))]
@@ -1071,8 +1167,8 @@ class FlightPlan(QWidget):
             return
         r = dict(self.r, x=0.0, y=0.0, angle=90.0)
         ps = self.pieces(r)
-        tp = top_piece(r, ps, self.zs, self.ze)   # its landing at the top
-        ps_all = ps + ([tp] if tp else [])
+        # its landings at the top / bottom
+        ps_all = ps + end_pieces(r, ps, self.zs, self.ze)
         polys = [piece_corners(pc) for pc in ps_all]
         xs = [q[0] for pg in polys for q in pg]
         ys = [q[1] for pg in polys for q in pg]
@@ -1333,6 +1429,13 @@ class RampDialog(QDialog):
                                 "long (0: none) — or push the grip on its "
                                 "top edge")
         form.addRow("Landing at the top", self.f_tland)
+        # …and where it starts (2026-10-23)
+        self.f_fland = L.metres(float(rec.get("foot_landing", 0.0) or 0.0),
+                                0.0, 20.0)
+        self.f_fland.setToolTip("A level platform where it starts, this "
+                                "long (0: none) — or push the grip on its "
+                                "bottom edge")
+        form.addRow("Landing at the bottom", self.f_fland)
         gl.addWidget(self.fold_shape)
         gl.addStretch(1)
         self.tabs.addTab(geo, "Geometry", "geometry")
@@ -1458,7 +1561,7 @@ class RampDialog(QDialog):
                                         self.f_build):
             w.currentIndexChanged.connect(self._sync)
         for w in (*self.ends.values(), self.f_w, self.f_t, self.f_land,
-                  self.f_clear, self.f_tland):
+                  self.f_clear, self.f_tland, self.f_fland):
             w.valueChanged.connect(self._sync)
         self.f_slope.valueChanged.connect(lambda _v: self._given("slope"))
         self.f_len.valueChanged.connect(lambda _v: self._given("length"))
@@ -1495,6 +1598,11 @@ class RampDialog(QDialog):
             r["top_landing"] = tl
         else:
             r.pop("top_landing", None)
+        fl = round(self.f_fland.value(), 3)
+        if fl >= 0.01:
+            r["foot_landing"] = fl
+        else:
+            r.pop("foot_landing", None)
         if self.edit:
             r["x"] = round(self.f_x.value(), 4)
             r["y"] = round(self.f_y.value(), 4)
@@ -1656,11 +1764,48 @@ class RampTool(_PlotTool):
 
     def _reset(self) -> None:
         self.a = None
+        self._a0 = None                # where it was clicked (a: fitted)
         self.diag = None
         self._sync()
 
     def _busy(self) -> bool:
         return self.a is not None
+
+    def _pick(self, ctx) -> list[float]:
+        """The cursor — then the WHOLE flight moved onto the ghost level's
+        outlines: a corner on a corner, a side flush on an edge
+        (``ghost_fit``); after the first click its start moves with it."""
+        from . import plottools as PT
+        if getattr(self, "_a0", None) is not None:
+            self.a = list(self._a0)
+        # the way it goes: never pulled onto a ghost line (it bent the
+        # flight 2° off — live test, 2026-10-26); the axes / 45° keep it
+        self.no_ghost_point = self.a is not None
+        p = super()._pick(ctx)
+        loops = PT.GHOST.get("loops") or ()
+        if not loops or getattr(getattr(ctx, "snap", None), "kind",
+                                "") in PT.HARD_SNAPS:
+            return p
+        start = p if self.a is None else self.a
+        ang = (float(self.rec.get("angle", 0.0)) if self.a is None
+               else self._angle(p))
+        if ang is None:
+            return p
+        try:
+            corners = [c for pc in self.layout(dict(
+                self.rec, x=start[0], y=start[1], angle=ang))
+                for c in piece_corners(pc)]
+        except Exception:  # noqa: BLE001 — never in the hand's way
+            return p
+        vp = self.viewport
+        dx, dy = ghost_fit(corners, loops,
+                           lambda x, y: compat.to_pixel(vp, x, y, self.z),
+                           PT.GUIDE_CROSS_PX, PT.GUIDE_LINE_PX)
+        if not (dx or dy):
+            return p
+        if self.a is not None:         # the start moves, the way it goes kept
+            self.a = [round(self._a0[0] + dx, 4), round(self._a0[1] + dy, 4)]
+        return [round(p[0] + dx, 4), round(p[1] + dy, 4)]
 
     def _anchor(self):
         return self.a
@@ -1682,6 +1827,7 @@ class RampTool(_PlotTool):
         p = self._pick(ctx)
         if self.a is None:
             self.a = p
+            self._a0 = list(p)
             self._sync()
             self._show_hint()
             return

@@ -435,6 +435,7 @@ def _adopt_walls(doc: dict, moves: dict, copies: list) -> tuple[dict, list]:
     if copies:
         walls, ops = list(doc["walls"]), list(doc.get("openings") or [])
         n = 0
+        pairs = []                      # (source, copy): it wears the same
         for eid, key in copies:
             w = by_id.get(eid)
             if w is None:
@@ -444,12 +445,15 @@ def _adopt_walls(doc: dict, moves: dict, copies: list) -> tuple[dict, list]:
                                                                  "name")}
             nw = model.new_walls(walls, [r])[0]
             walls.append(nw)
+            pairs.append((eid, nw["id"]))
             ops += model.new_openings(ops, [
                 {k: v for k, v in dict(o, wall=nw["id"]).items()
                  if k not in ("id", "name")}
                 for o in doc.get("openings") or [] if o["wall"] == eid])
             n += 1
         doc = dict(doc, walls=walls, openings=ops)
+        from . import materials
+        doc = materials.carry(doc, pairs)
         if n:
             notes.append(f"{n} wall cop{'ies' if n > 1 else 'y'} made")
     return doc, notes

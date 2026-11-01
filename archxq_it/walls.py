@@ -52,6 +52,13 @@ CHORD = 0.002            # m: a curve becomes segments this close to it
 MAX_STEP = math.radians(10.0)      # …and never coarser than this
 ALIGN = {"outside": 1.0, "centre": 0.0, "inside": -1.0}
 EPS = 1e-9
+#: LAYERS (0.15.0, his plan approved 2026-10-20 — MAQUETAS/
+#: parede_camadas_tipos_v1.html): a wall may carry ``"layers"``, outside →
+#: inside, ONE «core» and finishes on either side (plaster, cladding,
+#: insulation, board); ``t`` stays the whole thickness (their sum). None =
+#: one core = the wall of always.
+MAX_LAYERS = 6
+LAYER_T = (0.005, 2.0)
 
 
 # ---- small vector kit --------------------------------------------------------------
@@ -211,10 +218,445 @@ def drawn(w: dict) -> Seg:
 
 
 def centre(w: dict) -> Seg:
-    """The wall's centre: the line drawn, moved by the alignment."""
+    """The wall's centre: the line drawn, moved by the alignment («core_out»
+    — a wall with layers: the line drawn is its CORE's outer face, the
+    outer finishes grow outside it)."""
     side = 1.0 if w.get("kind") == "circle" else float(w.get("side", 1))
-    o = ALIGN.get(w.get("align", "centre"), 0.0) * side * w["t"] / 2.0
+    if w.get("align") == "core_out":
+        o = side * (w["t"] / 2.0 - outer_finish(w))
+    else:
+        o = ALIGN.get(w.get("align", "centre"), 0.0) * side * w["t"] / 2.0
     return drawn(w).offset(o)
+
+
+# ---- its openings on a raised wall ---------------------------------------------
+def opening_lift(w: dict | None) -> float:
+    """How far a wall's doors and windows go up with it: its Base offset
+    when positive (a raised room — László #65, 2026-10-29: the doors stayed
+    on the level's floor, buried); 0 for a base of 0 or under (a footing, a
+    wall going down through its slab)."""
+    try:
+        return max(float((w or {}).get("base", 0.0) or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def lifted(o: dict, w: dict | None) -> dict:
+    """Opening ``o`` as it is built: its sill measured from the level's
+    floor (its own sill + the wall's lift). Nothing stored changes; with no
+    lift it is ``o`` itself — the same object, the same faces as before."""
+    k = opening_lift(w)
+    if k <= 0:
+        return o
+    # «_lift»: what of its sill is the wall's — «off the floor» (a stone
+    # sill under an Opening) still reads its own sill (trim.own_sill)
+    return dict(o, sill=float(o.get("sill", 0.0) or 0.0) + k, _lift=k)
+
+
+# ---- its top: flat, sloped, a gable (PLANO_PAREDE_TOPO, 2026-10-31) -----------
+#: ``"top"`` on a STRAIGHT wall (not a curtain wall): absent = flat, as
+#: always. {"kind": "slope", "h0", "h1"} — its height at a and at b;
+#: {"kind": "gable", "h0", "h1", "hp", "at"} — and a ridge ``hp`` at ``at``
+#: (0…1 along a → b). Heights from the level's floor, as ``height``; «was»:
+#: the height it had before (Flat gives it back). Its ``height`` is kept at
+#: the highest point, so whatever reads the height alone sees its top.
+TOP_KINDS = ("slope", "gable")
+TOP_H = (0.05, 50.0)
+TOP_AT = (0.05, 0.95)
+
+
+def clean_top(raw, height="level"):
+    """A wall's ``top`` as stored, or None (flat). A gable's ridge never
+    under its ends (a V would not be one solid)."""
+    if not isinstance(raw, dict) or raw.get("kind") not in TOP_KINDS:
+        return None
+    try:
+        def h(v):
+            return round(min(max(float(v), TOP_H[0]), TOP_H[1]), 4)
+        out = {"kind": raw["kind"], "h0": h(raw["h0"]), "h1": h(raw["h1"])}
+        if out["kind"] == "gable":
+            out["hp"] = max(h(raw.get("hp", 0.0)), out["h0"], out["h1"])
+            out["at"] = round(min(max(float(raw.get("at", 0.5)), TOP_AT[0]),
+                                  TOP_AT[1]), 4)
+    except (TypeError, ValueError, KeyError):
+        return None
+    was = raw.get("was", height)
+    try:
+        out["was"] = "level" if was == "level" else \
+            min(max(float(was), TOP_H[0]), TOP_H[1])
+    except (TypeError, ValueError):
+        out["was"] = "level"
+    return out
+
+
+def top_of(w: dict | None) -> dict | None:
+    """The wall's own top, or None: flat (as always), a curve, a curtain
+    wall."""
+    t = (w or {}).get("top")
+    if not t or (w.get("kind", "line") != "line") or w.get("cw"):
+        return None
+    return t
+
+
+def top_peak(top: dict) -> float:
+    """Its highest point, from the level's floor."""
+    return max(top["h0"], top["h1"], top.get("hp", 0.0))
+
+
+def top_h(w: dict, s: float) -> float:
+    """How high the wall stands (from the level's floor) at ``s`` along
+    its line drawn — past its ends LEVEL at that end's height: a corner
+    piece is flat, as on site, and meets the joined wall's top flush (his
+    test, 2026-11-01: the slope ran on into the mitre — a step there)."""
+    top = top_of(w)
+    if top is None:
+        return float(w["height"]) if w.get("height", "level") != "level" \
+            else None
+    sa, sb = top_span(w)
+    s = min(max(s, sa), sb)
+    return min(c + k * s for k, c in _planes(w, 0.0))
+
+
+def top_span(w: dict) -> tuple:
+    """Where its top's ends are along its line: its ends drawn (0, L) — or,
+    in a building, its CLEAR ends (``_span``, set by structure.wall_parts
+    from its plan: the inner corner of a mitre, the face of the wall it
+    butts into), so the corner square stays level at the end's height."""
+    L = max(drawn(w).L, EPS)
+    got = w.get("_span")
+    if got and got[1] - got[0] > 0.1:
+        return float(got[0]), float(got[1])
+    return 0.0, L
+
+
+def clear_span(w: dict, pieces, own=()) -> tuple:
+    """(sa, sb): along its line, where its plan's long sides BOTH still
+    run at each end — past it, the corner piece (``top_span``). ``own``:
+    its ends ("A" / "B") going on over their corner (a wall higher than
+    the one it meets there — structure.corner_caps): its top runs to its
+    plan's far end there, the slope with it."""
+    seg = drawn(w)
+    L, p0, u = seg.L, seg.p0, seg.u
+    t = float(w.get("t", 0.2))
+    lo_end, hi_end = 0.0, L
+    a_in, b_in = [], []
+    far = [(p[0] - p0[0]) * u[0] + (p[1] - p0[1]) * u[1]
+           for pc in pieces or () for p in pc["outer"]]
+    for pc in pieces or ():
+        loop = pc["outer"]
+        for i in range(len(loop)):
+            p, q = loop[i], loop[(i + 1) % len(loop)]
+            d = (q[0] - p[0], q[1] - p[1])
+            n = math.hypot(*d)
+            if n < 1e-9 or abs(d[0] * u[1] - d[1] * u[0]) / n > 1e-6:
+                continue                  # not along it
+            s1 = (p[0] - p0[0]) * u[0] + (p[1] - p0[1]) * u[1]
+            s2 = (q[0] - p0[0]) * u[0] + (q[1] - p0[1]) * u[1]
+            lo, hi = min(s1, s2), max(s1, s2)
+            if lo < t + 1.0:              # a side reaching its first end
+                a_in.append(lo)
+            if hi > L - t - 1.0:          # …its last end
+                b_in.append(hi)
+    if len(a_in) >= 2:
+        lo_end = max(a_in)
+    if len(b_in) >= 2:
+        hi_end = min(b_in)
+    if far and "A" in own:
+        lo_end = min(far)
+    if far and "B" in own:
+        hi_end = max(far)
+    if hi_end - lo_end < 0.1:
+        return 0.0, L
+    return lo_end, hi_end
+
+
+def top_mean(w: dict) -> float:
+    """Its mean height along its line (areas, volumes)."""
+    top = top_of(w)
+    if top["kind"] == "slope":
+        return (top["h0"] + top["h1"]) / 2
+    a = top["at"]
+    return a * (top["h0"] + top["hp"]) / 2 + \
+        (1 - a) * (top["hp"] + top["h1"]) / 2
+
+
+def top_low(w: dict, s0: float, s1: float) -> float:
+    """Its lowest height between s0 and s1 (its top is never a V: at one
+    of the two)."""
+    return min(top_h(w, s0), top_h(w, s1))
+
+
+def _planes(w: dict, z0: float) -> list:
+    """The top's plane(s) as (k, c): z = z0 + c + k·s, s along the line —
+    from h0 to h1 between its top's ends (``top_span``); a gable's ridge
+    stays where it was drawn (``at`` of its length)."""
+    top, L = top_of(w), max(drawn(w).L, EPS)
+    sa, sb = top_span(w)
+    h0, h1 = top["h0"], top["h1"]
+    if top["kind"] == "slope":
+        k = (h1 - h0) / max(sb - sa, EPS)
+        return [(k, h0 - k * sa)]
+    sp = min(max(top["at"] * L, sa + EPS), sb - EPS)
+    k1 = (top["hp"] - h0) / max(sp - sa, EPS)
+    k2 = (h1 - top["hp"]) / max(sb - sp, EPS)
+    return [(k1, h0 - k1 * sa), (k2, top["hp"] - k2 * sp)]
+
+
+def _zones(w: dict, z0: float) -> list:
+    """The top along the line as (s from, s to, planes): before its top's
+    first end level at h0, between them ``_planes``, past the last level at
+    h1 (top_h) — None: open that way."""
+    top = top_of(w)
+    sa, sb = top_span(w)
+    return [(None, sa, [(0.0, top["h0"])]), (sa, sb, _planes(w, z0)),
+            (sb, None, [(0.0, top["h1"])])]
+
+
+def _plane_of(loop):
+    """(normal, d) of a planar 3D loop (Newell): n·p = d."""
+    nx = ny = nz = 0.0
+    k = len(loop)
+    for i in range(k):
+        a, b = loop[i], loop[(i + 1) % k]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    m = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if m < 1e-12:
+        return None
+    n = (nx / m, ny / m, nz / m)
+    return n, sum(n[i] * loop[0][i] for i in range(3))
+
+
+def topped(faces: list, w: dict, z0: float) -> list:
+    """A wall's faces, built up to its highest point, cut under its own
+    top: each face clipped by the top's plane(s) (a gable: two — under
+    both), the flat lids at the top swapped for the sloped ones (the plan
+    of each lid taken up onto the planes, split at the ridge). Faces
+    wholly under it are kept as they are. Keeps each face's other keys
+    (its colour). Past its ends (the corner pieces) the top is level at
+    that end's height (``_zones``): each face is cut by the three zones and
+    put back together — one face, no seam where the slope ends."""
+    from shapely.geometry import Polygon
+    from shapely.geometry.polygon import orient
+    from shapely.ops import unary_union
+    seg = drawn(w)
+    p0, u = seg.p0, seg.u
+    zones = _zones(w, z0)
+    ends = top_span(w)
+    # (built up to its highest point over its plan — past its ends too)
+    zmax = max(p[2] for f in faces
+               for p in (f["loop"] if isinstance(f, dict) else f))
+
+    def S(p):
+        return (p[0] - p0[0]) * u[0] + (p[1] - p0[1]) * u[1]
+
+    def under(p):                       # ≥ 0: under its top
+        return z0 + top_h(w, S(p)) - p[2]
+
+    def checks(rings):
+        """The corners, and where an edge crosses an end's line (the top
+        bends there: an edge may pass over it between two corners under)."""
+        out = []
+        for r in rings:
+            out += r
+            for i in range(len(r)):
+                a, b = r[i], r[(i + 1) % len(r)]
+                sa, sb = S(a), S(b)
+                for e in ends:
+                    if (sa - e) * (sb - e) < 0:
+                        t = (e - sa) / (sb - sa)
+                        out.append(tuple(a[j] + (b[j] - a[j]) * t
+                                         for j in range(3)))
+        return out
+
+    out, lids = [], []
+    for f in faces:
+        rec = f if isinstance(f, dict) else {"loop": f, "holes": []}
+        loop, holes = rec["loop"], rec.get("holes") or []
+        pts = checks([loop] + list(holes))
+        if all(under(p) >= -1e-7 for p in pts):
+            out.append(f)
+            continue
+        pl = _plane_of(loop)
+        if pl is None:
+            continue
+        n, d = pl
+        if n[2] > 0.999 and all(abs(p[2] - zmax) < 1e-6 for p in loop):
+            lids.append(rec)            # a flat lid at the top: made anew
+            continue
+        if all(under(p) <= 1e-7 for p in pts):
+            continue                    # wholly over it
+        # clip in the face's own 2D: drop the axis it faces most
+        ax = max(range(3), key=lambda i: abs(n[i]))
+        keep = [i for i in range(3) if i != ax]
+
+        def to2(p):
+            return (p[keep[0]], p[keep[1]])
+
+        def to3(q):
+            p = [0.0, 0.0, 0.0]
+            p[keep[0]], p[keep[1]] = q
+            p[ax] = (d - n[keep[0]] * q[0] - n[keep[1]] * q[1]) / n[ax]
+            return tuple(p)
+        poly = Polygon([to2(p) for p in loop], [[to2(p) for p in h]
+                                                for h in holes]).buffer(0)
+        sign = 1.0 if Polygon([to2(p) for p in loop]).exterior.is_ccw \
+            else -1.0
+        pieces = []
+        for lo, hi, zp in zones:
+            z = _span(poly, lambda q: S(to3(q)), lo, hi)
+            for k, c in zp:
+                # under(p) linear in the 2D: g = A·q + B over the face
+                def g(q, k=k, c=c):
+                    p = to3(q)
+                    return z0 + c + k * S(p) - p[2]
+                z = _half(z, g)
+                if z.is_empty:
+                    break
+            pieces += _polys(z)
+        poly = unary_union(pieces) if pieces else Polygon()
+        for part in _polys(poly):
+            part = orient(part, sign)
+            r = dict(rec, loop=[to3(q) for q in list(part.exterior.coords)
+                                [:-1]],
+                     holes=[[to3(q) for q in list(i.coords)[:-1]]
+                            for i in part.interiors])
+            out.append(r)
+    for rec in lids:                    # the sloped lids
+        poly = Polygon([(p[0], p[1]) for p in rec["loop"]],
+                       [[(p[0], p[1]) for p in h]
+                        for h in rec.get("holes") or []]).buffer(0)
+        parts = []                      # (piece, its plane)
+        for lo, hi, zp in zones:        # the level corner pieces apart
+            mid = _span(poly, S, lo, hi)
+            if len(zp) == 2:            # split at the ridge
+                (k1, c1), (k2, c2) = zp
+                sp = (c2 - c1) / (k1 - k2) if abs(k1 - k2) > 1e-12 \
+                    else top_of(w)["at"] * max(seg.L, EPS)
+                parts += [(_half(mid, lambda q: sp - S(q)), zp[0]),
+                          (_half(mid, lambda q: S(q) - sp), zp[1])]
+            else:
+                parts.append((mid, zp[0]))
+        for pp, (k, c) in parts:
+            for part in _polys(pp):
+                part = orient(part, 1.0)
+
+                def up(q, k=k, c=c):
+                    return (q[0], q[1], z0 + c + k * S(q))
+                out.append(dict(rec, loop=[up(q) for q in list(
+                    part.exterior.coords)[:-1]],
+                    holes=[[up(q) for q in list(r.coords)[:-1]]
+                           for r in part.interiors]))
+    return out
+
+
+def _polys(g) -> list:
+    """The polygons of a shapely result (lines and points left out)."""
+    if g.is_empty:
+        return []
+    if g.geom_type == "Polygon":
+        return [g] if g.area > 1e-9 else []
+    return [p for x in getattr(g, "geoms", []) for p in _polys(x)]
+
+
+def _span(poly, s_of, lo, hi):
+    """The part of a 2D polygon with ``s_of(q)`` between lo and hi (None:
+    open that way)."""
+    if lo is not None:
+        poly = _half(poly, lambda q: s_of(q) - lo)
+    if hi is not None and not poly.is_empty:
+        poly = _half(poly, lambda q: hi - s_of(q))
+    return poly
+
+
+def _half(poly, g):
+    """The part of a 2D shapely polygon where the linear ``g`` ≥ 0."""
+    from shapely.geometry import Polygon
+    if poly.is_empty:
+        return poly
+    x0, y0, x1, y1 = poly.bounds
+    pad = 1.0 + (x1 - x0) + (y1 - y0)
+    box = [(x0 - pad, y0 - pad), (x1 + pad, y0 - pad), (x1 + pad, y1 + pad),
+           (x0 - pad, y1 + pad)]
+    keep = []
+    for i in range(4):                  # Sutherland–Hodgman on the box
+        a, b = box[i], box[(i + 1) % 4]
+        ga, gb = g(a), g(b)
+        if ga >= 0:
+            keep.append(a)
+        if (ga >= 0) != (gb >= 0):
+            t = ga / (ga - gb)
+            keep.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    if len(keep) < 3:
+        return Polygon()
+    return poly.intersection(Polygon(keep))
+
+
+# ---- layers -------------------------------------------------------------------
+def clean_layers(raw):
+    """A wall's layers as stored: [{"id", "name", "t", "role"}] outside →
+    inside, 2 to ``MAX_LAYERS``, exactly one «core» (none: the thickest is;
+    two: the first) — None when that leaves one layer (a plain wall)."""
+    if not isinstance(raw, list):
+        return None
+    out, ids = [], set()
+    for k, L in enumerate(raw[:MAX_LAYERS]):
+        if not isinstance(L, dict):
+            continue
+        try:
+            t = min(max(float(L.get("t", 0.0)), LAYER_T[0]), LAYER_T[1])
+        except (TypeError, ValueError):
+            continue
+        lid = str(L.get("id") or "")[:12] or f"l{k}"
+        while lid in ids:
+            lid += "x"
+        ids.add(lid)
+        out.append({"id": lid, "name": str(L.get("name") or "")[:40],
+                    "t": round(t, 4),
+                    "role": "core" if L.get("role") == "core" else "finish"})
+    if len(out) < 2:
+        return None
+    cores = [i for i, L in enumerate(out) if L["role"] == "core"]
+    keep = cores[0] if cores else max(range(len(out)),
+                                      key=lambda i: out[i]["t"])
+    for i, L in enumerate(out):
+        L["role"] = "core" if i == keep else "finish"
+    return out
+
+
+def layers_of(w: dict) -> list:
+    """The wall's layers, outside → inside — a plain wall: its one core."""
+    got = w.get("layers")
+    if isinstance(got, list) and len(got) > 1:
+        return got
+    return [{"id": "core", "name": "", "t": float(w["t"]), "role": "core"}]
+
+
+def outer_finish(w: dict) -> float:
+    """How thick the finishes OUTSIDE the core are."""
+    tot = 0.0
+    for L in layers_of(w):
+        if L["role"] == "core":
+            break
+        tot += float(L["t"])
+    return tot
+
+
+def layer_bands(w: dict) -> list:
+    """Each layer's (lo, hi) offset from the wall's centre (+ = its left),
+    outside → inside — scaled to ``t`` should they not add up to it."""
+    side = 1.0 if w.get("kind") == "circle" else float(w.get("side", 1))
+    t = float(w["t"])
+    ls = layers_of(w)
+    tot = sum(float(L["t"]) for L in ls) or t
+    k = t / tot
+    out, at = [], -side * t / 2.0
+    for L in ls:
+        nxt = at + side * float(L["t"]) * k
+        out.append((min(at, nxt), max(at, nxt)))
+        at = nxt
+    return out
 
 
 def points_of(w: dict, n: int = 12) -> list:
@@ -709,23 +1151,30 @@ def _to_corner(walls: list[dict]) -> list[dict]:
     carrying on another one's line, started on the face of the wall
     between) is carried onto that corner, so it JOINS it there instead of
     standing alone with a seam. Only when its own line runs into the
-    corner: the wall keeps its way, it just reaches the node."""
+    corner: the wall keeps its way, it just reaches the node.
+
+    Also (support #64, 2026-10-27): an end landing in the CORNER of a
+    free wall end — its outer or inner corner, or the face right by it —
+    is carried onto that end, so a diagonal closes the corner (it stood
+    beside it, mismatched or notched). And two ends never swap places
+    (a short piece refused between two walls: each was carried onto the
+    other's end and they overlapped) — only the later wall moves."""
     ends = []
     for w in walls:
-        if w.get("kind", "line") == "line":
+        if w.get("kind", "line") in ("line", "arc"):
             ends += [tuple(w["a"]), tuple(w["b"])]
-        elif w.get("kind") == "arc":
-            ends += [tuple(w["a"]), tuple(w["b"])]
-    out = []
+
+    def free(p):
+        return sum(1 for e in ends if _dist(e, p) <= JOIN_TOL) <= 1
+
+    moves = {}                       # (wall, key) → (other wall, its key, point)
     for wi, w in enumerate(walls):
         if w.get("kind", "line") != "line":
-            out.append(w)
             continue
-        w = dict(w)
         d = drawn(w)
         for key, p, back in (("a", d.p0, (-d.u[0], -d.u[1])),
                              ("b", d.p1, d.u)):
-            if sum(1 for e in ends if _dist(e, p) <= JOIN_TOL) > 1:
+            if not free(p):
                 continue                         # already meets an end
             best = None
             for oi, o in enumerate(walls):
@@ -736,28 +1185,50 @@ def _to_corner(walls: list[dict]) -> list[dict]:
                 if abs(off) > o["t"] / 2.0 + BODY_TOL:
                     continue                     # not on its body / face
                 od = drawn(o)
-                for e in (od.at(0.0), od.at(1.0)):
+                for ek, e in (("a", od.at(0.0)), ("b", od.at(1.0))):
                     v = _sub(e, p)
                     along = _dot(v, back)        # beyond the end, its way
                     across = abs(_cross(back, v))
                     reach = max(o["t"], w["t"]) + JOIN_TOL
-                    if across <= 0.005 and JOIN_TOL < along <= reach and \
-                            (best is None or along < best[0]):
-                        best = (along, e)
+                    gap = _dist(e, p)
+                    if across <= 0.005 and JOIN_TOL < along <= reach:
+                        pass                     # its line runs into it
+                    elif s.kind == "line" and free(e) and \
+                            abs(_cross(d.u, s.u)) > 0.17 and \
+                            JOIN_TOL < gap <= 0.1 * d.L and \
+                            abs((f - (0.0 if ek == "a" else 1.0)) * s.L) \
+                            <= o["t"] / 2.0 + BODY_TOL:
+                        pass                     # in that end's corner
+                    else:
+                        continue
+                    if best is None or gap < best[0]:
+                        best = (gap, oi, ek, e)
             if best is not None:
-                w[key] = [best[1][0], best[1][1]]
+                moves[(wi, key)] = best[1:]
+    out = []
+    for wi, w in enumerate(walls):
+        w = dict(w) if w.get("kind", "line") == "line" else w
+        for key in ("a", "b"):
+            m = moves.get((wi, key))
+            if m is None:
+                continue
+            oi, ek, e = m
+            back = moves.get((oi, ek))
+            if back is not None and back[0] == wi and back[1] == key and \
+                    oi > wi:
+                continue                         # the later one moves
+            w[key] = [e[0], e[1]]
         out.append(w)
     return out
 
 
-def plan(walls: list[dict]) -> dict:
-    """Each wall's plan, joined: {wall id: [pieces]} — a piece is
-    {"outer": [(x, y)…] counter-clockwise, "holes": [[(x, y)…]]}. Walls
-    that can't be built (``why_not``) are left out."""
+def _joined(walls: list[dict], pairs: list | None = None):
+    """(the walls built, their pieces with every join resolved).
+    ``pairs``: filled with the (end, end) of every corner of just two walls
+    (``corners``)."""
     good = _to_corner([w for w in walls if why_not(w) is None])
     pieces = _pieces(good)
     ends = _ends(pieces)
-    out: dict = {w["id"]: [] for w in good}
     if ends:
         ids, centres = _cluster([e["c"] for e in ends], JOIN_TOL)
         nodes: dict = {}
@@ -768,8 +1239,205 @@ def plan(walls: list[dict]) -> dict:
             _ghosts(node, group, pieces)
             group.sort(key=lambda e: math.atan2(e["u"][1], e["u"][0]))
             _resolve(node, group)
+            if pairs is not None and len(group) == 2:
+                pairs.append(tuple(group))
+    return good, pieces
+
+
+def corners(walls: list[dict]) -> tuple:
+    """(``plan``, its plain L corners): [{"a", "a_end", "b", "b_end",
+    "diag": (p, q)}] — two straight walls' true ends mitred on one
+    diagonal (no bevel, no crossing, no wall passing) — ``corner_caps``
+    reads them: the higher wall goes on over the corner."""
+    pairs: list = []
+    good, pieces = _joined(walls, pairs)
+    out: dict = {w["id"]: [] for w in good}
     for pc in pieces:
         out[pc.w["id"]].append(_outline(pc))
+    found = []
+    for e1, e2 in pairs:
+        if e1["ghost"] or e2["ghost"]:
+            continue
+        p1, p2 = e1["pc"], e2["pc"]
+        if p1.w is p2.w or any(
+                getattr(p, "closed", False) or p.w.get("kind", "line") != "line"
+                or p.w.get("cw") or p.caps[e["end"]]
+                or not (p.real_a if e["end"] == "A" else p.real_b)
+                for p, e in ((p1, e1), (p2, e2))):
+            continue
+        d1 = [p1.corners.get((e1["end"], s)) for s in (1, -1)]
+        d2 = [p2.corners.get((e2["end"], s)) for s in (1, -1)]
+        if None in d1 or None in d2 or _dist(d1[0], d1[1]) < EPS:
+            continue
+        # one diagonal: the same two points on both ends
+        if not all(min(_dist(p, q) for q in d2) < 1e-6 for p in d1):
+            continue
+        found.append({"a": p1.w["id"], "a_end": e1["end"],
+                      "b": p2.w["id"], "b_end": e2["end"],
+                      "diag": (tuple(d1[0]), tuple(d1[1]))})
+    return out, found
+
+
+def plan(walls: list[dict]) -> dict:
+    """Each wall's plan, joined: {wall id: [pieces]} — a piece is
+    {"outer": [(x, y)…] counter-clockwise, "holes": [[(x, y)…]]}. Walls
+    that can't be built (``why_not``) are left out."""
+    good, pieces = _joined(walls)
+    out: dict = {w["id"]: [] for w in good}
+    for pc in pieces:
+        out[pc.w["id"]].append(_outline(pc))
+    return out
+
+
+def plan_layers(walls: list[dict]) -> dict:
+    """Like ``plan``, each piece cut into its wall's LAYERS: {wall id:
+    [(layer index, piece)…]} — the whole joined outline sliced in bands
+    along the wall, so an L's finishes meet on the mitre and a partition
+    stops on the outer wall's inner finish, as the walls themselves do. A
+    wall without layers: (0, its pieces)."""
+    good, pieces = _joined(walls)
+    out: dict = {w["id"]: [] for w in good}
+    for pc in pieces:
+        whole = _outline(pc)
+        bands = layer_bands(pc.w)
+        if len(bands) < 2:
+            out[pc.w["id"]].append((0, whole))
+            continue
+        for i, (lo, hi) in enumerate(bands):
+            for part in _band(pc, whole, lo, hi):
+                out[pc.w["id"]].append((i, part))
+    return out
+
+
+class _Along:
+    """What ``_band`` reads of a piece: the line along it, ring or not."""
+
+    def __init__(self, seg, closed):
+        self.seg, self.closed = seg, closed
+
+
+def layer_pieces(w: dict, piece: dict) -> list:
+    """One joined plan piece of ``w`` (``plan``'s) cut into its layers:
+    [(layer index, piece)] — a plain wall: [(0, piece)]."""
+    bands = layer_bands(w)
+    if len(bands) < 2:
+        return [(0, piece)]
+    pc = _Along(centre(w), is_closed(w) and bool(piece.get("holes")))
+    out = []
+    for i, (lo, hi) in enumerate(bands):
+        out += [(i, part) for part in _band(pc, piece, lo, hi)]
+    return out
+
+
+def shared_edge(w: dict, i: int):
+    """The offset (from the centre) where layer i meets the layer OUTSIDE
+    it — None for the outermost."""
+    bands = layer_bands(w)
+    if not 0 < i < len(bands):
+        return None
+    a, b = bands[i - 1], bands[i]
+    for x in a:
+        for y in b:
+            if abs(x - y) < 1e-6:
+                return y
+    return None
+
+
+def _band(pc, piece: dict, lo: float, hi: float) -> list:
+    """The part of a wall piece between offsets lo and hi from its centre
+    (its left +): a ring → a narrower ring; else the outline clipped by the
+    two lines (arcs) running along it."""
+    seg = pc.seg
+    if getattr(pc, "closed", False):
+        # the ring runs counter-clockwise: offset o ↔ radius r − o
+        n = _steps(2 * math.pi, seg.r - lo)
+        rings = []
+        for R in (seg.r - lo, seg.r - hi):
+            rings.append([(seg.C[0] + R * math.cos(2 * math.pi * k / n),
+                           seg.C[1] + R * math.sin(2 * math.pi * k / n))
+                          for k in range(n)])
+        return [{"outer": rings[0], "holes": [list(reversed(rings[1]))]}]
+
+    def off(p):
+        return seg.project(p)[1]
+
+    loop = list(piece["outer"])
+    for lim, keep_above in ((lo, True), (hi, False)):
+        loop = _clip(loop, off, lim, keep_above, seg)
+        if len(loop) < 3:
+            return []
+    if abs(_area(loop)) < 1e-8:
+        return []
+    if _area(loop) < 0:
+        loop.reverse()
+    return [{"outer": loop, "holes": []}]
+
+
+def _clip(loop, off, lim, keep_above, seg):
+    """Sutherland–Hodgman against one line along the wall (off = lim):
+    keep off ≥ lim (``keep_above``) or ≤ lim. On a curved wall the cut
+    line is an arc: the points along it are filled in."""
+    def inside(p):
+        return off(p) >= lim - 1e-9 if keep_above else off(p) <= lim + 1e-9
+
+    def cross(p, q):
+        a, b = off(p), off(q)
+        f = (lim - a) / (b - a) if abs(b - a) > EPS else 0.0
+        x = _add(p, _mul(_sub(q, p), f))
+        if seg.kind == "arc":                  # onto the arc, exactly
+            v = _sub(x, seg.C)
+            R = seg.r - seg.d * lim
+            x = _add(seg.C, _mul(_unit(v), R))
+        return x
+
+    out = []
+    n = len(loop)
+    for k in range(n):
+        p, q = loop[k], loop[(k + 1) % n]
+        pi, qi = inside(p), inside(q)
+        if pi:
+            out.append(p)
+            if not qi:
+                out.append(cross(p, q))
+        elif qi:
+            out.append(cross(p, q))
+    if seg.kind == "arc" and len(out) > 2:
+        out = _fill_arc(out, off, lim, seg)
+    clean = []
+    for p in out:
+        if not clean or _dist(p, clean[-1]) > 1e-7:
+            clean.append(p)
+    if len(clean) > 2 and _dist(clean[0], clean[-1]) <= 1e-7:
+        clean.pop()
+    return clean
+
+
+def _fill_arc(loop, off, lim, seg):
+    """Two points in a row on the cut arc, far apart: the arc between."""
+    R = seg.r - seg.d * lim
+    out = []
+    n = len(loop)
+    for k in range(n):
+        p, q = loop[k], loop[(k + 1) % n]
+        out.append(p)
+        if abs(off(p) - lim) < 1e-6 and abs(off(q) - lim) < 1e-6 \
+                and _dist(p, q) > 4 * CHORD:
+            a0 = math.atan2(p[1] - seg.C[1], p[0] - seg.C[0])
+            a1 = math.atan2(q[1] - seg.C[1], q[0] - seg.C[0])
+            sweep = _wrap(a1 - a0)
+            # the way the wall runs, not the shorter one: a curved wall of
+            # more than half a circle (his cylinder, 2026-11-01) had its
+            # inner layers drawn round the other side
+            h = a0 + sweep / 2.0
+            f = seg.project((seg.C[0] + R * math.cos(h),
+                             seg.C[1] + R * math.sin(h)))[0]
+            if not -1e-6 <= f <= 1.0 + 1e-6:
+                sweep -= math.copysign(2 * math.pi, sweep)
+            m = _steps(sweep, R)
+            for j in range(1, m):
+                a = a0 + sweep * j / m
+                out.append((seg.C[0] + R * math.cos(a),
+                            seg.C[1] + R * math.sin(a)))
     return out
 
 
@@ -792,6 +1460,66 @@ def solid(piece: dict, z0: float, z1: float) -> list:
             faces.append([(p[0], p[1], z0), (q[0], q[1], z0),
                           (q[0], q[1], z1), (p[0], p[1], z1)])
     return faces
+
+
+def tilted_solid(outer: list, z0: float, z1: float, dz: list) -> list:
+    """A plan polygon raised from z0 to z1, each corner's top moved ``dz``
+    (a BLOCK's corners up / down — 2026-10-31): the sides follow, the top
+    is one plane when the corners lie in one, else triangles (ear
+    clipping, corners only). Outward, as ``solid``."""
+    outer = list(outer)
+    if _area(outer) < 0:                # counter-clockwise from above
+        outer.reverse()
+        dz = list(reversed(dz))
+    tops = [(x, y, z1 + d) for (x, y), d in zip(outer, dz)]
+    faces = [[(x, y, z0) for x, y in reversed(outer)]]
+    k = len(outer)
+    for i in range(k):
+        p, q = outer[i], outer[(i + 1) % k]
+        faces.append([(p[0], p[1], z0), (q[0], q[1], z0), tops[(i + 1) % k],
+                      tops[i]])
+    pl = _plane_of(tops)
+    if pl is not None and all(abs(sum(pl[0][j] * t[j] for j in range(3))
+                                  - pl[1]) < 1e-6 for t in tops):
+        faces.append(tops)              # one plane
+        return faces
+    for a, b, c in _ears(outer):
+        faces.append([tops[a], tops[b], tops[c]])
+    return faces
+
+
+def _ears(poly: list) -> list:
+    """Ear clipping of a counter-clockwise polygon: [(i, j, k)] index
+    triples, no new points."""
+    idx = list(range(len(poly)))
+    out = []
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    def inside(p, a, b, c):
+        return cross(a, b, p) >= -1e-12 and cross(b, c, p) >= -1e-12 \
+            and cross(c, a, p) >= -1e-12
+    guard = 0
+    while len(idx) > 3 and guard < 10000:
+        guard += 1
+        n = len(idx)
+        for m in range(n):
+            i, j, k = idx[m - 1], idx[m], idx[(m + 1) % n]
+            a, b, c = poly[i], poly[j], poly[k]
+            if cross(a, b, c) <= 1e-12:
+                continue                # a reflex corner: no ear
+            if any(inside(poly[r], a, b, c) for r in idx
+                   if r not in (i, j, k)):
+                continue
+            out.append((i, j, k))
+            idx.pop(m)
+            break
+        else:
+            break
+    if len(idx) == 3:
+        out.append(tuple(idx))
+    return out
 
 
 # ---- before a wall is stored --------------------------------------------------

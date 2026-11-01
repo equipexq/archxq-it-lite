@@ -25,8 +25,23 @@ VIDEOS = "https://www.youtube.com/@landosouzza"
 def _version() -> str:
     from . import __version__
     if "prototype" in __version__:           # the source, not a build
-        return "dev"
+        last = _last_release()
+        return f"dev (after {last})" if last else "dev"
     return __version__.removesuffix("-lite").removesuffix("-pro")
+
+
+def _last_release() -> str:
+    """The source's run: the last version published — the Pro changelog's
+    first numbered heading, beside the source (his note, 2026-10-22: the
+    About showed no version). "" when it is not there (a build)."""
+    import re
+    from pathlib import Path
+    log = Path(__file__).resolve().parents[2] / "ArchXQ_IT_Pro" / "CHANGELOG.md"
+    try:
+        m = re.search(r"(?m)^## (\d+\.\d+\.\d+)\s*$", log.read_text("utf-8"))
+    except OSError:
+        return ""
+    return m.group(1) if m else ""
 
 
 def _host_version() -> str:

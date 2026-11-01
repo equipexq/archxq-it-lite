@@ -22,6 +22,7 @@ textures are the Pro's.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -37,6 +38,9 @@ SLOTS = {
     "column": (("all", "Column"),),
     "beam": (("all", "Beam"),),
     "slab": (("top", "Top"), ("under", "Underside and edges")),
+    # a room's floor on a layered slab (2026-10-23): its finishes on the
+    # core — the top one first (``slots`` lists them all)
+    "floor": (("top", "Floor finish"),),
     "footing": (("all", "Footing"),),
     "wall": (("all", "Wall"),),
     "ramp": (("top", "Floor"), ("side", "Sides"),
@@ -47,18 +51,28 @@ SLOTS = {
               ("lowwall", "Low wall")),
     "guard": (("lowwall", "Wall"), ("pier", "Piers"), ("cap", "Coping"),
               ("rail", "Steel (posts, rails)"), ("glass", "Glass")),
+    # a street (streets.py): each part by the colour it is built with
+    "street": (("asphalt", "Asphalt"), ("curb", "Curb"),
+               ("walk", "Sidewalk"), ("paint", "Centre line")),
+    # a profile along a path (along.py): the moulding itself
+    "profile": (("all", "Profile"),),
+    # copies along a path (copies.py): each object keeps its own colours
+    "copy": (("all", "Copies"),),
     "roof": (("cover", "Covering (tiles, sheets)"),
              ("parapet", "Parapet and gable walls"),
              ("gutter", "Gutter"), ("slab", "Slab (flat, hidden)")),
     # a door / window: each part its own (trim.py, his ask 2026-10-19 —
     # the glass keeps its own: see-through or opaque, in the library)
     "opening": (("frame", "Frame"), ("leaf", "Leaf (door, sash)"),
-                ("trim", "Trim"), ("sill", "Stone sill")),
+                ("trim", "Trim"), ("sill", "Stone sill"),
+                ("hardware", "Handles")),
 }
 PLURAL = {"plot": "plots", "dig": "excavations", "fill": "fills",
           "column": "columns", "beam": "beams", "slab": "slabs",
+          "floor": "floors",
           "footing": "footings", "wall": "walls", "ramp": "ramps",
           "stair": "stairs", "roof": "roofs", "guard": "low walls",
+          "street": "streets", "profile": "profiles", "copy": "copies",
           "opening": "doors and windows"}
 MAT_PREFIX = "ArchXQ · "
 #: kinds whose faces carry colours of their own on purpose (a door's glass
@@ -68,7 +82,8 @@ MAT_PREFIX = "ArchXQ · "
 #: tell its PARTS apart (``roof_part``)
 #: (a wall: a CURTAIN wall's glass, mullions and band carry their colours;
 #: a plain wall's faces carry none — they take its material)
-KEEP_OWN_COLOURS = {"opening", "wall"}
+#: (copies: a tree's bark and leaves, an object's own — copies.py)
+KEEP_OWN_COLOURS = {"opening", "wall", "copy"}
 
 
 def textures_allowed() -> bool:
@@ -206,24 +221,141 @@ def attrs(ref) -> tuple[str, dict] | None:
     return m.name, m.face_attrs()
 
 
+def _wall(doc: dict, el_id) -> dict | None:
+    return next((w for w in doc.get("walls") or [] if w["id"] == el_id),
+                None)
+
+
+def slots(kind: str, el_id: str | None, doc: dict) -> list:
+    """An element's parts — a wall with LAYERS (0.15.0): each layer, outside
+    → inside; its core is the wall's own part («all»: «Use for all walls»
+    still reaches it), each finish «L:<its id>»."""
+    if kind == "wall" and el_id:
+        w = _wall(doc, el_id)
+        ls = (w or {}).get("layers") or []
+        if len(ls) > 1:
+            return [("all", tr("{name} (core)",
+                               name=la.get("name") or tr("Core")))
+                    if la.get("role") == "core"
+                    else ("L:" + str(la.get("id")), la.get("name")
+                          or "Finish")
+                    for la in ls]
+    if kind == "slab" and el_id:
+        # a slab with LAYERS (top → bottom): the top one is its «Top» (the
+        # slabs' «Use for all» paves it), its core its «Underside and
+        # edges», each other finish «L:<its id>»
+        s = next((e for e in doc.get("structure") or []
+                  if e.get("id") == el_id), None)
+        ls = (s or {}).get("layers") or []
+        if len(ls) > 1 and not s.get("ceiling") and not s.get("block"):
+            out = []
+            for i, la in enumerate(ls):
+                name = la.get("name") or ""
+                if i == 0 and la.get("role") != "core":
+                    out.append(("top", name or tr("Top")))
+                elif la.get("role") == "core":
+                    out.append(("under", tr("{name} (core)",
+                                            name=name or tr("Core"))))
+                else:
+                    out.append(("L:" + str(la.get("id")), name or "Finish"))
+            return out
+    if kind == "floor" and el_id:
+        # a room's floor: its slab's layers ON the core, the same parts
+        # (nothing chosen for the room: the slab's own)
+        s = _floor_slab(doc, el_id)
+        ls = (s or {}).get("layers") or []
+        core = next((i for i, la in enumerate(ls)
+                     if la.get("role") == "core"), 0)
+        out = [("top" if i == 0 else "L:" + str(la.get("id")),
+                la.get("name") or tr("Floor finish"))
+               for i, la in enumerate(ls[:core])]
+        if out:
+            return out
+    return list(SLOTS[kind])
+
+
+def _floor_slab(doc: dict, fid: str) -> dict | None:
+    """The slab a room's floor lies on."""
+    from .structure import parse_floor_id
+    p = parse_floor_id(fid)
+    if p is None:
+        return None
+    return next((e for e in doc.get("structure") or []
+                 if e.get("id") == p[0]), None)
+
+
+def _part_ok(kind: str, eid: str, part: str, doc: dict) -> bool:
+    if part in dict(SLOTS[kind]):
+        return True
+    return kind in ("wall", "slab", "floor") \
+        and part in dict(slots(kind, eid, doc))
+
+
 # ---- where a choice is kept --------------------------------------------------------
+def wall_type_of(doc: dict, el_id: str | None) -> str | None:
+    """The id of YOUR wall type a wall is of (one that still exists)."""
+    w = _wall(doc, el_id) if el_id else None
+    tid = (w or {}).get("type")
+    if tid and any(t.get("id") == tid for t in doc.get("wall_types") or ()):
+        return tid
+    return None
+
+
 def resolve(doc: dict, kind: str, el_id: str | None, part: str):
+    """A part's material: the element's own → its WALL TYPE's (the look
+    lives in the type: every wall of it, drawn, split or copied, wears it
+    — his ask, 31/10) → its kind's («Use for all»)."""
     m = doc.get("materials") or {}
     own = (m.get("el") or {}).get(el_id or "", {})
     if part in own:
         return own[part]
-    return ((m.get("type") or {}).get(kind) or {}).get(part)
+    if kind == "wall":
+        tid = wall_type_of(doc, el_id)
+        mine = (m.get("wtype") or {}).get(tid) if tid else None
+        if mine and part in mine:
+            return mine[part]
+    ref = ((m.get("type") or {}).get(kind) or {}).get(part)
+    if ref is None and kind == "floor" and el_id:
+        # nothing chosen for the room's floor: its slab's
+        s = _floor_slab(doc, el_id)
+        if s is not None:
+            return resolve(doc, "slab", s["id"], part)
+    return ref
+
+
+def wall_face_mat(doc: dict, el: dict, color) -> str:
+    """What a wall's face wears, as ``paint`` gives it — a key, equal for
+    the same material (``seams``: a joint between two walls is hidden
+    only when both sides match). A layer's finish with nothing chosen
+    wears the core's («all»)."""
+    part = "all"
+    names = [p for p, _l in slots("wall", el.get("id"), doc)]
+    if len(names) > 1:
+        from .structure import layer_of_color
+        i = layer_of_color(color)
+        if i is not None and i < len(names):
+            part = names[i]
+    ref = resolve(doc, "wall", el.get("id"), part)
+    if ref is None and part != "all":
+        ref = resolve(doc, "wall", el.get("id"), "all")
+    return repr(ref)
 
 
 def kind_of_id(doc: dict) -> dict:
-    """{element id: its kind} — everything a material can be given to."""
+    """{element id: its kind} — everything a material can be given to (a
+    room's floor: every NAMED room on a layered slab of its level)."""
     out = {"plot": "plot"} if doc.get("plot") else {}
     for d in doc.get("digs") or []:
         out[d["id"]] = "fill" if d.get("kind") == "fill" else "dig"
     for w in doc.get("walls") or []:
         out[w["id"]] = "wall"
+    rooms = doc.get("rooms") or []
     for e in doc.get("structure") or []:
         out[e["id"]] = e["type"]
+        if e.get("type") == "slab" and len(e.get("layers") or []) > 1:
+            for r in rooms:
+                if r.get("level") == e.get("level"):
+                    out[f"floor:{e['id']}:{r['id']}"] = "floor"
     return out
 
 
@@ -238,7 +370,7 @@ def clean(raw, doc: dict) -> dict:
         if k not in SLOTS or not isinstance(parts, dict):
             continue
         keep = {p: r for p, r in ((p, valid_ref(r)) for p, r in parts.items())
-                if r and p in dict(SLOTS[k])}
+                if r and _part_ok(k, eid, p, doc)}
         if keep:
             out["el"][eid] = keep
     for k, parts in (raw.get("type") or {}).items():
@@ -248,6 +380,49 @@ def clean(raw, doc: dict) -> dict:
                 if r and p in dict(SLOTS[k])}
         if keep:
             out["type"][k] = keep
+    # YOUR wall types' look (31/10): a type still there, its layers' parts
+    # (kept even empty: «nothing chosen» is a choice — see ``lift``)
+    types = {t.get("id"): t for t in doc.get("wall_types") or ()}
+    wtype = {}
+    for tid, parts in (raw.get("wtype") or {}).items():
+        if tid not in types or not isinstance(parts, dict):
+            continue
+        ok = type_parts(types[tid])
+        wtype[tid] = {p: r for p, r in ((p, valid_ref(r))
+                                        for p, r in parts.items())
+                      if r and p in ok}
+    out["wtype"] = lift(wtype, out["el"], doc)
+    return out
+
+
+def type_parts(t: dict) -> set:
+    """The parts a wall type's look has: its core («all») and each finish
+    layer («L:<id>») — as a wall of it (``slots``)."""
+    ls = t.get("layers") or []
+    return {"all"} | {"L:" + str(la.get("id")) for la in ls
+                      if la.get("role") != "core"}
+
+
+def lift(wtype: dict, els: dict, doc: dict) -> dict:
+    """A file from before the type kept the look (31/10): a type with no
+    look yet takes the one painted on a wall of it — the wall with the
+    most parts painted (the walls keep their own; the others wear it)."""
+    out = dict(wtype)
+    for t in doc.get("wall_types") or ():
+        tid = t.get("id")
+        if tid in out:
+            continue
+        ok = type_parts(t)
+        best = {}
+        for w in doc.get("walls") or ():
+            if w.get("type") != tid:
+                continue
+            got = {p: r for p, r in (els.get(w["id"]) or {}).items()
+                   if p in ok}
+            if len(got) > len(best):
+                best = got
+        if best:
+            out[tid] = dict(best)
     return out
 
 
@@ -260,10 +435,17 @@ def merge(doc: dict, change: dict) -> dict:
     m = doc.get("materials") or {}
     els = {k: dict(v) for k, v in (m.get("el") or {}).items()}
     types = {k: dict(v) for k, v in (m.get("type") or {}).items()}
+    wtype = {k: dict(v) for k, v in (m.get("wtype") or {}).items()}
     kind, eid = change["kind"], change.get("id") or ""
     kinds = kind_of_id(doc)
+    # a wall of YOUR type: its look is the TYPE's — every wall of it
+    # follows (theirs let go), the next ones drawn wear it (his ask, 31/10)
+    tid = wall_type_of(doc, eid) if kind == "wall" else None
+    of_type = [w["id"] for w in doc.get("walls") or ()
+               if tid and w.get("type") == tid]
     for part, ref in change["parts"].items():
-        if change.get("all"):
+        # a wall's FINISH layer is its own («for all» reaches the cores)
+        if change.get("all") and not part.startswith("L:"):
             t = types.setdefault(kind, {})
             if ref:
                 t[part] = ref
@@ -272,6 +454,17 @@ def merge(doc: dict, change: dict) -> dict:
             for other, k in kinds.items():
                 if k == kind and part in els.get(other, {}):
                     els[other].pop(part)
+            if kind == "wall":          # …the types' looks of that part too
+                for look in wtype.values():
+                    look.pop(part, None)
+        elif tid:
+            look = wtype.setdefault(tid, {})
+            if ref:
+                look[part] = ref
+            else:
+                look.pop(part, None)
+            for other in of_type:
+                els.get(other, {}).pop(part, None)
         else:
             own = els.setdefault(eid, {})
             if ref:
@@ -279,7 +472,21 @@ def merge(doc: dict, change: dict) -> dict:
             else:
                 own.pop(part, None)
     doc["materials"] = {"el": {k: v for k, v in els.items() if v},
-                        "type": {k: v for k, v in types.items() if v}}
+                        "type": {k: v for k, v in types.items() if v},
+                        "wtype": wtype}
+    return doc
+
+
+def carry(doc: dict, pairs) -> dict:
+    """``doc`` with each new element wearing what its source wore as its
+    own — (source id, new id) pairs: a split's second half, a copy."""
+    m = doc.get("materials") or {}
+    els = m.get("el") or {}
+    add = {new: copy.deepcopy(els[src]) for src, new in pairs if src in els}
+    if not add:
+        return doc
+    doc = dict(doc)
+    doc["materials"] = dict(m, el=dict(els, **add))
     return doc
 
 
@@ -330,9 +537,14 @@ DEFAULTS = {"stair": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
             "guard": {"lowwall": _PLASTER, "rail": _BRUSHED,
                       "pier": {"lib": "stone/stone_ashlar.png"},
                       "cap": {"lib": "misc/dark_granite.jpg"}},
+            # a street: the host library's asphalt, concrete and pavers
+            "street": {"asphalt": {"lib": "floor/dark_asphalt.jpg"},
+                       "curb": {"lib": "concrete/concrete_smooth.png"},
+                       "walk": {"lib": "floor/floor_pavers.png"}},
             "column": {"all": _EXPOSED}, "beam": {"all": _EXPOSED},
             "footing": {"all": _EXPOSED},
             "slab": {"top": _SMOOTH, "under": _EXPOSED},
+            "floor": {"top": _SMOOTH},
             # a stone sill: dark granite (the trim keeps its white)
             "opening": {"sill": {"lib": "misc/dark_granite.jpg"}},
             "wall": {"all": _PLASTER},
@@ -363,16 +575,28 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
         return
     from core.materials import Material, register
     made = {}
+    parts = slots(kind, el_id, doc)
+    # a CEILING (0.15.0): white board on both faces by default — the slabs'
+    # «Use for all» (a floor's paving) never reaches it, its own choice does
+    ceiling = kind == "slab" and any(
+        e["id"] == el_id and e.get("ceiling")
+        for e in doc.get("structure") or [])
     if doc.get("materials"):
-        for part, _label in SLOTS[kind]:
-            a = attrs(resolve(doc, kind, el_id, part))
+        own = ((doc["materials"].get("el") or {}).get(el_id or "") or {})
+        for part, _label in parts:
+            ref = own.get(part) if ceiling else resolve(doc, kind, el_id,
+                                                         part)
+            a = attrs(ref)
             if a is not None:
                 made[part] = a
     sheet = None
     if textures_allowed():
         if kind == "roof" and "cover" not in made:   # nothing CHOSEN for it
             sheet = attrs(SHEET_DEFAULT)
-        for part, ref in DEFAULTS.get(kind, {}).items():
+        dflt = DEFAULTS.get(kind, {})
+        if ceiling:
+            dflt = {"top": _PLASTER, "under": _PLASTER}
+        for part, ref in dflt.items():
             if part not in made:
                 a = attrs(ref)
                 if a is not None:
@@ -391,7 +615,59 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
     # showed at first and was lost at the next redraw (his columns, beams
     # and footings, 2026-10-07) — the faces' attrs are what the host keeps
     keep_own = kind in KEEP_OWN_COLOURS
+    layer_part = None
+    fallback = "all"
+    if kind == "slab" and parts != list(SLOTS["slab"]):
+        # a slab with layers: each face's layer by its colour; a finish
+        # with nothing chosen: plaster under the core, the floor's on it
+        from .structure import layer_of_color
+        names = [p for p, _l in parts]
+        core = names.index("under") if "under" in names else len(names)
+        if textures_allowed():
+            for p in names[core + 1:]:
+                if p not in made:
+                    a = attrs(_PLASTER)
+                    if a is not None:
+                        made[p] = a
+        for p in names[:core]:
+            if p not in made and "top" in made:
+                made[p] = made["top"]
+
+        def layer_part(color):
+            i = layer_of_color(color)
+            return names[i] if i is not None and i < len(names) else None
+        fallback = "under"
+    elif kind == "floor":
+        # a room's floor: its layers (the slab's finishes on the core) by
+        # their colours; one with nothing chosen wears the floor's top
+        from .structure import layer_of_color
+        names = [p for p, _l in parts]
+        for p in names[1:]:
+            if p not in made and "top" in made:
+                made[p] = made["top"]
+
+        def layer_part(color):
+            i = layer_of_color(color)
+            return names[i] if i is not None and i < len(names) else None
+        fallback = "top"
+    elif kind == "wall" and len(parts) > 1:
+        # a wall with layers: each face's layer by the colour it is built
+        # with (structure.layer_color); a finish with nothing chosen wears
+        # the wall's own (its core's) material
+        from .structure import layer_of_color
+        names = [p for p, _l in parts]
+
+        def layer_part(color):
+            i = layer_of_color(color)
+            return names[i] if i is not None and i < len(names) else None
     for f in group.mesh.faces:
+        if layer_part is not None:
+            part = layer_part(f.attrs.get("color"))
+            if part is not None:
+                a = made.get(part) or made.get(fallback)
+                if a is not None:
+                    f.attrs.update(a[1])
+                continue
         if kind == "opening":
             # each part by the colour it is built with (trim.py): a part
             # with a material takes it, the others (the glass) keep theirs
@@ -409,7 +685,13 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
                 continue
         else:
             part = None
-            if kind in ("stair", "ramp", "guard"):
+            if kind == "street":
+                try:
+                    from .streets import part_of_color as street_part
+                    part = street_part(f.attrs.get("color")) or "asphalt"
+                except ImportError:
+                    part = None
+            elif kind in ("stair", "ramp", "guard"):
                 # its railing's parts, told by the colours they are built
                 # with; the glass keeps its own until one is chosen
                 try:
@@ -518,7 +800,7 @@ class MaterialTab:
     def __init__(self, kind: str, el_id: str | None, doc: dict) -> None:
         QtCore, QtGui, W = _qt()
         self.kind, self.el_id = kind, el_id
-        self.parts = list(SLOTS[kind])
+        self.parts = slots(kind, el_id, doc)
         self.start = {p: resolve(doc, kind, el_id, p) for p, _l in self.parts}
         self.now = dict(self.start)
         self.part = self.parts[0][0]
@@ -600,6 +882,17 @@ class MaterialTab:
                             "that had its own for this part, too)")
         row.addWidget(self.all)
         right.addLayout(row)
+        # a wall of YOUR type: the look is the type's (31/10) — said here
+        tid = wall_type_of(doc, el_id) if kind == "wall" else None
+        if tid:
+            name = next((t.get("name") for t in doc.get("wall_types") or ()
+                         if t.get("id") == tid), "")
+            note = W.QLabel(tr("Type «{name}»: what you pick goes to every "
+                               "wall of this type — and to the next ones "
+                               "drawn with it", name=name))
+            note.setWordWrap(True)
+            note.setStyleSheet("color: #8fb8f9;")
+            right.addWidget(note)
         root.addLayout(right, 1)
         self._show()
 

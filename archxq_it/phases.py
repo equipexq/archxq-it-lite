@@ -123,8 +123,18 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
        Prop("Material", C, "Brick", MATERIALS)),
     # a straight wall's ends with the mouse — the walls ending at the same
     # corner follow (a customer's ask, 2026-10-05)
-    _e("wall_edit", "Edit walls", (("Move points", "move"),)),
+    _e("wall_edit", "Edit walls", (("Move points", "move"),
+                                   # (0.15.0, B1: a wall cut in two at a
+                                   # click; a wall's end on to another's line)
+                                   ("Split", "wall_split"),
+                                   ("Trim / Extend", "wall_trim"),
+                                   # (as Revit's: reference, then the edge)
+                                   ("Align", "align"))),
     _e("wall_import", "Walls from DXF", ()),
+    # a line between two rooms with no wall (an open living room and
+    # kitchen) — nothing in 3D, dashed in the plan (separators.py, D5)
+    _e("separator", "Room separator", (("Draw", "geopath"),
+                                       ("Delete", "eraser"))),
     # -- Openings
     # -- Openings: placed on a wall; sizes in the options bar
     _e("door", "Door", ()),
@@ -136,11 +146,25 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
     # -- Documentation
     # -- Documentation: made on the host's own sheets (the «+» by «Model»)
     # — options in the bar; the sheets are edited in the host's composer
+    # (the studio: the documentation's own window — PLANO_DOCUMENTACAO_
+    # PLANTAS.md; the bar is only its door: mobility, his call 2026-10-22)
+    _e("studio", "Open the studio", ()),
+    _e("update_all", "Update all sheets", ()),
     _e("rooms", "Rooms", ()),
     _e("sheets", "Drawings & sheets", ()),
     _e("section", "Section line", ()),
     _e("export", "Export (PDF / DXF)", ()),
+    # -- Tools (the top bar's «Tools ▾», apart from the phases): procedures
+    # that make things along a path (PLANO_TOOLS_CAMINHO.md, 2026-10-29)
+    _e("along", "Along a path", (("Profile along", "geopath"),
+                                 ("Copy along", "geopath"))),
 )}
+
+#: The top bar's «Tools ▾» (his call, 2026-10-29): a drop-down of tools —
+#: procedures, not building elements — set APART from the phases: never in
+#: ``order()``, no ✔, picking one keeps the phase you are on.
+TOOLS = Phase("tools", "Tools", "Procedures that make things along a path.",
+              ("along",))
 
 PHASES: dict[str, Phase] = {p.key: p for p in (
     Phase("project", "Project",
@@ -155,7 +179,7 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
           ("column", "beam", "slab", "slab_edit", "footing")),
     Phase("walls", "Walls",
           "Walls of the current floor, by axis, thickness and height.",
-          ("wall", "wall_edit", "wall_import")),
+          ("wall", "wall_edit", "wall_import", "separator")),
     Phase("openings", "Openings",
           "Doors and windows placed on the walls.",
           ("door", "window", "void")),
@@ -164,7 +188,7 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
           ("roof",)),
     Phase("documentation", "Documentation",
           "Plans, sections and elevations on sheets, exported to PDF.",
-          ("rooms", "sheets", "section", "export")),
+          ("studio", "update_all")),
 )}
 
 #: What the Lite leaves to ArchXQ IT Pro (his call, 2026-10-04): the
@@ -174,13 +198,21 @@ PRO_ELEMENTS = frozenset({
     "wall_import",
     "door", "window", "void",
     "roof",
-    "rooms", "sheets", "section", "export",
+    "rooms", "sheets", "section", "export", "studio", "update_all",
+    # room separators: the rooms' (Pro)
+    "separator",
     # the «Building elements» (his call, 2026-10-05: Pro)
     "ramp", "stair",
     # low walls & guards (his call, 2026-10-15: an extra, Pro)
     "guard",
     # glass grids (his go, 2026-10-15)
     "glazing",
+    # blocks: a slab drawn as a block (his call, 2026-10-27: Pro)
+    "block",
+    # «Surroundings»: streets (his OK, 2026-10-25)
+    "street", "surroundings",
+    # Tools ▸ Along a path (his call, 2026-10-29: Pro)
+    "along", "profile", "copy",
 })
 
 

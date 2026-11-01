@@ -45,6 +45,14 @@ class _Row(QFrame):
             return
         on = bool(self.row.get("ghost"))
         g.setEnabled(not self.row["current"])
+        if self.row["kind"] == "terrain":
+            g.setToolTip("You work on the Terrain — its ghost shows when "
+                         "you work on a level" if self.row["current"] else
+                         "Ghost ON — the plot, its pits and the streets in "
+                         "light blue in the plan (click: off)" if on else
+                         "Ghost — show the plot, its pits and the streets "
+                         "in light blue in the plan of the level you work on")
+            return
         g.setToolTip("The level you work on — its ghost shows when you "
                      "work on another one" if self.row["current"] else
                      "Ghost ON — this level shows in light blue in the plan "
@@ -82,26 +90,45 @@ class _Row(QFrame):
             e = QLabel(_elev(row["elev"]))
             e.setProperty("axq", "lvelev")
             lay.addWidget(e)
+        # its GUIDE SHEET in 3D (levelsheet.py, his idea 31/10 — from
+        # ArchXQ for Blender): the icon rules, off = never shown
         if row["kind"] != "terrain":
-            # GHOST: this level drawn faint under the plan of the one
-            # worked on (his ask, 2026-10-06: one per level — any of them)
-            g = QToolButton()
-            g.setProperty("axq", "eye")
-            g.setIconSize(QSize(17, 17))
-            g.setFocusPolicy(Qt.NoFocus)
-            on = bool(row.get("ghost"))
-            g.setIcon(icons.icon("ghost_on" if on else "ghost"))
-            if on:                         # lit: a blue chip behind it
-                g.setStyleSheet("QToolButton { background: "
-                                "rgba(111, 168, 220, 70); border-radius: 4px; }")
-            self.ghost = g
-            self.sync_ghost()
-            g.clicked.connect(lambda: strip.owner.toggle_ghost(row["key"]))
-            lay.addWidget(g)
-        else:
-            pad = QWidget()                # the eyes stay in one column
-            pad.setFixedWidth(21)
-            lay.addWidget(pad)
+            sh = QToolButton()
+            sh.setProperty("axq", "eye")
+            sh.setIconSize(QSize(17, 17))
+            sh.setFocusPolicy(Qt.NoFocus)
+            on = bool(row.get("sheet"))
+            sh.setIcon(icons.icon("sheet_on" if on else "sheet"))
+            if on:                         # lit: a chip and a thin outline
+                sh.setStyleSheet("QToolButton { background: "
+                                 "rgba(47, 125, 246, 60); border: 1px solid "
+                                 "#2f7df6; border-radius: 4px; }")
+            sh.setToolTip("Guide sheet ON — this level's floor shows in 3D "
+                          "as a see-through plate with a 1 m grid (click: "
+                          "off)" if on else
+                          "Guide sheet — show this level's floor in 3D as a "
+                          "see-through plate with a 1 m grid")
+            sh.clicked.connect(lambda: strip.owner.toggle_sheet(row["key"]))
+            lay.addWidget(sh)
+            self.sheet = sh
+        # GHOST: this level drawn faint under the plan of the one worked on
+        # (his ask, 2026-10-06: one per level — any of them; the Terrain's
+        # too, 2026-10-26: the plot, its pits, the streets)
+        g = QToolButton()
+        g.setProperty("axq", "eye")
+        g.setIconSize(QSize(17, 17))
+        g.setFocusPolicy(Qt.NoFocus)
+        on = bool(row.get("ghost"))
+        g.setIcon(icons.icon("ghost_on" if on else "ghost"))
+        if on:                             # lit: a blue chip behind it, and a
+            # thin outline — the chip alone was too faint (his ask, 31/10)
+            g.setStyleSheet("QToolButton { background: "
+                            "rgba(111, 168, 220, 70); border: 1px solid "
+                            "#6fa8dc; border-radius: 4px; }")
+        self.ghost = g
+        self.sync_ghost()
+        g.clicked.connect(lambda: strip.owner.toggle_ghost(row["key"]))
+        lay.addWidget(g)
         eye = QToolButton()
         eye.setProperty("axq", "eye")
         part = row["visible"] and row.get("parts_off")

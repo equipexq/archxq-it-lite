@@ -399,7 +399,10 @@ def setbacks_of(plot: dict):
 def buildable(pts, dists):
     """The outline moved in, each side by its own distance: every side's
     line pushed inwards, neighbours meeting at the new corners. None when
-    nothing is left (the setbacks swallow the plot, or fold it over)."""
+    nothing is left (the setbacks swallow the plot, or fold it over). A
+    distance may be a pair (at the side's start, at its end): the side's
+    line then TILTS — a ramp's batter, 0 where it meets the ground and
+    wide where it is deep (0.15.0, C5)."""
     n = len(pts)
     if n < 3 or any(d is None for d in dists):
         return None
@@ -407,9 +410,10 @@ def buildable(pts, dists):
     for i in range(n):
         a, b = pts[i], pts[(i + 1) % n]
         nx, ny = outward_normal(a, b)
-        d = dists[i]
-        lines.append(((a[0] - nx * d, a[1] - ny * d),
-                      (b[0] - nx * d, b[1] - ny * d)))
+        da, db = dists[i] if isinstance(dists[i], (tuple, list)) \
+            else (dists[i], dists[i])
+        lines.append(((a[0] - nx * da, a[1] - ny * da),
+                      (b[0] - nx * db, b[1] - ny * db)))
     out = []
     for i in range(n):
         (p1, p2), (p3, p4) = lines[i - 1], lines[i]

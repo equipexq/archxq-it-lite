@@ -271,7 +271,7 @@ class _PlotTool(Tool):
         self._ghost_hit = None
         vp = self.viewport
         loops = GHOST.get("loops") or ()
-        if vp is None or not loops \
+        if vp is None or not loops or getattr(self, "no_ghost_point", False) \
                 or getattr(snap, "kind", "") in HARD_SNAPS:
             return None
         scr = getattr(ctx, "screen", None)
@@ -361,7 +361,11 @@ class _PlotTool(Tool):
                 if not there:
                     continue
                 d = math.dist(here, there)
-                if d <= ALIGN_PX and (coord not in best or d < best[coord][0]):
+                # within half a pixel the EARLIER source wins (the tool's
+                # own points come first): two ends a hair apart (his «S»,
+                # 1.2 mm, 2026-11-01) put the curve's end off its start
+                if d <= ALIGN_PX and (coord not in best
+                                      or d < best[coord][0] - 0.5):
                     best[coord] = (d, q)
         out = list(p)
         for coord, (_d, q) in best.items():

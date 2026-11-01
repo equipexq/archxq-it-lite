@@ -25,10 +25,14 @@ MOVABLE = {"column", "beam", "footing", "slab", "ramp", "stair", "guard",
 R = 50            # the ring's radius (px)
 B = 34            # a button's size
 
+from .look import ACCENT as UI_ACCENT, ACCENT_DARK, ACCENT_HOVER  # noqa: E402
+# (the ring's hover follows IngeTrazo's accent — 0.15.0, C3)
+_DK = QColor(ACCENT_DARK)
 BUTTON_CSS = ("QToolButton { background: rgba(32, 35, 40, 235); "
               "border: 1px solid #4a5058; border-radius: 17px; }"
-              "QToolButton:hover { border: 2px solid #e8742c; "
-              "background: rgba(74, 51, 36, 245); }")
+              f"QToolButton:hover {{ border: 2px solid {UI_ACCENT}; "
+              f"background: rgba({_DK.red()}, {_DK.green()}, {_DK.blue()}, "
+              "245); }")
 
 
 def _icon(kind: str) -> QIcon:
@@ -66,6 +70,13 @@ def _icon(kind: str) -> QIcon:
         p.setPen(QPen(ACCENT, 3.2, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(tip, QPointF(tip.x() - 8, tip.y() - 2))
         p.drawLine(tip, QPointF(tip.x() + 1, tip.y() + 8))
+    elif kind == "align":                    # a block onto a dashed line
+        p.setPen(QPen(ACCENT, 3.2, Qt.DashLine))
+        p.drawLine(QPointF(33, 6), QPointF(33, 38))
+        p.setPen(pen)
+        p.drawRect(QRectF(7, 14, 14, 16))
+        p.setPen(QPen(ACCENT, 3.2))
+        p.drawLine(QPointF(22, 22), QPointF(30, 22))
     elif kind == "edit":                     # a pencil
         p.drawLine(QPointF(12, 32), QPointF(30, 14))
         p.drawLine(QPointF(30, 14), QPointF(34, 18))
@@ -87,6 +98,9 @@ ACTIONS = (("move", "Move (M) — click a point, then where it goes"),
            ("array", "Array — place ONE copy, then type x3 + Enter (with "
                      "the x; «3» alone is a distance) · /3: three between"),
            ("rotate", "Rotate (Q)"),
+           # (0.15.0, as Revit's: click the reference, then its edge)
+           ("align", "Align — click the reference edge, then this one's edge "
+                     "to line it up"),
            ("edit", "Its window — sizes and details"),
            ("close", "Close (Esc)"))
 
@@ -128,9 +142,9 @@ class RadialMenu(QWidget):
         q.setFocusPolicy(Qt.NoFocus)
         q.setCursor(Qt.ArrowCursor)
         q.setStyleSheet("QToolButton { color: white; font-weight: bold; "
-                        "font-size: 11px; background: #e8742c; border: none; "
-                        "border-radius: 10px; padding: 0; }"
-                        "QToolButton:hover { background: #ff8a3d; }")
+                        f"font-size: 11px; background: {UI_ACCENT}; "
+                        "border: none; border-radius: 10px; padding: 0; }"
+                        f"QToolButton:hover {{ background: {ACCENT_HOVER}; }}")
         q.move(int(self.centre.x() - 10), int(self.centre.y() - 10))
         q.clicked.connect(lambda: show_help("radial", q))
         self.help = q

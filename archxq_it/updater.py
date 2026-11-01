@@ -117,9 +117,11 @@ def latest_known() -> dict:
 
 
 def available() -> dict:
-    """The latest version, if it is newer than this one (Pro), else {}."""
+    """The latest version, if it is newer than this one (Pro), else {} —
+    never in the developer's source (21/10: its About offered a stale
+    «Update to 0.12.0» kept from a test; «dev» never checks)."""
     j = latest_known()
-    if edition.lite() or not j.get("version"):
+    if edition.lite() or not enabled() or not j.get("version"):
         return {}
     return j if newer(j["version"], current()) else {}
 
@@ -389,14 +391,19 @@ def _maybe_notice(owner) -> None:
 
 
 # ---- the small notice (top right of the 3D view) ------------------------------------
-_CARD = ("QFrame#axqUpd { background: #26282c; border: 1px solid #e8742c; "
-         "border-radius: 8px; } QLabel { color: #e6e6e6; background: "
-         "transparent; } QPushButton { color: #e6e6e6; background: "
-         "#3a3d42; border: 1px solid #50545a; border-radius: 5px; "
-         "padding: 4px 14px; } QPushButton:hover { background: #474b51; } "
-         "QPushButton#axqOk { background: #e8742c; border: 1px solid "
-         "#e8742c; color: white; font-weight: bold; } "
-         "QPushButton#axqOk:hover { background: #f08a48; }")
+def _card_css() -> str:
+    """The notice's look — its border and button in IngeTrazo's accent
+    (0.15.0, C3)."""
+    from .look import ACCENT, ACCENT_HOVER
+    return ("QFrame#axqUpd { background: #26282c; border: 1px solid "
+            f"{ACCENT}; border-radius: 8px; }} QLabel {{ color: #e6e6e6; "
+            "background: transparent; } QPushButton { color: #e6e6e6; "
+            "background: #3a3d42; border: 1px solid #50545a; "
+            "border-radius: 5px; padding: 4px 14px; } QPushButton:hover { "
+            "background: #474b51; } "
+            f"QPushButton#axqOk {{ background: {ACCENT}; border: 1px solid "
+            f"{ACCENT}; color: white; font-weight: bold; }} "
+            f"QPushButton#axqOk:hover {{ background: {ACCENT_HOVER}; }}")
 
 
 class Notice(QFrame):
@@ -407,7 +414,7 @@ class Notice(QFrame):
         self.owner = owner
         self.version = latest["version"]
         self.setObjectName("axqUpd")
-        self.setStyleSheet(_CARD)
+        self.setStyleSheet(_card_css())
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(6)
