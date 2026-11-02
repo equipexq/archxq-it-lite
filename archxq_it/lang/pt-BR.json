@@ -2848,5 +2848,6 @@
   "What you changed goes to all {n} {noun} — the rest of each stays its own": "O que você mudou vai para todos os {n} {noun} — o resto de cada um fica como está",
   "Only this one": "Só este",
   "Only the one you clicked — the one you see changing — the others stay as they are": "Só o que você clicou — o que você vê mudando —; os outros ficam como estão",
-  "You see the change on this one; «Apply to the {n} selected» takes it to all of them.": "Você vê a mudança neste; «Aplicar aos {n} selecionados» leva para todos."
+  "You see the change on this one; «Apply to the {n} selected» takes it to all of them.": "Você vê a mudança neste; «Aplicar aos {n} selecionados» leva para todos.",
+  "Your wall type — the look below is the type's": "Seu tipo de parede — o visual abaixo é o do tipo"
 }

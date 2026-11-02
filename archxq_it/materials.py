@@ -323,6 +323,28 @@ def resolve(doc: dict, kind: str, el_id: str | None, part: str):
     return ref
 
 
+def look_key(doc: dict, kind: str, el_id: str | None) -> str:
+    """ALL that ``paint`` reads for one element, as a key: its parts, its
+    own, its wall type's, its kind's (a room's floor: its slab's too).
+    Equal = painted the same (compat.build_sig: a material changed on one
+    wall rebuilt the whole building — 402 groups, 2.3 s — his test 01/11)."""
+    m = doc.get("materials") or {}
+    els, kinds = m.get("el") or {}, m.get("type") or {}
+    parts = [p for p, _l in slots(kind, el_id, doc)] if kind in SLOTS else []
+    key = [kind, parts, els.get(el_id or ""), kinds.get(kind)]
+    if kind == "wall":
+        tid = wall_type_of(doc, el_id)
+        key += [tid, (m.get("wtype") or {}).get(tid) if tid else None]
+    elif kind == "slab":
+        key.append(any(e.get("id") == el_id and e.get("ceiling")
+                       for e in doc.get("structure") or ()))
+    elif kind == "floor" and el_id:
+        s = _floor_slab(doc, el_id)
+        if s is not None:
+            key += [s["id"], els.get(s["id"]), kinds.get("slab")]
+    return repr(key)
+
+
 def wall_face_mat(doc: dict, el: dict, color) -> str:
     """What a wall's face wears, as ``paint`` gives it — a key, equal for
     the same material (``seams``: a joint between two walls is hidden
@@ -809,6 +831,20 @@ class MaterialTab:
         root = W.QHBoxLayout(w)
 
         left = W.QVBoxLayout()
+        # a wall of YOUR type: its name on top, legible (his ask, 01/11 —
+        # nowhere on this tab did it say which type the look belongs to)
+        tid = wall_type_of(doc, el_id) if kind == "wall" else None
+        tname = next((t.get("name") for t in doc.get("wall_types") or ()
+                      if t.get("id") == tid), "") if tid else ""
+        if tname:
+            head = W.QLabel(tname)
+            head.setWordWrap(True)
+            head.setMaximumWidth(196)
+            head.setToolTip(tr("Your wall type — the look below is the "
+                               "type's"))
+            head.setStyleSheet("font-size: 15px; font-weight: 600; "
+                               "color: #8fb8f9; padding-bottom: 2px;")
+            left.addWidget(head)
         self.big = W.QLabel()
         self.big.setFixedSize(132, 132)
         self.big.setScaledContents(True)

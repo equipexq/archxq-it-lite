@@ -1,5 +1,16 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.11.1
+
+**Hiding works again on IngeTrazo 0.5.10 and newer (0.5.11, 0.6.0):**
+the Walls, Columns, Terrain… buttons at the bottom, the Hide command and
+the eyes in the outliner hide and show at once again.
+
+- **The bottom buttons and Hide work at once** — from IngeTrazo 0.5.10,
+  the view kept its last picture: a hidden part stayed on screen, came
+  back as a white ghost, or could not be clicked any more. Now the view
+  is drawn again as soon as a part is hidden or shown, on 0.5.x and 0.6.
+
 ## 0.11.0
 
 **An update for IngeTrazo 0.6.0:** ArchXQ IT Lite now works with its

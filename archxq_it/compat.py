@@ -240,7 +240,8 @@ def show_folds(viewport, group, corners, breaks, on: bool) -> None:
     bump = getattr(viewport.scene, "bump_view", None)
     if callable(bump):
         bump()
-    viewport.update()
+    touch_scene(viewport)               # (its caches: see set_hidden)
+    fresh_frame(viewport)
 
 
 def remove_toolbar(window, toolbar) -> None:
@@ -651,7 +652,8 @@ def set_layer_visible(viewport, name: str, on: bool) -> None:
     if callable(bump):
         bump()
     _refresh_host_layers(viewport)
-    viewport.update()
+    touch_scene(viewport)               # (its caches: see set_hidden)
+    fresh_frame(viewport)
 
 
 def fresh_frame(viewport) -> None:
@@ -672,7 +674,13 @@ def set_hidden(viewport, groups, hidden: bool) -> None:
     bump = getattr(viewport.scene, "bump_view", None)
     if callable(bump):
         bump()
-    viewport.update()
+    # IngeTrazo 0.6 keeps its frame, its drawn chunks and its click index
+    # while the scene's version is the same — what is hidden is not in
+    # them: the walls stayed on screen with their chip off, then came back
+    # as white ghosts nobody could click (his screens 01/11). Its own
+    # «Hide» moves the version: so do we.
+    touch_scene(viewport)
+    fresh_frame(viewport)
 
 
 def select(viewport, groups, mode: str = "replace") -> None:
@@ -1477,6 +1485,19 @@ def _freed_frames(viewport, doc: dict, old: list, new: list,
     return [g for g in old if id(g) in frames and _rec(g).get("id") in eids]
 
 
+def build_sig(e: dict, layer, look: str, k: int, hide) -> str:
+    """A built element's fingerprint: one the same as a scene group's
+    leaves that group in place (``building_swap``). ``look``: what its
+    painting reads (materials.look_key) — its type's look included."""
+    import hashlib
+    return hashlib.blake2b(repr((
+        e["faces"], e["name"], e["kind"], e["id"], e["level"],
+        layer, bool(e.get("inwall")), e.get("okind"),
+        k, look, e.get("floor"),
+        sorted(sorted(p) for p in hide) if hide else None)).encode(),
+        digest_size=16).hexdigest()
+
+
 def building_swap(viewport, doc: dict, elevations, level_layer_of):
     """The command that puts the building rebuilt from ``doc`` in place of
     the one in the scene (not executed: ``commit_build`` runs it — and the
@@ -1497,8 +1518,19 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     # keeping every old copy: ~80 MB an edit, until IngeTrazo hung). A group
     # built from the same faces, name, layer, tags and materials as one in
     # the scene stays as it is.
-    import hashlib
-    mats = repr(sorted((doc.get("materials") or {}).items()))
+    # Its materials: only what ITS painting reads (materials.look_key) —
+    # the whole table made every group «changed» at any material change:
+    # 402 groups rebuilt, 2.3 s (his test, 01/11). Its TYPE is in it: types
+    # A, B and C with the same layers — a wall switched from C to A was
+    # kept, still wearing C's look (his test, 01/11). (A neighbour's look
+    # reaches a wall through its joints: ``hide`` below.)
+    looks: dict = {}
+
+    def look_of(e):
+        pk = ("floor", e["floor"]) if e.get("floor") else (e["kind"], e["id"])
+        if pk not in looks:
+            looks[pk] = materials.look_key(doc, *pk)
+        return looks[pk]
     have: dict = {}
     for g in wall_groups(viewport, None, BUILT_KINDS):
         sig = _rec(g).get("sig")
@@ -1524,12 +1556,7 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     for i, e in enumerate(built):
         k = nth[e["id"]] = nth.get(e["id"], -1) + 1
         hide = joints.get(i, ())
-        sig = hashlib.blake2b(repr((
-            e["faces"], e["name"], e["kind"], e["id"], e["level"],
-            layers.get(e["level"]), bool(e.get("inwall")), e.get("okind"),
-            k, mats, e.get("floor"),
-            sorted(sorted(p) for p in hide) if hide else None)).encode(),
-            digest_size=16).hexdigest()
+        sig = build_sig(e, layers.get(e["level"]), look_of(e), k, hide)
         same = have.get(sig)
         if same:
             kept.add(id(same.pop()))          # unchanged: left in place

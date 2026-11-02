@@ -1837,7 +1837,9 @@ class ArchXQ:
             return doc
         from . import materials
         self._pending_mat = None
-        return materials.merge(doc, ch)
+        for one in ch if isinstance(ch, list) else [ch]:   # (in turn)
+            doc = materials.merge(doc, one)
+        return doc
 
     def _flush_mat(self, kind: str) -> None:
         if getattr(self, "_pending_mat", None) is None:
@@ -9693,6 +9695,7 @@ class ArchXQ:
         # its TYPE (0.15.0, A2): every wall of it changed, or these layers
         # saved as a new type — the types are the document's
         doc = self._live(self.doc())
+        self._keep_type_look(doc, new)
         new, named, every = self._wall_types(doc, new)
         if every or named:
             doc["walls"] = [new if w["id"] == new["id"] else w
@@ -9733,6 +9736,35 @@ class ArchXQ:
         compat.flash(self.viewport, f"«{new['name']}» updated"
                      + (" — " + ", ".join(more) if more else "")
                      + " — Ctrl+Z undoes it", 5000)
+
+    def _keep_type_look(self, doc: dict, new: dict) -> None:
+        """«Only this one»: the wall leaves its type — and keeps wearing
+        the type's look, now its own (his test, 01/11: its layers edited,
+        «only this one», and the wall came out bare — the look lives in
+        the type). What the Material tab picked still wins."""
+        from . import materials as M
+        tid = M.wall_type_of(doc, new["id"])       # (the wall as it was)
+        if not tid or new.get("type") or new.get("_new_type"):
+            return
+        look = ((doc.get("materials") or {}).get("wtype") or {}).get(tid)
+        if not look:
+            return
+        own = ((doc.get("materials") or {}).get("el") or {}).get(new["id"])
+        parts = {p: r for p, r in look.items() if p not in (own or {})}
+        if not parts:
+            return
+        carry = {"kind": "wall", "id": new["id"], "all": False,
+                 "parts": parts}
+        pend = getattr(self, "_pending_mat", None)
+        if pend is None:
+            self._pending_mat = carry
+        elif isinstance(pend, dict) and pend.get("id") == new["id"] \
+                and not pend.get("all"):
+            carry["parts"].update(pend.get("parts") or {})
+            self._pending_mat = carry
+        else:                              # «Use for all» too: both, in turn
+            self._pending_mat = [carry] + (pend if isinstance(pend, list)
+                                           else [pend])
 
     @staticmethod
     def _wall_types(doc: dict, new: dict) -> tuple[dict, str | None, bool]:
