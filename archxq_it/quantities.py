@@ -12,6 +12,9 @@ levels») — a table to filter or pivot:
                    the openings taken out — a corner counted once)
     Wall layers    a type's / a wall's layers, each: area, volume (the
                    stone, the brick, the plaster to order)
+    Wall framing   a light-framed core (framing.py): its studs (count, the
+                   short ones too), plates / sills / headers (length), the
+                   insulation between (volume)
     Doors / Windows / Voids   by kind and size: count, area
     Slabs          by YOUR type, else thickness (Ceiling, Block apart):
                    area (holes out), volume
@@ -38,16 +41,20 @@ from __future__ import annotations
 import csv
 import math
 
+from . import framing as FR
 from . import model
 from . import structure as S
 from . import walls as W
 from .i18n import N_, tr
 
 #: the categories, in the file's order (their words translated as written)
-CATEGORIES = (N_("Walls"), N_("Wall layers"), N_("Doors"), N_("Windows"),
-              N_("Voids"), N_("Slabs"), N_("Slab layers"), N_("Floors"),
+CATEGORIES = (N_("Walls"), N_("Wall layers"), N_("Wall framing"),
+              N_("Doors"), N_("Windows"),
+              N_("Voids"), N_("Slabs"), N_("Slab layers"),
+              N_("Floor framing"), N_("Floors"),
               N_("Floor finishes"), N_("Columns"), N_("Beams"),
-              N_("Footings"), N_("Roofs"), N_("Low walls"),
+              N_("Footings"), N_("Roofs"), N_("Roof layers"),
+              N_("Roof framing"), N_("Low walls"),
               N_("Grids"), N_("Stairs"), N_("Ramps"), N_("Streets"),
               N_("Rooms"), N_("Excavations"))
 _WORDS = (N_("Curtain wall"), N_("Wall"), N_("Slab"), N_("Ceiling"),
@@ -114,6 +121,9 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
     METRES — per level, then each item's «All levels» total.
     ``volumes``: {dig id: m³} (compat.dig_volumes — IngeTrazo's), else
     each excavation's own."""
+    # (a framed wall at a pitched roof's gable end: counted up to the roof,
+    # as it is built — structure.roof_tops)
+    doc = S.with_roof_tops(doc, elevations)
     info = S.levels_info(doc, elevations)
     names = {lv["id"]: lv["name"] for lv in doc["levels"]}
     order = [lv["id"] for lv in doc["levels"]]
@@ -131,10 +141,13 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
         if not mine:
             continue
         plans = W.plan(mine)
+        fix = S.frame_marks(doc, lid, mine, plans)   # (T / beam studs, 4a)
         for w in mine:
             pcs = plans.get(w["id"])
             if not pcs:
                 continue
+            if w["id"] in fix:
+                w = dict(w, _fix=fix[w["id"]])
             b = li["z0"] + float(w.get("base", 0.0))
             top = li["under"] if w.get("height", "level") == "level" \
                 else li["z0"] + float(w["height"])
@@ -166,6 +179,23 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                     name = la.get("name") or tr(la.get("role", ""))
                     s.add("Wall layers", f"{item} · {name} {_cm(la['t'])}",
                           lid, 0, 0.0, area, vol * k)
+            fr = FR.count(w, pcs, holes, li["z0"], b, top)
+            if fr is not None:               # a light-framed core
+                s.add("Wall framing", f"{item} · {tr('Studs')}", lid,
+                      fr["studs"], 0.0, 0.0, 0.0)
+                s.add("Wall framing",
+                      f"{item} · {tr('Plates and sills')}", lid,
+                      0, fr["plates"], 0.0, 0.0)
+                for h, m in fr["headers"].items():   # by depth (its span)
+                    s.add("Wall framing",
+                          f"{item} · {tr('Header')} {_cm(h)}", lid,
+                          0, m, 0.0, 0.0)
+                if fr.get("blocking", 0) > 0:        # (tall walls, 4b)
+                    s.add("Wall framing", f"{item} · {tr('Blocking')}",
+                          lid, 0, fr["blocking"], 0.0, 0.0)
+                if fr["fill"] > 0:
+                    s.add("Wall framing", f"{item} · {tr('Insulation')}",
+                          lid, 0, 0.0, 0.0, fr["fill"])
 
     # ---- openings -------------------------------------------------------------------
     by_wall = {w["id"]: w for w in walls}
@@ -228,6 +258,27 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                 s.add("Slabs", item, lid, 1, 0.0, a, a * t)
                 if len(S.slab_layers(e)) > 1:
                     _slab_layers(s, doc, e, item, a, walls_of(lid))
+                fc = S.slab_count(e)
+                if fc:
+                    # its joists (PLANO_PISOS_BARROTES D9): how many and
+                    # their metres, the rim, doubled round the openings
+                    s.add("Floor framing", f"{item} · {tr('Joists')} "
+                          f"{_cm(fc['depth'])}", lid, fc["joists"],
+                          fc["joist_m"], 0.0, 0.0)
+                    s.add("Floor framing", f"{item} · {tr('Rim joist')}",
+                          lid, 0, fc["rim_m"], 0.0, 0.0)
+                    if fc["header_m"] > 0:
+                        s.add("Floor framing",
+                              f"{item} · {tr('Doubled round openings')}",
+                              lid, 0, fc["header_m"], 0.0, 0.0)
+                    if fc.get("blocking_m", 0.0) > 0:    # (mid-span, 4b)
+                        s.add("Floor framing",
+                              f"{item} · {tr('Blocking')}", lid, 0,
+                              fc["blocking_m"], 0.0, 0.0)
+                    if fc.get("fill", 0.0) > 0:
+                        s.add("Floor framing",
+                              f"{item} · {tr('Insulation')}", lid, 0, 0.0,
+                              0.0, fc["fill"])
         elif typ == "column":
             base = float(e.get("base", 0.0))
             h = (li["under"] - li["z0"] - base) \
@@ -259,6 +310,58 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
             if a <= 0:               # (no tile faces — a flat one: its plan)
                 a = _area(e["corners"])
             s.add("Roofs", type_label("roof", e), lid, 1, 0.0, a, 0.0)
+            # in layers: each one's area; its rafters (step 2b)
+            rc = S.roof_count(doc, elevations, e)
+            item = type_label("roof", e)
+            fr = rc.get("rafters") is not None or \
+                rc.get("trusses") is not None
+            for la, la_a in rc.get("layers") or ():
+                if len(rc["layers"]) < 2 or (fr and la["role"] == "core"):
+                    continue
+                name = la.get("name") or tr(la.get("role", ""))
+                s.add("Roof layers", f"{item} · {name} {_cm(la['t'])}",
+                      lid, 0, 0.0, la_a, la_a * float(la["t"]))
+            # its eaves' boards (fascia, soffit — 2026-11-02)
+            if rc.get("fascia_m"):
+                s.add("Roof framing", f"{item} · {tr('Fascia')}", lid, 0,
+                      rc["fascia_m"], 0.0, 0.0)
+            if rc.get("soffit_m2"):
+                s.add("Roof framing", f"{item} · {tr('Soffit')}", lid, 0,
+                      0.0, rc["soffit_m2"], 0.0)
+            if rc.get("trusses") is not None:
+                # its trusses (PLANO_TELHADO_ASNAS D10): how many, of what
+                # shape over what span; their timber, apart
+                from .framing import TRUSS_NAMES
+                n = rc["trusses"]
+                s.add("Roof framing", f"{item} · {tr('Trusses')} "
+                      f"{tr(TRUSS_NAMES[rc['pattern']])} "
+                      f"{_m(rc['span'])} m", lid, n, 0.0, 0.0, 0.0)
+                for key, name in (("top_m", "Top chords"),
+                                  ("bottom_m", "Bottom chords"),
+                                  ("web_m", "Webs")):
+                    if rc[key] > 0:
+                        s.add("Roof framing", f"{item} · {tr(name)} "
+                              f"{_cm(rc['depth'])}", lid, 0, rc[key],
+                              0.0, 0.0)
+                if rc["barge"]:
+                    s.add("Roof framing", f"{item} · {tr('Barge rafters')}",
+                          lid, rc["barge"], rc["barge_m"], 0.0, 0.0)
+                if rc.get("fill", 0.0) > 0:
+                    s.add("Roof framing", f"{item} · {tr('Insulation')}",
+                          lid, 0, 0.0, 0.0, rc["fill"])
+            elif fr:
+                s.add("Roof framing", f"{item} · {tr('Rafters')} "
+                      f"{_cm(rc['depth'])}", lid, rc["rafters"],
+                      rc["rafter_m"], 0.0, 0.0)
+                if rc["ridge_m"] > 0:
+                    s.add("Roof framing", f"{item} · {tr('Ridge board')}",
+                          lid, 1, rc["ridge_m"], 0.0, 0.0)
+                if rc.get("hip_m", 0) > 0:          # (a hip roof — 4d)
+                    s.add("Roof framing", f"{item} · {tr('Hip rafters')}",
+                          lid, 4, rc["hip_m"], 0.0, 0.0)
+                if rc.get("fill", 0.0) > 0:
+                    s.add("Roof framing", f"{item} · {tr('Insulation')}",
+                          lid, 0, 0.0, 0.0, rc["fill"])
         elif typ == "guard":
             pts = e.get("pts") or []
             L = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
@@ -348,7 +451,10 @@ def _slab_layers(s: _Sum, doc: dict, e: dict, item: str, a: float,
         a_top = floor.area
     except Exception:  # noqa: BLE001 — the slab's own area
         floor, a_top = None, a
+    framed = S.slab_frame(e) is not None
     for i, L in enumerate(ls):
+        if framed and i == core:         # (its joists: «Floor framing»)
+            continue
         la = a_top if i < core else a
         t = float(L["t"]) * k
         name = L.get("name") or tr("Core" if L["role"] == "core"

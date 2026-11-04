@@ -618,7 +618,9 @@ HELP: dict[str, tuple[str, str]] = {
         "Level",
         "One storey of the building. Its <b>height</b> is floor to floor; "
         "the <b>elevation</b> is worked out from the levels under it.<br><br>"
-        "<b>+ Level above / below</b> puts a new level right there — the "
+        "<b>New level</b> (also the levels strip's «＋ New level»): "
+        "<b>＋ Level on top</b> puts one over the highest level, "
+        "<b>＋ Basement</b> one under the lowest — as high as it; the "
         "default names (Level 2, Basement 1…) renumber themselves.<br>"
         "<b>Delete level</b>: only an empty level, and never the ground "
         "floor. Ctrl+Z brings a deleted level back.<br><br>"

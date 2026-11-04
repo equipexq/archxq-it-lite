@@ -233,13 +233,20 @@ def slots(kind: str, el_id: str | None, doc: dict) -> list:
     if kind == "wall" and el_id:
         w = _wall(doc, el_id)
         ls = (w or {}).get("layers") or []
-        if len(ls) > 1:
-            return [("all", tr("{name} (core)",
-                               name=la.get("name") or tr("Core")))
-                    if la.get("role") == "core"
-                    else ("L:" + str(la.get("id")), la.get("name")
-                          or "Finish")
-                    for la in ls]
+        # a LIGHT-FRAMED core (framing.py): its studs are the core's part,
+        # the insulation between them one of its own («fill»)
+        from .framing import frame_of
+        fr = frame_of(w) if w else None
+        if len(ls) > 1 or fr is not None:
+            out = [("all", tr("{name} (core)",
+                              name=la.get("name") or tr("Core")))
+                   if la.get("role") == "core"
+                   else ("L:" + str(la.get("id")), la.get("name")
+                         or "Finish")
+                   for la in ls] if len(ls) > 1 else [("all", tr("Studs"))]
+            if fr is not None and fr["fill"] == "insulation":
+                out.append(("fill", tr("Insulation")))
+            return out
     if kind == "slab" and el_id:
         # a slab with LAYERS (top → bottom): the top one is its «Top» (the
         # slabs' «Use for all» paves it), its core its «Underside and
@@ -247,6 +254,13 @@ def slots(kind: str, el_id: str | None, doc: dict) -> list:
         s = next((e for e in doc.get("structure") or []
                   if e.get("id") == el_id), None)
         ls = (s or {}).get("layers") or []
+        # a LIGHT-FRAMED core (joists — PLANO_PISOS_BARROTES): the core's
+        # part, its insulation one of its own
+        from .structure import slab_frame
+        sfr = slab_frame(s) if s else None
+        fill = [("fill", tr("Insulation"))]             if sfr is not None and sfr["fill"] == "insulation" else []
+        if sfr is not None and not (len(ls) > 1):
+            return [("under", tr("Joists"))] + fill
         if len(ls) > 1 and not s.get("ceiling") and not s.get("block"):
             out = []
             for i, la in enumerate(ls):
@@ -258,7 +272,34 @@ def slots(kind: str, el_id: str | None, doc: dict) -> list:
                                             name=name or tr("Core"))))
                 else:
                     out.append(("L:" + str(la.get("id")), name or "Finish"))
-            return out
+            return out + fill
+    if kind == "roof" and el_id:
+        # a roof with LAYERS (top → bottom — PLANO_TELHADO_CAMADAS): the
+        # top one is its «Covering» (the roofs' «Use for all» reaches it,
+        # as before), each other one «L:<its id>»; its gable walls and
+        # gutter as before
+        r = next((e for e in doc.get("structure") or []
+                  if e.get("id") == el_id), None)
+        ls = (r or {}).get("layers") or []
+        # (a FRAMED core — step 2b: its rafters are the core's part — or
+        # «Rafters» with no layers —, the insulation one of its own)
+        from .framing import clean_frame
+        fr = clean_frame((r or {}).get("frame"))
+        if len(ls) > 1 or fr is not None:
+            out = [("cover", (ls[0].get("name") if len(ls) > 1 else "")
+                    or tr("Covering"))]
+            for la in ls[1:]:
+                name = la.get("name") or tr("Layer")
+                out.append(("L:" + str(la.get("id")),
+                            tr("{name} (core)", name=name)
+                            if la.get("role") == "core" else name))
+            if fr is not None:
+                if len(ls) < 2:
+                    out.append(("rafters", tr("Rafters")))
+                if fr["fill"] == "insulation":
+                    out.append(("fill", tr("Insulation")))
+            return out + [p for p in SLOTS["roof"]
+                          if p[0] in ("parapet", "gutter")]
     if kind == "floor" and el_id:
         # a room's floor: its slab's layers ON the core, the same parts
         # (nothing chosen for the room: the slab's own)
@@ -419,10 +460,14 @@ def clean(raw, doc: dict) -> dict:
 
 def type_parts(t: dict) -> set:
     """The parts a wall type's look has: its core («all») and each finish
-    layer («L:<id>») — as a wall of it (``slots``)."""
+    layer («L:<id>») — as a wall of it (``slots``); a framed core's
+    insulation («fill»)."""
     ls = t.get("layers") or []
+    fr = t.get("frame") or {}
     return {"all"} | {"L:" + str(la.get("id")) for la in ls
-                      if la.get("role") != "core"}
+                      if la.get("role") != "core"} \
+        | ({"fill"} if fr.get("kind") and fr.get("fill") != "empty"
+           else set())
 
 
 def lift(wtype: dict, els: dict, doc: dict) -> dict:
@@ -496,6 +541,38 @@ def merge(doc: dict, change: dict) -> dict:
     doc["materials"] = {"el": {k: v for k, v in els.items() if v},
                         "type": {k: v for k, v in types.items() if v},
                         "wtype": wtype}
+    return _shown(doc, kind, eid, change["parts"])
+
+
+def _shown(doc: dict, kind: str, eid: str, parts: dict) -> dict:
+    """``doc`` with the layers given a material SEEN again: a layer hidden
+    by its eye (layerview) and dressed now — the material went on, the
+    old look stayed (his test, 2026-11-03: a roof's covering picked, OK,
+    and it came back plain: its tiles' eye was off)."""
+    from . import layerview as LV
+    if kind not in ("wall", "roof", "slab") or not doc.get("hidden_layers"):
+        return doc
+    coll = "walls" if kind == "wall" else "structure"
+    el = next((e for e in doc.get(coll) or () if e.get("id") == eid), None)
+    if el is None:
+        return doc
+    ls = el.get("layers") or []
+    who = LV.owner(doc, kind, el)
+    hid = LV.hidden(doc, who)
+    for part, ref in parts.items():
+        if not ref:
+            continue
+        if part == "cover" and kind == "roof" and ls:
+            key = ls[0].get("id")             # the covering: its top layer
+        elif part.startswith("L:"):
+            key = part[2:]
+        elif part == "fill":
+            key = LV.FILL
+        else:
+            continue
+        if key and key in hid:
+            doc = LV.set_key(doc, who, key, False)
+            hid.discard(key)
     return doc
 
 
@@ -611,6 +688,16 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
             a = attrs(ref)
             if a is not None:
                 made[part] = a
+    # a LIGHT-FRAMED core with nothing CHOSEN for it: pine / steel studs
+    # (the walls' default, white roughcast, stays for its finishes)
+    studs = None
+    if kind == "wall" and "all" not in made and textures_allowed():
+        from .framing import STUD_MAT, frame_of
+        fr = frame_of(_wall(doc, el_id)) if el_id else None
+        if fr is not None:
+            studs = attrs(STUD_MAT[fr["kind"]])
+            if studs is not None:
+                made["_studs"] = studs
     sheet = None
     if textures_allowed():
         if kind == "roof" and "cover" not in made:   # nothing CHOSEN for it
@@ -643,7 +730,7 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
         # a slab with layers: each face's layer by its colour; a finish
         # with nothing chosen: plaster under the core, the floor's on it
         from .structure import layer_of_color
-        names = [p for p, _l in parts]
+        names = [p for p, _l in parts if p != "fill"]
         core = names.index("under") if "under" in names else len(names)
         if textures_allowed():
             for p in names[core + 1:]:
@@ -654,11 +741,75 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
         for p in names[:core]:
             if p not in made and "top" in made:
                 made[p] = made["top"]
+        # its JOISTS (a framed core): the core's own choice — pine / steel
+        # with none (not the slabs' exposed concrete)
+        from .framing import STUD_MAT, is_fill
+        from .structure import JOIST_COLOR, slab_frame
+        s_ = next((e for e in doc.get("structure") or []
+                   if e.get("id") == el_id), None)
+        sfr = slab_frame(s_) if s_ is not None else None
+        if sfr is not None:
+            own = (((doc.get("materials") or {}).get("el") or {})
+                   .get(el_id or "") or {}).get("under")
+            a = attrs(own) if own else \
+                (attrs(STUD_MAT[sfr["kind"]]) if textures_allowed() else None)
+            if a is not None:
+                made["_joists"] = a
+        jc = tuple(round(v, 3) for v in JOIST_COLOR[:3])
 
         def layer_part(color):
+            if sfr is not None and is_fill(color):
+                return "fill"
+            if sfr is not None and color is not None and \
+                    tuple(round(v, 3) for v in color[:3]) == jc:
+                return "_joists"
             i = layer_of_color(color)
             return names[i] if i is not None and i < len(names) else None
         fallback = "under"
+    elif kind == "roof" and any(p.startswith("L:") or p == "rafters"
+                                for p, _l in parts):
+        # a roof with layers: each one under the covering by its colour
+        # (structure.roof_layer_color); with nothing chosen it keeps its
+        # colour — plaster under the core (the ceiling). The covering, the
+        # gable walls, the gutter: as before (below)
+        from .structure import roof_layer_of_color
+        r = next((e for e in doc.get("structure") or []
+                  if e.get("id") == el_id), {})
+        ls = r.get("layers") or []
+        names = ["cover"] + ["L:" + str(la.get("id")) for la in ls[1:]]
+        core = next((i for i, la in enumerate(ls)
+                     if la.get("role") == "core"), len(ls))
+        # its rafters (a framed core, step 2b): the core's part — pine /
+        # steel with nothing chosen, as a framed wall's studs
+        from .framing import STUD_MAT, clean_frame, is_fill
+        from .structure import RAFTER_COLOR
+        fr = clean_frame(r.get("frame"))
+        raf = (names[core] if 0 < core < len(names) else "rafters") \
+            if fr is not None else None
+        if textures_allowed():
+            for p in names[core + 1:]:
+                if p not in made:
+                    a = attrs(_PLASTER)
+                    if a is not None:
+                        made[p] = a
+            if raf is not None and raf not in made:
+                a = attrs(STUD_MAT[fr["kind"]])
+                if a is not None:
+                    made[raf] = a
+        rc = tuple(round(v, 3) for v in RAFTER_COLOR[:3])
+        from .structure import BLOCK_COLOR
+        bc = tuple(round(v, 3) for v in BLOCK_COLOR[:3])
+
+        def layer_part(color):
+            if is_fill(color):
+                return "fill"
+            if raf is not None and color is not None and \
+                    tuple(round(v, 3) for v in color[:3]) in (rc, bc):
+                return raf               # (its fascia, soffit, blocking)
+            i = roof_layer_of_color(color)
+            return names[i] if i is not None and 0 < i < len(names) \
+                else None
+        fallback = None
     elif kind == "floor":
         # a room's floor: its layers (the slab's finishes on the core) by
         # their colours; one with nothing chosen wears the floor's top
@@ -672,21 +823,35 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
             i = layer_of_color(color)
             return names[i] if i is not None and i < len(names) else None
         fallback = "top"
-    elif kind == "wall" and len(parts) > 1:
+    elif kind == "wall" and (len(parts) > 1 or studs is not None):
         # a wall with layers: each face's layer by the colour it is built
         # with (structure.layer_color); a finish with nothing chosen wears
         # the wall's own (its core's) material
+        from .framing import TREATED_MAT, is_fill, is_treated
         from .structure import layer_of_color
-        names = [p for p, _l in parts]
+        names = [p for p, _l in parts if p != "fill"]
+        a = attrs(TREATED_MAT)              # (the sill plate: its own)
+        if a is not None:
+            made["_treated"] = a
 
         def layer_part(color):
+            if is_fill(color):              # the insulation (framing.py)
+                return "fill"
+            if is_treated(color):           # the treated sill plate (D8)
+                return "_treated"
             i = layer_of_color(color)
             return names[i] if i is not None and i < len(names) else None
     for f in group.mesh.faces:
         if layer_part is not None:
             part = layer_part(f.attrs.get("color"))
             if part is not None:
-                a = made.get(part) or made.get(fallback)
+                # (the insulation with nothing chosen keeps its colour; the
+                # studs with nothing chosen: pine / steel)
+                if part == "all" and studs is not None:
+                    a = studs
+                else:
+                    a = made.get(part) or (None if part == "fill"
+                                           else made.get(fallback))
                 if a is not None:
                     f.attrs.update(a[1])
                 continue

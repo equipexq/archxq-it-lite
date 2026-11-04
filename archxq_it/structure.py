@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 
 from . import corner_caps as CC
+from . import layerview as LV
 from . import walls as W
 
 SHRINK = 0.001         # m off every face of columns and beams
@@ -1974,7 +1975,10 @@ def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
 #:   width), "zmode": "walls" | "own", "zh" (own: its eaves' height over
 #:   the level's floor)} — it rests on the top of its level's walls, or
 #:   at its own height (a lean-to lower than the house — Badis,
-#:   2026-10-18: then it fills no wall under it).
+#:   2026-10-18: then it fills no wall under it), "slope2" (a rectangular
+#:   gable's other side, ° — none: both at "slope"; Marec, 2026-11-02),
+#:   "eave2" (a rectangular gable's other eave, m higher (+) or lower (−)
+#:   than its first — none: both on the walls' top; Marec, 2026-11-02).
 ROOF_KINDS = ("gable", "hip", "flat", "shed", "hidden")
 ROOF_COLOR = (0.66, 0.36, 0.27, 1.0)       # tiles
 FLAT_COLOR = (0.72, 0.73, 0.74, 1.0)       # a flat roof (concrete)
@@ -1982,6 +1986,56 @@ GABLE_COLOR = (0.88, 0.86, 0.82, 1.0)      # the gable walls (as walls)
 SHEET_COLOR = (0.60, 0.63, 0.66, 1.0)      # a hidden roof's sheets
 GUTTER_COLOR = (0.50, 0.53, 0.57, 1.0)     # its gutter (sheet metal)
 SHEET_T = 0.05             # a hidden roof's sheets (metal, fibre cement)
+#: the roofs built IN LAYERS (PLANO_TELHADO_CAMADAS, his OK 2026-11-02):
+#: the ones swept along their ridge — the others solid for now
+LAYERED_ROOFS = ("gable", "shed", "butterfly", "hip")
+#: a framed roof core's rafters and ridge board (step 2b): their own colour
+#: — nothing chosen for the core, they wear pine / steel (materials.paint)
+RAFTER_COLOR = (0.80, 0.70, 0.45, 1.0)
+#: a framed roof's boards at its eaves (his question, 2026-11-02 — «is it
+#: open?»): the FASCIA closing the core at each eave, the SOFFIT under the
+#: overhang, the BLOCKING on the eave walls' tops — wood, as the rafters
+BLOCK_COLOR = (0.78, 0.68, 0.45, 1.0)
+FASCIA_T = 0.025                 # a fascia board, across
+SOFFIT_T = 0.012                 # a soffit board
+
+
+def roof_layer_color(i: int) -> tuple:
+    """A layered roof's layer i (top → bottom): the top one the tiles'
+    (``ROOF_COLOR`` — its «Covering», as on every roof), the others a
+    timber tone a hair apart (``materials.paint`` tells them apart)."""
+    if i == 0:
+        return ROOF_COLOR
+    return (0.80, 0.70, round(0.55 - 0.001 * i, 3), 1.0)
+
+
+def roof_layer_of_color(color) -> int | None:
+    c = tuple(round(v, 3) for v in (color or ())[:3])
+    for i in range(W.MAX_LAYERS):
+        if c == tuple(round(v, 3) for v in roof_layer_color(i)[:3]):
+            return i
+    return None
+
+
+def roof_layers(r: dict) -> list:
+    """A roof's layers, TOP → BOTTOM (the covering first) — a plain one:
+    its one core."""
+    got = r.get("layers")
+    if isinstance(got, list) and len(got) > 1:
+        return got
+    return [{"id": "core", "name": "", "t": float(r.get("t", 0.20)),
+             "role": "core"}]
+
+
+def layered_roof(r: dict) -> bool:
+    """Built in its layers: one of ``LAYERED_ROOFS`` (a gable on a
+    rectangle) with layers of its own — or a frame (rafters: its core
+    alone, the skeleton)."""
+    from .framing import clean_frame
+    k = r.get("kind")
+    return k in LAYERED_ROOFS and (len(roof_layers(r)) > 1
+                                   or clean_frame(r.get("frame")))\
+        and (k not in ("gable", "hip") or pitched_plan(r) == "rect")
 GUTTER_DEPTH = 0.15        # its gutter, inside
 PARAPET_CLEAR = 0.10       # an «Auto» parapet: this much over the ridge
 
@@ -1999,15 +2053,18 @@ def rect_frame(corners):
     return (cx, cy), u0, a / 2, (-u0[1], u0[0]), b / 2
 
 
-def _sweep(section, x0, x1, P, color) -> list:
+def _sweep(section, x0, x1, P, color, skip=()) -> list:
     """A section (y, z), counter-clockwise, swept along x from x0 to x1:
-    its two caps and its sides, outward."""
+    its two caps and its sides, outward — the side of edge i (section[i] →
+    section[i + 1]) left out when i is in ``skip``."""
     faces = [{"loop": [P(x1, y, z) for y, z in section], "holes": [],
               "color": color},
              {"loop": [P(x0, y, z) for y, z in reversed(section)],
               "holes": [], "color": color}]
     n = len(section)
     for i in range(n):
+        if i in skip:
+            continue
         (py, pz), (qy, qz) = section[i], section[(i + 1) % n]
         faces.append({"loop": [P(x0, py, pz), P(x0, qy, qz), P(x1, qy, qz),
                                P(x1, py, pz)], "holes": [], "color": color})
@@ -2051,6 +2108,37 @@ def roof_gable_sides(r: dict) -> set:
         else roof_any.gable_sides(r)
 
 
+def gable_ridge(r: dict, B: float):
+    """A rectangular gable's two slopes (tan, on −y and on +y across the
+    ridge) and where its ridge stands across (y, 0 = the middle): with a
+    "slope2" the steeper side is the shorter one, the ridge off the middle
+    — both slopes still meet the eaves at one height, unless an "eave2"
+    lifts one side (``gable_eaves``)."""
+    t1 = math.tan(math.radians(float(r.get("slope", 30.0))))
+    s2 = r.get("slope2")
+    t2 = t1 if s2 is None else math.tan(math.radians(float(s2)))
+    h1, h2 = gable_eaves(r, B)
+    return t1, t2, (B * (t2 - t1) + h2 - h1) / (t1 + t2)
+
+
+def gable_eaves(r: dict, B: float):
+    """How far over the walls' top each eave of a rectangular gable stands
+    (−y, +y — its underside at the walls' outer line): "eave2" (m) lifts
+    the +y side (+) or the −y one (−) — a French house's section, the
+    eaves 0.45 apart (Marec, 2026-11-02). Kept so that the ridge stays
+    inside the plan (at most 0.9 of the way to an eave)."""
+    dh = float(r.get("eave2") or 0.0)
+    if abs(dh) < 1e-9:
+        return 0.0, 0.0
+    t1 = math.tan(math.radians(float(r.get("slope", 30.0))))
+    s2 = r.get("slope2")
+    t2 = t1 if s2 is None else math.tan(math.radians(float(s2)))
+    lo = -0.9 * B * (t1 + t2) - B * (t2 - t1)
+    hi = 0.9 * B * (t1 + t2) - B * (t2 - t1)
+    dh = min(max(dh, lo), hi)
+    return max(0.0, -dh), max(0.0, dh)
+
+
 def own_height(r: dict) -> bool:
     """The roof is at its own height, not on its level's walls."""
     return r.get("zmode") == "own"
@@ -2074,6 +2162,235 @@ def roof_faces(r: dict, base: float, wall_t: float = 0.20) -> list:
         faces = [f for f in faces if f.get("color") != GABLE_COLOR
                  or r.get("kind") in ("flat", "hidden")]
     return faces
+
+
+def roof_tops(doc: dict, elevations, ids: set | None = None) -> dict:
+    """{wall id: top} — a LIGHT-FRAMED straight wall at a pitched roof's
+    gable end takes the roof's underside as its own top (a gable, a slope:
+    ``W.clean_top``), so its frame goes up to the roof — studs, plates
+    along the slopes, insulation, its boards — and the roof leaves its
+    solid gable fill off it (``_off_own_tops``). His wish, 2026-11-02:
+    «what people will expect of these walls». Only where the underside
+    along the wall is one or two straight runs; an eave wall (level under
+    the roof) keeps the roof's wedge, as before. Nothing stored: worked
+    out at each build from the roof as it is. ``ids``: these walls only
+    (a wall dragged: it and the walls meeting it)."""
+    from . import framing as FR
+    from . import roof_l
+    walls = doc.get("walls") or []
+    framed = [w for w in walls if FR.frame_of(w) is not None
+              and w.get("kind", "line") == "line" and not w.get("cw")
+              and W.top_of(w) is None
+              and w.get("height", "level") == "level"
+              and (ids is None or w["id"] in ids)]
+    if not framed:
+        return {}
+    # (a shed's side walls too: one slope along them — the showcase's
+    # steel-frame room kept a solid triangle over them, 2026-11-03)
+    roofs = [e for e in doc.get("structure") or []
+             if e.get("type") == "roof"
+             and e.get("kind") in ("gable", "hip", "shed")
+             and not own_height(e) and why_not(e) is None]
+    if not roofs:
+        return {}
+    from shapely.geometry import Point, Polygon
+    info = levels_info(doc, elevations)
+    out = {}
+    for lid in {w["level"] for w in framed}:
+        rs = [r for r in roofs if r["level"] == lid]
+        if not rs or lid not in info:
+            continue
+        li = info[lid]
+        z0 = li["z0"]
+        mine = [w for w in walls if w["level"] == lid]
+        wall_t = max((float(w["t"]) for w in mine), default=0.20)
+        unders = []                  # (plan polygon, (nx, ny, nz, d))
+        for r in rs:
+            # (read solid: its underside is the same — the rafters of a
+            # framed core would leave gaps)
+            solid = {k: v for k, v in r.items()
+                     if k not in ("layers", "frame", "_hide")}
+            for f in roof_faces(solid, roof_base(r, li), wall_t):
+                if roof_layer_of_color(f.get("color")) is None:
+                    continue
+                pl = W._plane_of(f["loop"])
+                if pl is None or pl[0][2] > -0.2:    # not its underside
+                    continue
+                try:
+                    poly = Polygon([(q[0], q[1]) for q in f["loop"]])
+                    poly = poly.buffer(1e-6)
+                    unders.append((poly, pl, poly.bounds, r))
+                except Exception:  # noqa: BLE001 — a face less
+                    continue
+        if not unders:
+            continue
+
+        def under_z(x, y, near):
+            zs = [(pl[1] - pl[0][0] * x - pl[0][1] * y) / pl[0][2]
+                  for poly, pl, bx, _r in near
+                  if bx[0] <= x <= bx[2] and bx[1] <= y <= bx[3]
+                  and poly.contains(Point(x, y))]
+            return min(zs) if zs else None
+        for w in framed:
+            if w["level"] != lid:
+                continue
+            seg = W.centre(w)
+            L = seg.L
+            (ax, ay), (bx_, by_) = seg.at(0.0), seg.at(1.0)
+            # (the roof faces over its line's box only: 30 framed walls
+            # under 10 roofs were 0.14 s — his corporate model)
+            near = [u for u in unders
+                    if u[2][0] <= max(ax, bx_) and min(ax, bx_) <= u[2][2]
+                    and u[2][1] <= max(ay, by_) and min(ay, by_) <= u[2][3]]
+            if not near:
+                continue
+            # under TRUSSES the ceiling is flat (their bottom chords): a
+            # wall inside the house stops under it — only the gable END
+            # (its outer face on the roof's edge) goes up (the showcase
+            # house, 2026-11-03: a partition went up through the trusses)
+            if all(_trussed(u[3]) for u in near) and not _on_roof_edge(
+                    w, [u[3] for u in near]):
+                continue
+            n = max(8, int(L / 0.10))
+            ss = [L * k / n for k in range(n + 1)]
+            hs = []
+            for sv in ss:
+                x, y = seg.at(sv / L)
+                z = under_z(x, y, near)
+                if z is None:
+                    break
+                hs.append(z - roof_l.GAP - z0)
+            if len(hs) != len(ss) or max(hs) - min(hs) < 0.05:
+                continue                 # not under it / an eave wall
+            # (its plan with the walls near it only: 104 walls planned at
+            # each build were 42 ms — his corporate model)
+            pcs = W.plan(_near(mine, w)).get(w["id"])
+            if not pcs:
+                continue
+            top = _fit_top(ss, hs, L, W.clear_span(w, pcs))
+            if top is not None:
+                out[w["id"]] = top
+    return out
+
+
+def _trussed(r: dict) -> bool:
+    """A roof on trusses (its ceiling flat under their bottom chords)."""
+    from . import framing as FR
+    fr = FR.clean_frame(r.get("frame"))
+    return bool(fr) and fr.get("system") == "trusses"
+
+
+def _on_roof_edge(w: dict, roofs: list) -> bool:
+    """A straight wall's line along one of these roofs' plan edges (the
+    walls' outer line — within its thickness): a gable end, not a wall
+    inside the house."""
+    seg = W.centre(w)
+    t = float(w.get("t", 0.2))
+    mid = seg.at(0.5)
+    for r in roofs:
+        cs = r.get("corners") or []
+        for p, q in zip(cs, cs[1:] + cs[:1]):
+            dx, dy = q[0] - p[0], q[1] - p[1]
+            n = math.hypot(dx, dy)
+            if n < 1e-9:
+                continue
+            # parallel, and the wall's middle within its thickness of it
+            if abs(dx * seg.u[1] - dy * seg.u[0]) / n > 0.02:
+                continue
+            k = ((mid[0] - p[0]) * dx + (mid[1] - p[1]) * dy) / (n * n)
+            off = abs((mid[0] - p[0]) * dy - (mid[1] - p[1]) * dx) / n
+            if -0.05 <= k <= 1.05 and off <= t + 0.05:
+                return True
+    return False
+
+
+def _near(walls: list, w: dict) -> list:
+    """The walls that can meet ``w`` (by their boxes, a margin around):
+    its plan with them is its plan with them all."""
+    def box(x):
+        if x.get("kind", "line") != "line":      # a curve: always (rare)
+            return (-1e9, -1e9, 1e9, 1e9)
+        pts = [x["a"], x["b"]]
+        g = float(x.get("t", 0.2)) + 0.6
+        return (min(q[0] for q in pts) - g, min(q[1] for q in pts) - g,
+                max(q[0] for q in pts) + g, max(q[1] for q in pts) + g)
+    a = box(w)
+    out = []
+    for x in walls:
+        b = box(x)
+        if b[0] <= a[2] and a[0] <= b[2] and b[1] <= a[3] and a[1] <= b[3]:
+            out.append(x)
+    return out
+
+
+def _fit_top(ss: list, hs: list, L: float, span: tuple) -> dict | None:
+    """The heights ``hs`` along a wall (at ``ss``) as a top (``W``'s):
+    one straight run (a slope) or two meeting at a ridge (a gable) —
+    None: neither, within 1 cm."""
+    def line(i, j):
+        k = (hs[j] - hs[i]) / (ss[j] - ss[i])
+        return lambda s: hs[i] + k * (s - ss[i])
+    n = len(ss) - 1
+    sa, sb = span
+    one = line(0, n)
+    if all(abs(one(sv) - h) < 0.01 for sv, h in zip(ss, hs)):
+        return dict(W.clean_top({"kind": "slope", "h0": one(sa),
+                                 "h1": one(sb), "was": "level"}),
+                    s0=sa, s1=sb)         # (where they hold: W._end_heights)
+    left, right = line(0, 1), line(n - 1, n)
+    kl = hs[1] - hs[0]
+    kr = hs[n] - hs[n - 1]
+    if kl <= 0 or kr >= 0:
+        return None
+    # the ridge: where the two runs meet
+    a0, b0 = left(0.0), (hs[1] - hs[0]) / (ss[1] - ss[0])
+    a1, b1 = right(0.0), (hs[n] - hs[n - 1]) / (ss[n] - ss[n - 1])
+    sp = (a1 - a0) / (b0 - b1)
+    if not sa < sp < sb:
+        return None
+    if not all(abs(min(left(sv), right(sv)) - h) < 0.01
+               for sv, h in zip(ss, hs)):
+        return None
+    return dict(W.clean_top({"kind": "gable", "h0": left(sa),
+                             "h1": right(sb), "hp": left(sp), "at": sp / L,
+                             "was": "level"}), s0=sa, s1=sb)
+
+
+_ROOF_TOPS: dict = {}       # (a build's inputs → its walls' roof tops)
+
+
+def with_roof_tops(doc: dict, elevations,
+                   wall_ids=None) -> dict:
+    """The document as it is BUILT: its framed gable walls with the roof's
+    underside as their top (``roof_tops``) — the same doc when none.
+    ``wall_ids``: only these walls are built (``walls_live``) — their tops
+    and their neighbours' (a corner between them) are read, no more."""
+    walls = doc.get("walls") or []
+    if not any(w.get("frame") for w in walls):
+        return doc                       # (most files: nothing to read)
+    ids = None
+    if wall_ids is not None:
+        by = {w["id"]: w for w in walls}
+        ids = {x["id"] for i in wall_ids if i in by
+               for x in _near([w for w in walls
+                               if w["level"] == by[i]["level"]], by[i])}
+    # (its slabs too: the floor above sets where the roof sits — a slab
+    # added up there left the old tops, 2026-11-03)
+    key = repr((doc.get("levels"), doc.get("project"), walls,
+                [e for e in doc.get("structure") or []
+                 if e.get("type") in ("roof", "slab")],
+                None if ids is None else sorted(ids)))
+    tops = _ROOF_TOPS.get(key)
+    if tops is None:
+        tops = roof_tops(doc, elevations, ids)
+        if len(_ROOF_TOPS) > 8:
+            _ROOF_TOPS.clear()
+        _ROOF_TOPS[key] = tops
+    if not tops:
+        return doc
+    return dict(doc, walls=[dict(w, top=dict(tops[w["id"]]), _roof_top=True)
+                            if w["id"] in tops else w
+                            for w in doc.get("walls") or []])
 
 
 def _off_own_tops(faces: list, walls: list) -> list:
@@ -2146,36 +2463,67 @@ def _roof_faces(r: dict, base: float, wall_t: float = 0.20) -> list:
     if kind == "hidden":
         return _hidden_roof(r, base, A, B, P)
     if kind == "shed":
-        return _shed_roof(base, A, B, o, go, tan, dz, wall_t, P)
+        return _shed_roof(base, A, B, o, go, tan, dz, wall_t, P, r)
     if kind == "butterfly":
-        return _butterfly_roof(base, A, B, o, go, tan, dz, wall_t, P)
+        return _butterfly_roof(base, A, B, o, go, tan, dz, wall_t, P, r)
     if kind == "mansard":
         return _mansard_roof(r, base, A, B, o, ang, t, P)
     if kind == "gable":
         Y, X = B + o, A + go
+        # each side its own slope (slope2 — the same when none) and its
+        # eave h1 / h2 over the walls' top (eave2 — both 0 when none): the
+        # ridge at ym across
+        t1, t2, ym = gable_ridge(r, B)
+        h1, h2 = gable_eaves(r, B)
+        d1, d2 = t / math.cos(math.atan(t1)), t / math.cos(math.atan(t2))
 
         def zb(y):
-            return base + (B - abs(y)) * tan
+            return base + (h1 + (B + y) * t1 if y <= ym
+                           else h2 + (B - y) * t2)
+        # the top's ridge: where the two top planes (dz over each side)
+        # meet — off ym when the sides' thicknesses differ
+        yt = ym + (d2 - d1) / (t1 + t2)
         # counter-clockwise in (y, z): along the underside, up the eave,
         # back along the top
-        section = [(-Y, zb(-Y)), (0, zb(0)), (Y, zb(Y)), (Y, zb(Y) + dz),
-                   (0, zb(0) + dz), (-Y, zb(-Y) + dz)]
-        faces = _sweep(section, -X, X, P, ROOF_COLOR)
+        section = [(-Y, zb(-Y)), (ym, zb(ym)), (Y, zb(Y)), (Y, zb(Y) + d2),
+                   (yt, zb(yt) + (d1 if yt <= ym else d2)),
+                   (-Y, zb(-Y) + d1)]
+        faces = _layered_sweep(r, [(-Y, zb(-Y)), (ym, zb(ym)),
+                                   (Y, zb(Y))], -X, X, P, A, B, ym,
+                               base=base, wall_t=wall_t) \
+            if layered_roof(r) else _sweep(section, -X, X, P, ROOF_COLOR)
+        gaps = _truss_gaps(r, A, wall_t)
         # the gable walls: a triangle on each end wall, as thick as it —
         # 2 mm under the roof and 1 mm off the wall's faces (no coplanar
-        # faces), its foot 1 mm down into the wall
+        # faces), its foot 1 mm down into the wall; under a lifted eave
+        # (eave2) it reaches the wall's outer line, up to the roof there
         d = 0.002
-        b2 = B - d / tan
-        tri = [(-b2, base - 0.001), (b2, base - 0.001), (0, zb(0) - d)]
+        tri = [(-(B - d / t1), base - 0.001)] if h1 < 1e-9 else \
+            [(-B + 0.001, zb(-B + 0.001) - d), (-B + 0.001, base - 0.001)]
+        tri += [(B - d / t2, base - 0.001)] if h2 < 1e-9 else \
+            [(B - 0.001, base - 0.001), (B - 0.001, zb(B - 0.001) - d)]
+        tri.append((ym, zb(ym) - d))
         faces += _sweep(tri, A - wall_t + 0.001, A - 0.001, P, GABLE_COLOR)
         faces += _sweep(tri, -A + 0.001, -A + wall_t - 0.001, P,
                         GABLE_COLOR)
         # the EAVE walls up to the roof's underside: it passes over their
         # outer top edge, so a wedge was left open over their thickness —
         # seen in the sections (a customer's report, 2026-10-13)
-        faces += _eave_wedge(+1, B, wall_t, base, zb, d, A, P)
-        faces += _eave_wedge(-1, B, wall_t, base, zb, d, A, P)
+        blk = _block_color(r)
+        faces += _eave_wedge(+1, B, wall_t, base, zb, d, A, P, gaps, blk)
+        faces += _eave_wedge(-1, B, wall_t, base, zb, d, A, P, gaps, blk)
         return faces
+    # a hip roof IN LAYERS — with rafters (roof_hip.py, fase 4d)
+    if layered_roof(r):
+        from . import framing as FR
+        from . import roof_hip
+        ls = roof_layers(r)
+        k = t / (sum(float(L["t"]) for L in ls) or t)
+        return roof_hip.faces(r, base, A, B, P, ls, k,
+                              LV.indexes(ls, r.get("_hide")),
+                              FR.clean_frame(r.get("frame")),
+                              roof_layer_color, RAFTER_COLOR, FR.FILL_COLOR,
+                              LV.STUDS, LV.FILL)
     # a hip roof: four planes of one slope, the ridge along x
     Ao, Bo = A + o, B + o
     ze, zr = base - o * tan, base + B * tan
@@ -2204,21 +2552,706 @@ def _roof_faces(r: dict, base: float, wall_t: float = 0.20) -> list:
     return faces
 
 
-def _eave_wedge(side, B, wall_t, base, zb, d, A, P) -> list:
+def roof_count(doc: dict, elevations, r: dict) -> dict:
+    """A roof built in layers' quantities (step 2b): {"layers": [(layer,
+    m² — along its top)], and a framed core's "rafters" (n), "rafter_m",
+    "ridge_m", "fill" (m³), "kind", "depth"} — {} when it is not built in
+    layers."""
+    if not layered_roof(r):
+        return {}
+    li = levels_info(doc, elevations).get(r["level"])
+    if li is None:
+        return {}
+    wall_t = max((float(w["t"]) for w in doc.get("walls") or []
+                  if w["level"] == r["level"]), default=0.20)
+    c: dict = {}
+    roof_faces(dict(r, _count=c), roof_base(r, li), wall_t)
+    return c
+
+
+def roof_section_symbols(doc: dict, elevations, r: dict, q,
+                         nrm) -> dict | None:
+    """What a vertical SECTION through ``q`` (normal ``nrm`` in plan)
+    shows of a roof's LIGHT-FRAMED core (PLANO_TELHADO_CAMADAS 2c), as
+    framing.section_symbols — {"blank": [polygons (x, y, z)], "lines":
+    [(a, b)]}: a rafter cut across outlined with its X (wood), cut along
+    outlined; the insulation outlined with its zigzag. Only a cut square
+    to the ridge or along it (an oblique one: its cut stays filled, as a
+    curved wall's). None: nothing of it cut."""
+    from . import framing as FR
+    fr = FR.clean_frame(r.get("frame"))
+    if fr is None or not layered_roof(r):
+        return None
+    li = levels_info(doc, elevations).get(r["level"])
+    if li is None:
+        return None
+    wall_t = max((float(w["t"]) for w in doc.get("walls") or []
+                  if w["level"] == r["level"]), default=0.20)
+    parts: list = []
+    roof_faces(dict(r, _parts=parts, _hide=[]), roof_base(r, li), wall_t)
+    if not parts:
+        return None
+    from shapely.geometry import LineString, Polygon
+    P = parts[0]["P"]
+    o = P(0.0, 0.0, 0.0)
+    ex = [a - b for a, b in zip(P(1.0, 0.0, 0.0), o)]
+    ey = [a - b for a, b in zip(P(0.0, 1.0, 0.0), o)]
+    nx = nrm[0] * ex[0] + nrm[1] * ex[1]
+    ny = nrm[0] * ey[0] + nrm[1] * ey[1]
+    qx = (q[0] - o[0]) * ex[0] + (q[1] - o[1]) * ex[1]
+    qy = (q[0] - o[0]) * ey[0] + (q[1] - o[1]) * ey[1]
+    if abs(nx) > 0.999:
+        across = False                    # square to the ridge: along them
+    elif abs(ny) > 0.999:
+        across = True                     # along the ridge: across them
+    else:
+        return None
+    blank, lines = [], []
+
+    def ring(poly):
+        return list(zip(poly, poly[1:] + poly[:1]))
+
+    def zigzag(poly2):
+        """The insulation's zigzag inside a polygon (u, v): across its
+        narrow side, along its long one, clipped to it."""
+        g = Polygon(poly2)
+        rect = list(g.minimum_rotated_rectangle.exterior.coords)[:4]
+        e0 = (rect[1][0] - rect[0][0], rect[1][1] - rect[0][1])
+        e1 = (rect[2][0] - rect[1][0], rect[2][1] - rect[1][1])
+        a0, a1 = math.hypot(*e0), math.hypot(*e1)
+        if min(a0, a1) < 1e-4:
+            return []
+        (L, u, d, v, c) = (a0, e0, a1, e1, rect[0]) if a0 >= a1 else \
+            (a1, e1, a0, (-e0[0], -e0[1]), rect[1])
+        u = (u[0] / L, u[1] / L)
+        v = (v[0] / d, v[1] / d)
+        k = max(2, math.ceil(L / (d / 2)))
+        h, e = L / k, d * 0.12
+        pts = [(c[0] + u[0] * j * h + v[0] * s, c[1] + u[1] * j * h
+                + v[1] * s)
+               for j, s in ((j, e if j % 2 == 0 else d - e)
+                            for j in range(k + 1))]
+        got = LineString(pts).intersection(g)
+        out = []
+        for ln in getattr(got, "geoms", [got]):
+            if ln.geom_type == "LineString":
+                cs = list(ln.coords)
+                out += list(zip(cs, cs[1:]))
+        return out
+
+    for p in parts:
+        if across:
+            ys = [y for y, _z in p["sec"]]
+            if not min(ys) + 1e-9 < qy < max(ys) - 1e-9:
+                continue
+            cut = Polygon(p["sec"]).intersection(
+                LineString([(qy, -1e4), (qy, 1e4)]))
+            for seg in getattr(cut, "geoms", [cut]):
+                if seg.geom_type != "LineString":
+                    continue
+                zs = [c[1] for c in seg.coords]
+                za, zb_ = min(zs), max(zs)
+                if zb_ - za < 1e-4:
+                    continue
+                two = [(p["xa"], za), (p["xb"], za), (p["xb"], zb_),
+                       (p["xa"], zb_)]
+                blank.append([(x, qy, z) for x, z in two])
+                lines_2 = ring(two)
+                if p["what"] == "fill":
+                    lines_2 += zigzag(two)
+                elif fr["kind"] == "wood" and p["xb"] - p["xa"] < 0.5:
+                    lines_2 += [(two[0], two[2]), (two[1], two[3])]
+                lines += [((a[0], qy, a[1]), (b[0], qy, b[1]))
+                          for a, b in lines_2]
+        else:
+            if not p["xa"] + 1e-9 < qx < p["xb"] - 1e-9:
+                continue
+            two = list(p["sec"])
+            blank.append([(qx, y, z) for y, z in two])
+            lines_2 = ring(two) + (zigzag(two) if p["what"] == "fill"
+                                   else [])
+            lines += [((qx, a[0], a[1]), (qx, b[0], b[1]))
+                      for a, b in lines_2]
+    if not blank:
+        return None
+    return {"blank": [[P(*c) for c in poly] for poly in blank],
+            "lines": [(P(*a), P(*b)) for a, b in lines]}
+
+
+def _offset_line(under: list, h: float) -> list:
+    """The roof's underside ``under`` [(y, z)] (eave → ridge / valley →
+    eave, straight runs) lifted ``h`` square to it: each run h / cos
+    higher, meeting where they cross; plumb at both eaves."""
+    runs = []
+    for (y0, z0), (y1, z1) in zip(under, under[1:]):
+        k = (z1 - z0) / (y1 - y0)
+        runs.append((y0, z0 + h * math.sqrt(1.0 + k * k), k))
+    pts = [(under[0][0], runs[0][1])]
+    for (ya, ca, ka), (yb, cb, kb) in zip(runs, runs[1:]):
+        y = yb if abs(ka - kb) < 1e-9 else \
+            (cb - ca + ka * ya - kb * yb) / (ka - kb)
+        pts.append((y, ca + ka * (y - ya)))
+    yl, cl, kl = runs[-1]
+    pts.append((under[-1][0], cl + kl * (under[-1][0] - yl)))
+    return pts
+
+
+def _layered_sweep(r: dict, under: list, x0: float, x1: float, P,
+                   A: float = 0.0, B: float = 0.0,
+                   ridge: float | None = None, base: float | None = None,
+                   wall_t: float = 0.20) -> list:
+    """A LAYERED roof's slab (``roof_layers``, top → bottom — his OK
+    2026-11-02): each layer its own band over the underside ``under``
+    (``_offset_line``), swept x0 → x1, coloured as its layer
+    (``roof_layer_color``). Where two layers meet ONE face stays — the
+    lower one's top. Its layers hidden in the 3D (``_hide``, layerview):
+    not built; the one over a hidden one keeps its underside.
+
+    A LIGHT-FRAMED core (``frame`` — step 2b): rafters and insulation in
+    place of the band (``_rafters``; A, B: the walls' outer lines, half
+    along / across; ``ridge``: a gable's, across). ``r["_count"]`` (a
+    dict, when given): its quantities written into it."""
+    from . import framing as FR
+    ls = roof_layers(r)
+    t = float(r.get("t", 0.20))
+    k = t / (sum(float(L["t"]) for L in ls) or t)
+    hid = LV.indexes(ls, r.get("_hide"))
+    fr = FR.clean_frame(r.get("frame"))
+    core = next(i for i, L in enumerate(ls) if L["role"] == "core")
+    n = len(ls)
+    cnt = r.get("_count") if isinstance(r.get("_count"), dict) else None
+    if base is not None and truss_xs(r, A, wall_t) is not None:
+        return _truss_roof(r, ls, k, hid, fr, core, under, x0, x1, P, A, B,
+                           base, wall_t, cnt)
+    out, h = [], t
+    for i, L in enumerate(ls):
+        lo = 0.0 if i == n - 1 else h - float(L["t"]) * k
+        bot, top = _offset_line(under, lo), _offset_line(under, h)
+        if cnt is not None:
+            cnt.setdefault("layers", []).append(
+                (L, _run(top) * (x1 - x0)))
+        if i == core and fr is not None:
+            out += _rafters(r, fr, bot, top, x0, x1, P, A, B, ridge,
+                            RAFTER_COLOR,
+                            above=i > 0 and i - 1 not in hid,
+                            below=i < n - 1 and i + 1 not in hid, cnt=cnt)
+        elif i not in hid:
+            # (its underside: the next one's top — not on a framed core,
+            # whose rafters and insulation leave it open between them)
+            nxt = i + 1
+            skip = range(len(bot) - 1) if nxt < n and nxt not in hid \
+                and not (nxt == core and fr is not None) else ()
+            out += _sweep(bot + top[::-1], x0, x1, P, roof_layer_color(i),
+                          skip)
+        h = lo
+    if fr is not None and core == n - 1:
+        out += _soffit(under, B, x0, x1, P, cnt)
+    return out
+
+
+def _fascia_cut(band, y0: float, y1: float, zlo: float, zhi: float):
+    """(the FASCIA boards — a framed core's ends at both eaves, FASCIA_T
+    across —, the core cut back 1 mm off them)."""
+    from shapely.geometry import box
+    f = band.intersection(box(y0, zlo, y0 + FASCIA_T, zhi)).union(
+        band.intersection(box(y1 - FASCIA_T, zlo, y1, zhi)))
+    return f, band.intersection(box(y0 + FASCIA_T + 0.001, zlo,
+                                    y1 - FASCIA_T - 0.001, zhi))
+
+
+def _soffit(under: list, B: float, x0: float, x1: float, P,
+            cnt=None) -> list:
+    """The SOFFIT under each eave's overhang (a framed roof — his
+    question, 2026-11-02): a board along the underside, 1 mm under it,
+    from the fascia to the walls' outer face — none where there is no
+    overhang."""
+    from shapely.geometry import Polygon, box
+    from shapely.geometry.polygon import orient
+    lo = _offset_line(under, -0.001 - SOFFIT_T)
+    hi = _offset_line(under, -0.001)
+    band = Polygon(lo + hi[::-1]).buffer(0)
+    zlo = min(z for _y, z in lo) - 1.0
+    zhi = max(z for _y, z in hi) + 1.0
+    out, area = [], 0.0
+    y0, y1 = under[0][0], under[-1][0]
+    for a, b in ((y0, -B - 0.001), (B + 0.001, y1)):
+        if b - a < FASCIA_T + 0.01:
+            continue                     # (no overhang there)
+        g = band.intersection(box(a, zlo, b, zhi))
+        for q in getattr(g, "geoms", [g]):
+            if q.geom_type == "Polygon" and q.area > 1e-8:
+                sec = [tuple(c) for c in
+                       list(orient(q, 1.0).exterior.coords)[:-1]]
+                out += _sweep(sec, x0, x1, P, BLOCK_COLOR)
+                area += q.area / SOFFIT_T * (x1 - x0)
+    if cnt is not None:
+        cnt["soffit_m2"] = cnt.get("soffit_m2", 0.0) + area
+    return out
+
+
+def truss_xs(r: dict, A: float, wall_t: float) -> list | None:
+    """A TRUSSED roof's trusses (PLANO_TELHADO_ASNAS D4): their starts
+    along the ridge, at the spacing, between the gable walls' inner faces
+    (the framed gable walls are its gable-end trusses) — None: not a
+    trussed roof (rafters, solid, a butterfly: rafters)."""
+    from . import framing as FR
+    fr = FR.clean_frame(r.get("frame"))
+    if fr is None or fr.get("system") != "trusses" or \
+            r.get("kind") not in ("gable", "shed") or not layered_roof(r):
+        return None
+    w = fr["w"]
+    xs, _n = rafter_xs(A, A, fr)
+    return [c for c in xs if c > -A + wall_t + 0.001
+            and c + w < A - wall_t - 0.001]
+
+
+def _truss_gaps(r: dict, A: float, wall_t: float) -> list | None:
+    """[(x0, x1)] between the gable walls' inner faces, 1 mm off each
+    truss — where the eave walls' tops are filled up to the roof (the
+    blocking); None: no trusses (all the way)."""
+    xs = truss_xs(r, A, wall_t)
+    if xs is None:
+        return None
+    from . import framing as FR
+    w = FR.clean_frame(r.get("frame"))["w"]
+    out, a = [], -A + wall_t
+    for c in xs:
+        if c - 0.001 > a + 1e-4:
+            out.append((a, c - 0.001))
+        a = c + w + 0.001
+    if A - wall_t > a + 1e-4:
+        out.append((a, A - wall_t))
+    return out
+
+
+def _z_on(line: list, y: float) -> float:
+    """The z of a section line [(y, z)] (y rising) at ``y`` — straight on
+    past its ends."""
+    for (ya, za), (yb, zb) in zip(line, line[1:]):
+        if y <= yb or (yb, zb) == line[-1]:
+            return za + (zb - za) * (y - ya) / ((yb - ya) or 1e-12)
+    return line[-1][1]
+
+
+def _truss_webs(fr: dict, mid: list, zc: float, B: float, dc: float,
+                shed: bool) -> tuple:
+    """A truss's webs (PLANO_TELHADO_ASNAS D2) as (a, b) centre lines
+    (y, z), its shape: the chords' centre lines ``mid`` (the top) and z
+    ``zc`` (the bottom), the walls' outer faces ±``B``. A lifted heel (an
+    eave over the walls' top): a post at the wall. A shed's (mono): a post
+    at its high wall, verticals and diagonals."""
+    def top(y):
+        return (y, _z_on(mid, y))
+
+    def bot(y):
+        return (y, zc)
+
+    def lerp(a, b, f):
+        return a + (b - a) * f
+    webs = []
+
+    def heel(side):
+        """(the top node, the bottom node) at a heel — one point unless
+        the eave is lifted (then a post at the wall)."""
+        yw = side * (B - dc / 2)
+        if _z_on(mid, side * B) - dc / 2 > zc + dc / 2:   # lifted
+            webs.append((top(yw), bot(yw)))
+            return top(yw), bot(yw)
+        # where the top chord's centre line meets the bottom one's
+        (ya, za), (yb, zb) = (mid[0], mid[1]) if side < 0 else \
+            (mid[-2], mid[-1])
+        y = ya + (zc - za) * (yb - ya) / ((zb - za) or 1e-12)
+        return (y, zc), (y, zc)
+    tl, bl = heel(-1)
+    if shed:
+        yh = B - dc / 2
+        th, bh = top(yh), bot(yh)
+        webs.append((th, bh))                     # the high post
+        span = yh - bl[0]
+        n = 2 if span <= 4.0 else 3 if span <= 7.0 else 4
+        ts = [top(lerp(tl[0], yh, i / n)) for i in range(n + 1)]
+        bs = [bot(lerp(bl[0], yh, i / n)) for i in range(n + 1)]
+        for i in range(1, n):
+            webs.append((ts[i], bs[i]))
+            webs.append((ts[i], bs[i + 1]))
+        return webs, "mono"
+    tr, br = heel(+1)
+    ap = max(mid, key=lambda p: p[1])
+    from .framing import truss_pattern
+    pat = truss_pattern(fr, 2 * B)
+
+    def tL(f):
+        return top(lerp(tl[0], ap[0], f))
+
+    def tR(f):
+        return top(lerp(tr[0], ap[0], f))
+
+    def bA(f):
+        return bot(lerp(bl[0], br[0], f))
+    if pat == "kingpost":
+        c = bot(ap[0])
+        webs += [(ap, c), (c, tL(0.5)), (c, tR(0.5))]
+    elif pat == "fink":
+        b1, b2 = bA(1 / 3), bA(2 / 3)
+        webs += [(tL(0.5), b1), (b1, ap), (ap, b2), (b2, tR(0.5))]
+    elif pat == "doublefink":
+        b = [bA(i / 5) for i in range(1, 5)]
+        webs += [(tL(1 / 3), b[0]), (b[0], tL(2 / 3)), (tL(2 / 3), b[1]),
+                 (b[1], ap), (ap, b[2]), (b[2], tR(2 / 3)),
+                 (tR(2 / 3), b[3]), (b[3], tR(1 / 3))]
+    else:                                         # howe
+        h = 2 if 2 * B <= 8.0 else 3              # panels a side
+        webs.append((ap, bot(ap[0])))
+        for t0, b0 in ((tl, bl), (tr, br)):
+            ys = [lerp(b0[0], ap[0], i / h) for i in range(h + 1)]
+            for i in range(1, h):
+                webs.append((top(ys[i]), bot(ys[i])))
+            for i in range(1, h):
+                webs.append((top(ys[i]), bot(ys[i + 1])))
+    return webs, pat
+
+
+def _no_holes(g) -> tuple:
+    """A polygon with holes (a truss: the openings between its webs) cut
+    across at each hole's corners into pieces with none — (the pieces, the
+    cuts' ys: their faces there are inside the truss)."""
+    from shapely.geometry import box
+    ys = sorted({round(c[0], 9) for q in getattr(g, "geoms", [g])
+                 for ring in q.interiors for c in ring.coords})
+    if not ys:
+        return [g], []
+    x0, z0, x1, z1 = g.bounds
+    cuts = [x0 - 1.0] + ys + [x1 + 1.0]
+    return [g.intersection(box(a, z0 - 1.0, b, z1 + 1.0))
+            for a, b in zip(cuts, cuts[1:])], ys
+
+
+def _truss_roof(r: dict, ls: list, k: float, hid: set, fr: dict, core: int,
+                under: list, x0: float, x1: float, P, A: float, B: float,
+                base: float, wall_t: float, cnt) -> list:
+    """A roof on TRUSSES (PLANO_TELHADO_ASNAS, his OK 2026-11-02): the
+    layers down to the core on the slope (the core: the trusses' top
+    chords), each truss a top chord, a bottom chord on the walls' top
+    and its webs (``_truss_webs``) — one polygon, swept as thick as a
+    truss; the layers under the core FLAT under the bottom chords (the
+    ceiling, between the walls' inner faces) and the insulation on it
+    between the bottom chords (a cold attic). Nothing on anything: the
+    layer over the core keeps its underside, the insulation's ends are
+    the trusses'. Eyes: «studs» (the trusses), «fill»."""
+    from shapely.geometry import LineString, Point, Polygon, box
+    from shapely.geometry.polygon import orient
+    from shapely.ops import unary_union
+    from . import framing as FR
+    keys = set(r.get("_hide") or ())
+    n = len(ls)
+    w = fr["w"]
+    out = []
+    # the slope: the layers down to the core, on the underside
+    h = sum(float(L["t"]) for L in ls[:core + 1]) * k
+    dc = float(ls[core]["t"]) * k
+    for i in range(core + 1):
+        L = ls[i]
+        lo = 0.0 if i == core else h - float(L["t"]) * k
+        bot, top = _offset_line(under, lo), _offset_line(under, h)
+        if cnt is not None:
+            cnt.setdefault("layers", []).append((L, _run(top) * (x1 - x0)))
+        if i == core:
+            core_bot, core_top = bot, top
+        elif i not in hid:
+            skip = range(len(bot) - 1) if i + 1 < core and \
+                i + 1 not in hid else ()
+            out += _sweep(bot + top[::-1], x0, x1, P, roof_layer_color(i),
+                          skip)
+        h = lo
+    # the ceiling: flat, under the bottom chords, inside the walls
+    yi0, yi1 = -B + wall_t + 0.001, B - wall_t - 0.001
+    xi0, xi1 = -A + wall_t + 0.001, A - wall_t - 0.001
+    zc = base - 0.001
+    for i in range(core + 1, n):
+        tt = float(ls[i]["t"]) * k
+        if cnt is not None:
+            cnt.setdefault("layers", []).append(
+                (ls[i], max(0.0, yi1 - yi0) * max(0.0, xi1 - xi0)))
+        if i not in hid and yi1 > yi0 and xi1 > xi0:
+            sec = [(yi0, zc - tt), (yi1, zc - tt), (yi1, zc), (yi0, zc)]
+            skip = {0} if i + 1 < n and i + 1 not in hid else ()
+            out += _sweep(sec, xi0, xi1, P, roof_layer_color(i), skip)
+        zc -= tt
+    # one truss, in (y, z)
+    band = Polygon(core_bot + core_top[::-1]).buffer(0)
+    zlo, zhi = base - 1.0, max(z for _y, z in core_top) + 1.0
+    fascia, band = _fascia_cut(band, core_bot[0][0], core_bot[-1][0], zlo,
+                               zhi)
+    keep = box(core_bot[0][0] + FASCIA_T + 0.001, zlo,
+               core_bot[-1][0] - FASCIA_T - 0.001, zhi)
+    mid = _offset_line(under, dc / 2)
+    shed = r.get("kind") == "shed"
+    webs, pat = _truss_webs(fr, mid, base + dc / 2, B, dc, shed)
+    env = Polygon(core_top + [(core_top[-1][0], zlo),
+                              (core_top[0][0], zlo)]).buffer(0) \
+        .intersection(box(-B, base, B, zhi))
+    members = [band, box(-B, base, B, base + dc)] + \
+        [LineString([a, b]).buffer(dc / 2, cap_style=2).intersection(env)
+         for a, b in webs if math.dist(a, b) > 1e-6]
+    truss = unary_union(members).buffer(0).intersection(keep)
+    pieces, cuts = _no_holes(truss)
+    above = core > 0 and core - 1 not in hid
+    top_ln = LineString(core_top)
+
+    def sections(g):
+        for q in getattr(g, "geoms", [g]):
+            if q.geom_type == "Polygon" and q.area > 1e-8:
+                yield [tuple(c) for c in
+                       list(orient(q, 1.0).exterior.coords)[:-1]]
+
+    def skips(sec, inside_cuts=True):
+        out_, m = set(), len(sec)
+        for e in range(m):
+            p, q = sec[e], sec[(e + 1) % m]
+            if inside_cuts and any(abs(p[0] - c) < 1e-7 and
+                                   abs(q[0] - c) < 1e-7 for c in cuts):
+                out_.add(e)          # (inside the truss: a cut of ours)
+            elif above:
+                mp = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+                if all(top_ln.distance(Point(v)) < 1e-7 for v in (p, q, mp)):
+                    out_.add(e)      # (the layer over it: its face)
+        return out_
+    secs = [s for g in pieces for s in sections(g)]
+    for sec in sections(fascia):                  # the fascia boards
+        out += _sweep(sec, x0, x1, P, BLOCK_COLOR, skips(sec, False))
+    out += _soffit(under, B, x0, x1, P, cnt)
+    xs = truss_xs(r, A, wall_t)
+    full, _n = rafter_xs(A, x1, fr)
+    barge = [c for c in full if c < -A - 1e-9 or c > A - w + 1e-9]
+    parts = r.get("_parts") if isinstance(r.get("_parts"), list) else None
+    if LV.STUDS not in keys:
+        for c in xs:
+            for sec in secs:
+                out += _sweep(sec, c, c + w, P, RAFTER_COLOR, skips(sec))
+        for c in barge:                           # the barge rafters
+            for sec in sections(band):
+                out += _sweep(sec, c, c + w, P, RAFTER_COLOR,
+                              skips(sec, False))
+    if parts is not None:
+        for c in xs:
+            for sec in sections(truss):
+                parts.append({"what": "rafter", "sec": sec, "xa": c,
+                              "xb": c + w, "P": P})
+        for c in barge:
+            for sec in sections(band):
+                parts.append({"what": "rafter", "sec": sec, "xa": c,
+                              "xb": c + w, "P": P})
+    # the insulation on the ceiling, between the bottom chords
+    fill = None
+    if fr["fill"] == "insulation" and yi1 > yi0:
+        fill = box(yi0, base, yi1, base + dc).difference(band)
+        edges = [xi0] + [v for c in xs for v in (c, c + w)] + [xi1]
+        spans = [(a, b) for a, b in zip(edges[::2], edges[1::2])
+                 if b - a > 1e-4]
+        if LV.FILL not in keys:
+            studs = LV.STUDS not in keys
+            for a, b in spans:
+                for sec in sections(fill):
+                    got = _sweep(sec, a, b, P, FR.FILL_COLOR)
+                    if studs:            # (its ends: the trusses' faces)
+                        got = [got[i] for i in range(len(got))
+                               if not (i == 0 and b < xi1 - 1e-9)
+                               and not (i == 1 and a > xi0 + 1e-9)]
+                    out += got
+        if parts is not None:
+            for a, b in spans:
+                for sec in sections(fill):
+                    parts.append({"what": "fill", "sec": sec, "xa": a,
+                                  "xb": b, "P": P})
+    if cnt is not None:
+        cnt["trusses"] = len(xs)
+        cnt["pattern"] = pat
+        cnt["span"] = 2 * B
+        cnt["top_m"] = len(xs) * _run(mid)
+        cnt["bottom_m"] = len(xs) * 2 * B
+        cnt["web_m"] = len(xs) * sum(math.dist(a, b) for a, b in webs)
+        cnt["barge"] = len(barge)
+        cnt["barge_m"] = len(barge) * _run(mid)
+        cnt["fill"] = (fill.area * sum(b - a for a, b in spans)
+                       if fill is not None else 0.0)
+        cnt["kind"] = fr["kind"]
+        cnt["depth"] = dc
+        cnt["fascia_m"] = 2 * (x1 - x0)
+    return out
+
+
+def _run(line: list) -> float:
+    """A section line's length (y, z)."""
+    return sum(math.dist(a, b) for a, b in zip(line, line[1:]))
+
+
+def rafter_xs(A: float, X: float, fr: dict) -> tuple:
+    """(the rafters' starts along the ridge — over the walls from one
+    gable wall's outer face to the other's, at the spacing, the last one
+    flush with the far face; a barge rafter at each end of an overhang
+    wider than two of them —, how many are over the walls)."""
+    w, sp = fr["w"], fr["s"]
+    xs, c = [], -A
+    while c < A - w - 0.005:
+        xs.append(c)
+        c += sp
+    if not xs or xs[-1] < A - w - 1e-9:
+        xs.append(A - w)
+    inner = len(xs)
+    if X - A > 2 * w + 0.005:                     # the gable overhang
+        xs = [-X] + xs + [X - w]
+    return xs, inner
+
+
+def _rafters(r: dict, fr: dict, bot: list, top: list, x0: float, x1: float,
+             P, A: float, B: float, ridge, color, above: bool, below: bool,
+             cnt=None) -> list:
+    """A roof's LIGHT-FRAMED core (step 2b, his OK 2026-11-02): rafters
+    from the eaves up (their tails out over the eaves), at the spacing
+    along the ridge (``rafter_xs``), a ridge board where they meet (a
+    gable), and insulation between them inside the walls' outer lines
+    (``fr["fill"]``) — none of them inside another, no two faces on each
+    other: what lies on the layer over / under it (``above`` / ``below``)
+    is that layer's face, a rafter's end against the ridge board the
+    board's, the insulation's ends against the rafters theirs. Eyes:
+    «studs» (the rafters, the ridge board) / «fill» (layerview)."""
+    from shapely.geometry import LineString, Point, Polygon, box
+    from shapely.geometry.polygon import orient
+    from . import framing as FR
+    keys = set(r.get("_hide") or ())
+    band = Polygon(bot + top[::-1]).buffer(0)
+    w = fr["w"]
+    zlo = min(z for _y, z in bot) - 1.0
+    zhi = max(z for _y, z in top) + 1.0
+    depth = band.area / max(_run(bot), 1e-9)
+    # the FASCIA at each eave: the core's end, the rafters 1 mm short of it
+    fascia, band = _fascia_cut(band, bot[0][0], bot[-1][0], zlo, zhi)
+    strip = box(ridge - w / 2, zlo, ridge + w / 2, zhi) \
+        if ridge is not None else None
+    lines = ([LineString(top)] if above else []) + \
+        ([LineString(bot)] if below else [])
+    walls_y = (ridge - w / 2, ridge + w / 2) if strip is not None else ()
+
+    def on(q, line) -> bool:
+        return line.distance(Point(q)) < 1e-7
+
+    def sections(g):
+        for q in getattr(g, "geoms", [g]):
+            if q.geom_type == "Polygon" and q.area > 1e-8:
+                yield [tuple(c) for c in
+                       list(orient(q, 1.0).exterior.coords)[:-1]]
+
+    def faces(sec, xa, xb, col, caps=True, ends=False):
+        skip = set()
+        m = len(sec)
+        for e in range(m):
+            p, q = sec[e], sec[(e + 1) % m]
+            mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+            if any(on(p, ln) and on(q, ln) and on(mid, ln) for ln in lines):
+                skip.add(e)
+            elif ends and any(abs(p[0] - y) < 1e-7 and abs(q[0] - y) < 1e-7
+                              for y in walls_y):
+                skip.add(e)              # against the ridge board
+        got = _sweep(sec, xa, xb, P, col, skip)
+        return got if caps else got[2:]
+
+    xs, inner = rafter_xs(A, x1, fr)
+    raf = band.difference(strip) if strip is not None else band
+    out = []
+    for sec in sections(fascia):
+        out += faces(sec, x0, x1, BLOCK_COLOR)
+    # (``r["_parts"]``, a list when given: each solid as {"what": "rafter"
+    # / "fill", "sec": [(y, z)], "xa", "xb", "P"} — the sections' X, 2c)
+    parts = r.get("_parts") if isinstance(r.get("_parts"), list) else None
+    if parts is not None:
+        for c in xs:
+            for sec in sections(raf):
+                parts.append({"what": "rafter", "sec": sec, "xa": c,
+                              "xb": c + w, "P": P})
+        if strip is not None:
+            for sec in sections(band.intersection(strip)):
+                parts.append({"what": "rafter", "sec": sec, "xa": x0,
+                              "xb": x1, "P": P})
+        if fr["fill"] == "insulation":
+            f = band.intersection(box(-B, zlo, B, zhi))
+            if strip is not None:
+                f = f.difference(strip)
+            reg = xs[1:-1] if len(xs) > inner else xs
+            for ca, cb in zip(reg, reg[1:]):
+                if cb - (ca + w) >= 1e-4:
+                    for sec in sections(f):
+                        parts.append({"what": "fill", "sec": sec,
+                                      "xa": ca + w, "xb": cb, "P": P})
+    studs = LV.STUDS not in keys
+    if studs:
+        for c in xs:
+            for sec in sections(raf):
+                out += faces(sec, c, c + w, color, ends=True)
+        if strip is not None:
+            for sec in sections(band.intersection(strip)):
+                out += faces(sec, x0, x1, color)
+    fill = None
+    if fr["fill"] == "insulation" and LV.FILL not in keys:
+        fill = band.intersection(box(-B, zlo, B, zhi))
+        if strip is not None:
+            fill = fill.difference(strip)
+        reg = xs[1:-1] if len(xs) > inner else xs   # (no barge rafters)
+        for ca, cb in zip(reg, reg[1:]):
+            if cb - (ca + w) < 1e-4:
+                continue
+            for sec in sections(fill):
+                out += faces(sec, ca + w, cb, FR.FILL_COLOR, caps=not studs,
+                             ends=True)
+    if cnt is not None:
+        # (each one along its top, eave to eave — a gable's: two, from the
+        # eaves to the ridge board)
+        per = len(list(sections(raf)))
+        cnt["rafters"] = len(xs) * per
+        cnt["rafter_m"] = len(xs) * (_run(top) - (w if strip is not None
+                                                    else 0.0))
+        cnt["ridge_m"] = (x1 - x0) if strip is not None else 0.0
+        if fr["fill"] == "insulation":
+            f = band.intersection(box(-B, zlo, B, zhi))
+            if strip is not None:
+                f = f.difference(strip)
+            cnt["fill"] = f.area * max(0.0, 2 * A - inner * w)
+        cnt["kind"] = fr["kind"]
+        cnt["depth"] = depth
+        cnt["fascia_m"] = 2 * (x1 - x0)
+    return out
+
+
+def _block_color(r: dict) -> tuple:
+    """The eave walls' fill up to a roof: wood blocking under a framed
+    roof (``BLOCK_COLOR``), the wall's own else."""
+    from .framing import clean_frame
+    return BLOCK_COLOR if layered_roof(r) and \
+        clean_frame(r.get("frame")) is not None else GABLE_COLOR
+
+
+def _eave_wedge(side, B, wall_t, base, zb, d, A, P, gaps=None,
+                color=GABLE_COLOR) -> list:
     """The eave wall's top filled up to the roof's underside (a wedge as
     thick as the wall, ``side`` +1 / −1 across), between the end walls —
     2 mm under the roof, 1 mm off the wall's faces, its foot 1 mm into the
-    wall (nothing coplanar)."""
+    wall (nothing coplanar). ``gaps``: [(x0, x1)] — a trussed roof's, the
+    blocking between its trusses (``_truss_gaps``)."""
     yo, yi = side * (B - 0.001), side * (B - wall_t + 0.001)
     if zb(yi) - d <= base + 0.002:
         return []                         # a slope too low to leave a gap
-    tri = [(yi, base - 0.001), (yo, base - 0.001), (yi, zb(yi) - d)]
+    zo = zb(yo) - d                       # a lifted eave (eave2): a quad
+    tri = [(yi, base - 0.001), (yo, base - 0.001)] \
+        + ([(yo, zo)] if zo > base + 0.002 else []) + [(yi, zb(yi) - d)]
     if side < 0:                          # counter-clockwise in (y, z)
-        tri = [(yo, base - 0.001), (yi, base - 0.001), (yi, zb(yi) - d)]
-    return _sweep(tri, -A + wall_t, A - wall_t, P, GABLE_COLOR)
+        tri = [(yo, base - 0.001), (yi, base - 0.001), (yi, zb(yi) - d)] \
+            + ([(yo, zo)] if zo > base + 0.002 else [])
+    out = []
+    for xa, xb in gaps or [(-A + wall_t, A - wall_t)]:
+        out += _sweep(tri, xa, xb, P, color)
+    return out
 
 
-def _shed_roof(base, A, B, o, go, tan, dz, wall_t, P) -> list:
+def _shed_roof(base, A, B, o, go, tan, dz, wall_t, P, r=None) -> list:
     """One slope, low on −y: its underside passes through the low wall's
     outer top edge. The end walls rise to it (a trapezoid each) and the
     high wall goes up under it — 2 mm under the roof, 1 mm off the walls'
@@ -2227,8 +3260,11 @@ def _shed_roof(base, A, B, o, go, tan, dz, wall_t, P) -> list:
 
     def zb(y):
         return base + (y + B) * tan
-    faces = _sweep([(-Y, zb(-Y)), (Y, zb(Y)), (Y, zb(Y) + dz),
-                    (-Y, zb(-Y) + dz)], -X, X, P, ROOF_COLOR)
+    faces = _layered_sweep(r, [(-Y, zb(-Y)), (Y, zb(Y))], -X, X, P,
+                           A, B, base=base, wall_t=wall_t) \
+        if r and layered_roof(r) else \
+        _sweep([(-Y, zb(-Y)), (Y, zb(Y)), (Y, zb(Y) + dz),
+                (-Y, zb(-Y) + dz)], -X, X, P, ROOF_COLOR)
     d = 0.002
     y0 = -B + 2 * d / tan                  # where the end wall starts
     y1 = B - 0.001
@@ -2240,13 +3276,17 @@ def _shed_roof(base, A, B, o, go, tan, dz, wall_t, P) -> list:
     h0 = B - wall_t + 0.001
     high = [(h0, base - 0.001), (y1, base - 0.001), (y1, zb(y1) - d),
             (h0, zb(h0) - d)]
-    faces += _sweep(high, -A + wall_t, A - wall_t, P, GABLE_COLOR)
+    gaps = _truss_gaps(r, A, wall_t) if r else None
+    for xa, xb in gaps or [(-A + wall_t, A - wall_t)]:
+        faces += _sweep(high, xa, xb, P, GABLE_COLOR)
     # the low wall up to the roof's underside (see _eave_wedge)
-    faces += _eave_wedge(-1, B, wall_t, base, zb, d, A, P)
+    faces += _eave_wedge(-1, B, wall_t, base, zb, d, A, P, gaps,
+                         _block_color(r) if r else GABLE_COLOR)
     return faces
 
 
-def _butterfly_roof(base, A, B, o, go, tan, dz, wall_t, P) -> list:
+def _butterfly_roof(base, A, B, o, go, tan, dz, wall_t, P,
+                    r=None) -> list:
     """A BUTTERFLY roof (0.15.0, B6): two slopes falling to a valley along
     the middle (x), its underside on the walls' top there, high at the
     eaves. The eave walls rise to it, the end walls get its V (two
@@ -2257,7 +3297,9 @@ def _butterfly_roof(base, A, B, o, go, tan, dz, wall_t, P) -> list:
         return base + abs(y) * tan
     section = [(-Y, zb(-Y)), (0, zb(0)), (Y, zb(Y)), (Y, zb(Y) + dz),
                (0, zb(0) + dz), (-Y, zb(-Y) + dz)]
-    faces = _sweep(section, -X, X, P, ROOF_COLOR)
+    faces = _layered_sweep(r, [(-Y, zb(-Y)), (0, zb(0)), (Y, zb(Y))], -X, X,
+                           P, A, B) if r and layered_roof(r) else \
+        _sweep(section, -X, X, P, ROOF_COLOR)
     d = 0.002
     b2 = B - 0.001
     for tri in ([(0.0, base - 0.001), (b2, base - 0.001), (b2, zb(b2) - d)],
@@ -2583,6 +3625,25 @@ def partitions_over(mine: list[dict], plans: dict, ids, opened,
     return out
 
 
+def level_drops(doc: dict, elevations, lid: str, mine: list,
+                plans: dict) -> dict:
+    """``wall_drops`` of a level's walls as ``build`` reads them — for the
+    sheets (a framed wall's plates in a section where it is built: down
+    through its slab, 4c)."""
+    info = levels_info(doc, elevations)
+    li = info.get(lid)
+    if li is None:
+        return {}
+    struct = doc.get("structure") or []
+    lv_slabs = [e for e in struct if e["level"] == lid
+                and e["type"] == "slab" and why_not(e) is None
+                and not e.get("block") and not e.get("ceiling")]
+    opened = slab_openings(struct, lid, flight_cuts(doc, elevations))
+    return wall_drops(mine, plans, lv_slabs, li["slab"],
+                      _depth_under(doc, info, lid), opened,
+                      _has_below(info, lid))
+
+
 def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
                slab_t: float, ground=None, opened=(),
                below: bool = False) -> dict:
@@ -2686,8 +3747,24 @@ def walls_footprint(plans: dict):
         return None
 
 
+def _outside_cut(mine: list, plans: dict, drops: dict):
+    """The plan of a level's OUTSIDE walls that go down through its slab
+    (``outside_walls``, ``wall_drops``), 1 mm out — a framed slab's joists
+    stop at their inner face (D5). None: none."""
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+        ids, _c, _f = outside_walls(mine, plans)
+        polys = [Polygon(pc["outer"]).buffer(0) for wid in ids
+                 if drops.get(wid, 0.0) > 0 for pc in plans.get(wid) or ()]
+        return unary_union(polys).buffer(0.001, join_style=2) if polys \
+            else None
+    except Exception:  # noqa: BLE001 — the slab's outline, as before
+        return None
+
+
 def slab_layered_faces(s: dict, parts: list, top: float, wallfoot,
-                       rooms=None):
+                       rooms=None, rimcut=None):
     """A slab with LAYERS (slab layers, 2026-10-23), top → bottom, each its
     own solid coloured as its layer (``layer_color``): the finishes ON the
     core laid between the walls (``wallfoot`` taken out — each room its
@@ -2698,10 +3775,15 @@ def slab_layered_faces(s: dict, parts: list, top: float, wallfoot,
     ``rooms`` (``spaces.of_level``): the finishes on the core split ROOM BY
     ROOM (floor per room, 2026-10-23) → (the slab's faces, [(room, its
     floor's faces)]) — what lies in no room (a balcony left open) stays
-    with the slab; ``FLOOR_GAP`` between them."""
+    with the slab; ``FLOOR_GAP`` between them.
+
+    Its layers HIDDEN in the 3D (``_hide``, layerview.py): not built; the
+    one over a hidden one keeps its underside."""
     ls = slab_layers(s)
+    hid = LV.indexes(ls, s.get("_hide"))
     k = float(s["t"]) / (sum(float(L["t"]) for L in ls) or float(s["t"]))
     core = next(i for i, L in enumerate(ls) if L["role"] == "core")
+    fr = slab_frame(s)
     floor = trim_slab(parts, wallfoot) if wallfoot is not None else parts
     rest, mine = floor, []
     if rooms and core > 0:
@@ -2721,16 +3803,403 @@ def slab_layered_faces(s: dict, parts: list, top: float, wallfoot,
         sets = [(out, rest)] + [(own[j], pcs) for j, (_r, pcs)
                                 in enumerate(mine)] if i < core \
             else [(out, parts)]
+        if i == core and fr is not None:
+            # a LIGHT-FRAMED core: joists, rim, insulation (step 4a)
+            # (inside the outside walls going down through it: ``rimcut``)
+            out += _joists(s, fr, trim_slab(parts, rimcut)
+                           if rimcut is not None else parts, lo, z,
+                           above=i > 0 and i - 1 not in hid,
+                           below=i < len(ls) - 1 and i + 1 not in hid)
+            z = lo
+            continue
         for faces, pcs in sets:
+            if i in hid:                     # its eye off: not built
+                break
             for pc in pcs:
                 raw = W.solid(pc, lo, z)
-                if i < len(ls) - 1:
+                if i < len(ls) - 1 and i + 1 not in hid and \
+                        not (i + 1 == core and fr is not None):
                     raw = raw[:1] + raw[2:]  # its underside: the next's top
                 faces += _faces(raw, layer_color(i))
         z = lo
     if rooms is None:
         return out
     return out, [(r, f) for (r, _p), f in zip(mine, own) if f]
+
+
+#: a floor's joists' colour (PLANO_PISOS_BARROTES): their own, as the
+#: rafters' — pine / steel with nothing chosen (materials.paint)
+JOIST_COLOR = (0.80, 0.70, 0.44, 1.0)
+
+
+def slab_frame(s: dict) -> dict | None:
+    """The frame a slab's core is BUILT with (joists) — None: solid (a
+    ceiling, a block, no frame)."""
+    if s.get("ceiling") or s.get("block"):
+        return None
+    from .framing import clean_frame
+    return clean_frame(s.get("frame"))
+
+
+def _polys_to_pieces(g) -> list:
+    out = []
+    for q in getattr(g, "geoms", [g]):
+        if q.geom_type != "Polygon" or q.is_empty or q.area < 1e-6:
+            continue
+        out.append({"outer": _ccw(list(q.exterior.coords)[:-1]),
+                    "holes": [list(reversed(_ccw(list(r.coords)[:-1])))
+                              for r in q.interiors]})
+    return out
+
+
+#: a joist longer than this gets a row of BLOCKING across at mid-span, and
+#: one more for each such length (PLANO_ESTRUTURA_LEVE_FASE4 4b — US
+#: «mid-span blocking», the bridging of the EU floors): a rule of thumb
+JOIST_BLOCK_EVERY = 2.40
+
+
+def joist_layout(poly, fr: dict, turn: bool = False,
+                 info: dict | None = None) -> tuple:
+    """A floor piece's FRAME in plan (PLANO_PISOS_BARROTES D2, D3): (the
+    rim — a ring around it, a double one around each hole —, the joists —
+    strips at the spacing across its SHORT way (``turn``: the other) —,
+    the insulation between, the joists' direction (unit), its longest
+    span). Shapely geometries; 1 mm between them (nothing coplanar).
+
+    The rim also carries the rows of BLOCKING between the joists where
+    they run longer than ``JOIST_BLOCK_EVERY`` (4b); ``info`` (a dict)
+    gets their length in metres, "blocking_m"."""
+    from shapely import affinity
+    from shapely.geometry import Polygon, box
+    from shapely.ops import unary_union
+    w = fr["w"]
+    outer = Polygon(poly.exterior)
+    inner = outer.buffer(-w, join_style=2)
+    rings = [outer.difference(inner)]
+    for h in poly.interiors:
+        hp = Polygon(h)
+        rings.append(hp.buffer(2 * w, join_style=2).difference(hp))
+    rim = unary_union(rings).intersection(poly).buffer(0)
+    room = poly.difference(rim.buffer(0.001, join_style=2)).buffer(0)
+    # the direction: across the short side of its smallest rectangle
+    rr = list(outer.minimum_rotated_rectangle.exterior.coords)[:4]
+    e0 = (rr[1][0] - rr[0][0], rr[1][1] - rr[0][1])
+    e1 = (rr[2][0] - rr[1][0], rr[2][1] - rr[1][1])
+    l0, l1 = math.hypot(*e0), math.hypot(*e1)
+    long_ = e0 if l0 >= l1 else e1
+    ln = math.hypot(*long_) or 1.0
+    u = (long_[0] / ln, long_[1] / ln)          # the joists spaced along u
+    if turn:
+        u = (-u[1], u[0])
+    v = (-u[1], u[0])                           # … each running along v
+    ang = math.degrees(math.atan2(u[1], u[0]))
+    # in u / v: the strips as boxes, turned back
+    loc = affinity.rotate(poly, -ang, origin=(0, 0))
+    x0, y0, x1, y1 = loc.bounds
+    strips = []
+    c = x0 + fr["s"]
+    while c + w < x1 - w - 0.005:
+        strips.append(box(c, y0 - 1.0, c + w, y1 + 1.0))
+        c += fr["s"]
+    joists = affinity.rotate(unary_union(strips), ang, origin=(0, 0)) \
+        .intersection(room).buffer(0) if strips else Polygon()
+    # the blocking rows: across the joists, between them (4b)
+    blocks = Polygon()
+    rows = []
+    jl = affinity.rotate(joists, -ang, origin=(0, 0)) if strips else None
+    if jl is not None and not jl.is_empty:
+        ya, yb = jl.bounds[1], jl.bounds[3]
+        L = yb - ya
+        if L > JOIST_BLOCK_EVERY + 1e-6:
+            k = math.ceil(L / JOIST_BLOCK_EVERY - 1e-9) - 1
+            rows = [ya + L * j / (k + 1) - w / 2 for j in range(1, k + 1)]
+    if rows:
+        bar = affinity.rotate(unary_union([box(x0 - 1.0, y, x1 + 1.0, y + w)
+                                           for y in rows]), ang,
+                              origin=(0, 0))
+        got = bar.intersection(room).difference(
+            joists.buffer(0.001, join_style=2)).buffer(0)
+        keep = [q for q in getattr(got, "geoms", [got])
+                if q.geom_type == "Polygon" and q.area > w * 0.02]
+        blocks = unary_union(keep).buffer(0) if keep else Polygon()
+    if info is not None:
+        info["blocking_m"] = blocks.area / w if not blocks.is_empty else 0.0
+    fill = room.difference(joists.buffer(0.001, join_style=2)).buffer(0)
+    if not blocks.is_empty:
+        fill = fill.difference(blocks.buffer(0.001, join_style=2)).buffer(0)
+        rim = unary_union([rim, blocks]).buffer(0)
+    span = 0.0
+    for q in getattr(joists, "geoms", [joists]):
+        if q.geom_type == "Polygon" and not q.is_empty:
+            ql = affinity.rotate(q, -ang, origin=(0, 0))
+            span = max(span, ql.bounds[3] - ql.bounds[1])
+    return rim, joists, fill, v, span
+
+
+#: a floor zone's least width (floor_zones): narrower, no cut there
+ZONE_MIN = 0.60
+
+
+def joist_span(s: dict, turn: bool | None = None) -> float:
+    """A framed slab's longest joist (PLANO_PISOS_BARROTES D4 — the span
+    warning): over its zones, as built. 0: no frame."""
+    from shapely.geometry import Polygon
+    fr = slab_frame(s)
+    if fr is None:
+        return 0.0
+    if turn is None:
+        turn = s.get("jdir") == "turn"
+    try:
+        poly = Polygon([tuple(p) for p in s["corners"]],
+                       [[tuple(p) for p in h] for h in s.get("holes") or []]
+                       ).buffer(0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    if poly.is_empty:
+        return 0.0
+    span = 0.0
+    for q in getattr(poly, "geoms", [poly]):
+        for z in floor_zones(q):
+            span = max(span, joist_layout(z, fr, turn)[4])
+    return span
+
+
+def slab_count(s: dict) -> dict:
+    """A framed slab's quantities (PLANO_PISOS_BARROTES D9) — over its
+    outline as drawn: {"joists" (n), "joist_m", "rim_m", "header_m"
+    (doubled round its openings), "fill" (m³), "span", "depth", "kind"};
+    {} with no frame."""
+    from shapely.geometry import Polygon
+    fr = slab_frame(s)
+    if fr is None:
+        return {}
+    ls = slab_layers(s)
+    k = float(s["t"]) / (sum(float(L["t"]) for L in ls) or float(s["t"]))
+    depth = next(float(L["t"]) for L in ls if L["role"] == "core") * k
+    try:
+        poly = Polygon([tuple(p) for p in s["corners"]],
+                       [[tuple(p) for p in h] for h in s.get("holes") or []]
+                       ).buffer(0)
+    except Exception:  # noqa: BLE001
+        return {}
+    c: dict = {}
+    # (counted only: its faces not made)
+    _joists(dict(s, _count=c, _hide=[LV.STUDS, LV.FILL]), fr,
+            _polys_to_pieces(poly), 0.0, depth, False, False)
+    return c
+
+
+def slab_section_symbols(doc: dict, elevations, s: dict, q,
+                         nrm) -> dict | None:
+    """What a vertical SECTION through ``q`` (normal ``nrm`` in plan)
+    shows of a slab's JOISTS (PLANO_PISOS_BARROTES D9), as
+    roof_section_symbols — {"blank": [polygons (x, y, z)], "lines": [(a,
+    b)]}: a joist or the rim cut across outlined with its X (wood), cut
+    along outlined; the insulation outlined with its zigzag. None: no
+    joists, or none of them cut."""
+    if slab_frame(s) is None:
+        return None
+    from shapely.geometry import LineString
+    parts: list = []
+    mark = dict(s, _parts=parts, _hide=[])
+    try:
+        build(dict(doc, structure=[mark if e.get("id") == s["id"] else e
+                                   for e in doc.get("structure") or []]),
+              elevations, only={s["id"]})
+    except Exception:  # noqa: BLE001 — the cut stays filled
+        return None
+    if not parts:
+        return None
+    n = math.hypot(nrm[0], nrm[1]) or 1.0
+    t = (-nrm[1] / n, nrm[0] / n)                # the cut's line in plan
+    line = LineString([(q[0] - t[0] * 1e4, q[1] - t[1] * 1e4),
+                       (q[0] + t[0] * 1e4, q[1] + t[1] * 1e4)])
+    blank, lines = [], []
+
+    def segs(g):
+        try:
+            got = g.intersection(line)
+        except Exception:  # noqa: BLE001
+            return []
+        return [list(x.coords) for x in getattr(got, "geoms", [got])
+                if x.geom_type == "LineString" and x.length > 1e-4]
+
+    for p in parts:
+        lo, hi = p["lo"], p["hi"]
+        for g, what in [(x, "wood") for x in p["wood"]] + [(p["fill"],
+                                                             "fill")]:
+            for (ax, ay), (bx, by) in segs(g):
+                a0, a1 = (ax, ay, lo), (bx, by, lo)
+                b1, b0 = (bx, by, hi), (ax, ay, hi)
+                box = [a0, a1, b1, b0]
+                blank.append(box)
+                lines += list(zip(box, box[1:] + box[:1]))
+                L = math.hypot(bx - ax, by - ay)
+                if what == "fill":
+                    d = hi - lo
+                    k = max(2, math.ceil(L / (d / 2)))
+                    e = d * 0.12
+                    pts = [(ax + (bx - ax) * j / k, ay + (by - ay) * j / k,
+                            lo + (e if j % 2 == 0 else d - e))
+                           for j in range(k + 1)]
+                    lines += list(zip(pts, pts[1:]))
+                elif slab_frame(s)["kind"] == "wood" and L < 0.5:
+                    # cut across (a joist, the rim): its X — cut along it,
+                    # a long piece: its outline only
+                    lines += [(a0, b1), (a1, b0)]
+    if not blank:
+        return None
+    return {"blank": blank, "lines": lines}
+
+
+def span_limit(depth: float) -> float:
+    """About how far a joist this deep goes (D4: a rule of thumb, ~20×
+    its depth — a 2×10: ~4.7 m). Not a design."""
+    return 20.0 * depth
+
+
+def floor_zones(poly, most: int = 6) -> list:
+    """A floor piece cut into ZONES at its re-entrant corners (an L: two
+    arms — PLANO_PISOS_BARROTES D3: each its own joists across its own
+    short way, a beam or wall under the line between): at each corner
+    turning in by more than 20°, along one of its two sides — the cut
+    leaving the narrowest zones. At most ``most`` zones (a curve: as it
+    is), 1 mm between them (no rims face to face)."""
+    from shapely.geometry import LineString, Polygon
+    from shapely.ops import split
+
+    def reflex(q):
+        cs = list(Polygon(q.exterior).exterior.coords)[:-1]
+        if Polygon(cs).exterior.is_ccw is False:
+            cs = cs[::-1]
+        n = len(cs)
+        for i in range(n):
+            a, b, c = cs[i - 1], cs[i], cs[(i + 1) % n]
+            cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            d1, d2 = math.dist(a, b), math.dist(b, c)
+            if d1 < 1e-6 or d2 < 1e-6:
+                continue
+            # (a side shorter than a zone: a wall's notch, a step — not an
+            # L's corner)
+            if cr / (d1 * d2) < -math.sin(math.radians(20)) \
+                    and min(d1, d2) >= ZONE_MIN:
+                yield a, b, c
+
+    def short(q):
+        rr = list(q.minimum_rotated_rectangle.exterior.coords)[:3]
+        return min(math.dist(rr[0], rr[1]), math.dist(rr[1], rr[2]))
+
+    def cut(q):
+        best = None
+        for a, b, c in reflex(q):
+            for d in ((b[0] - a[0], b[1] - a[1]), (b[0] - c[0], b[1] - c[1])):
+                ln = math.hypot(*d)
+                d = (d[0] / ln * 1e3, d[1] / ln * 1e3)
+                line = LineString([(b[0] - d[0], b[1] - d[1]),
+                                   (b[0] + d[0], b[1] + d[1])])
+                try:
+                    got = [g for g in split(Polygon(q.exterior), line).geoms
+                           if g.area > 1e-4]
+                except Exception:  # noqa: BLE001
+                    continue
+                # (a wall's notch: no cut — a zone too narrow for a joist
+                # would be a stray rim, Slab 4 of his test file)
+                if len(got) < 2 or min(short(g) for g in got) < ZONE_MIN:
+                    continue
+                score = max(short(g) for g in got)
+                if best is None or score < best[0] - 1e-6:
+                    best = (score, got)
+        return best[1] if best else None
+    zones, todo = [], [poly]
+    while todo:
+        q = todo.pop()
+        got = cut(q) if len(zones) + len(todo) + 1 < most else None
+        if got is None:
+            zones.append(q)
+        else:
+            todo += got
+    if len(zones) == 1:
+        return [poly]
+    out = []
+    for z in zones:
+        g = z.buffer(-0.0005, join_style=2).intersection(poly)
+        out += [q for q in getattr(g, "geoms", [g])
+                if q.geom_type == "Polygon" and q.area > 1e-4]
+    return out
+
+
+def _joists(s: dict, fr: dict, parts: list, lo: float, hi: float,
+            above: bool, below: bool) -> list:
+    """A slab's LIGHT-FRAMED core (PLANO_PISOS_BARROTES, his OK
+    2026-11-02 — step 4a): in each piece, the rim joist around it, a
+    double one around each hole, the joists across its short way at the
+    spacing, insulation between (``fr["fill"]``) — raised from ``lo`` to
+    ``hi``, 1 mm off a layer on / under them (``above`` / ``below``:
+    that layer keeps its face). Eyes: «studs» (the joists, the rim),
+    «fill». ``s["_count"]`` (a dict): its quantities."""
+    from shapely.geometry import Polygon
+    from . import framing as FR
+    keys = set(s.get("_hide") or ())
+    cnt = s.get("_count") if isinstance(s.get("_count"), dict) else None
+    out = []
+
+    # (1 mm off the layers on / under them, all their faces kept: the
+    # floors over them go room by room — a gap between two rooms would
+    # show into a joist left open)
+    zb, zt = lo + (0.001 if below else 0.0), hi - (0.001 if above else 0.0)
+
+    def solids(g, color):
+        got = []
+        for pc in _polys_to_pieces(g):
+            got += _faces(W.solid(pc, zb, zt), color)
+        return got
+
+    def zone(poly) -> tuple:
+        """(faces, joists, their m, rim m, around holes m, insulation m³,
+        span) of one zone."""
+        bi: dict = {}
+        rim, joists, fill, v, sp = joist_layout(
+            poly, fr, s.get("jdir") == "turn", bi)
+        if isinstance(s.get("_parts"), list):   # (the sections, 4c)
+            s["_parts"].append({"wood": [rim, joists], "fill": fill,
+                                "v": v, "lo": zb, "hi": zt})
+        faces = []
+        if LV.STUDS not in keys:
+            faces += solids(rim, JOIST_COLOR) + solids(joists, JOIST_COLOR)
+        if fr["fill"] == "insulation" and LV.FILL not in keys:
+            faces += solids(fill, FR.FILL_COLOR)
+        js = [q for q in getattr(joists, "geoms", [joists])
+              if q.geom_type == "Polygon" and not q.is_empty]
+        return (faces, len(js), sum(q.area for q in js) / fr["w"],
+                Polygon(poly.exterior).length,
+                sum(2 * Polygon(h).buffer(fr["w"], join_style=2).length
+                    for h in poly.interiors),
+                fill.area * (hi - lo) if fr["fill"] == "insulation" else 0.0,
+                sp, bi.get("blocking_m", 0.0))
+    n = 0
+    jm = rim_m = head_m = fill_v = span = block_m = 0.0
+    for pc in parts:
+        try:
+            poly = Polygon(pc["outer"], pc.get("holes") or []).buffer(0)
+        except Exception:  # noqa: BLE001 — a piece less
+            continue
+        if poly.is_empty or poly.area < 1e-4:
+            continue
+        for z in floor_zones(poly):
+            got = zone(z)
+            out += got[0]
+            n += got[1]
+            jm += got[2]
+            rim_m += got[3]
+            head_m += got[4]
+            fill_v += got[5]
+            span = max(span, got[6])
+            block_m += got[7]
+    if cnt is not None:
+        cnt.update(joists=n, joist_m=jm, rim_m=rim_m, header_m=head_m,
+                   blocking_m=block_m,
+                   fill=fill_v, span=span, depth=hi - lo, kind=fr["kind"])
+    return out
 
 
 def _clip_pieces(parts: list, poly, keep: bool) -> list:
@@ -2933,8 +4402,10 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
         # the ends' heights, flush with the walls joined there (his test,
         # 2026-11-01 — a step at the corner); over a lower wall's corner
         # its top runs on to the far face (corner_caps)
-        w = dict(w, _span=W.clear_span(w, pieces,
-                                       {c["end"] for c in caps}))
+        # — a top read off the roof (roof_tops): on to both far faces, the
+        # roof's slope with it (a level corner stood 8 cm into the eave)
+        own = {"A", "B"} if w.get("_roof_top") else {c["end"] for c in caps}
+        w = dict(w, _span=W.clear_span(w, pieces, own))
     b = z0 + float(w.get("base", 0.0)) - drop
     top = under if w.get("height", "level") == "level" \
         else z0 + float(w["height"])
@@ -2942,10 +4413,15 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
         # its own top: built up to its highest point over its whole plan
         # (a corner's mitre runs past its end, the slope with it), then
         # cut under it (W.topped)
+        # — its PEAK too: a gable's ridge is mid-wall, at no corner of its
+        # plan (a top read off a roof keeps «height: level»: a framed wall
+        # with its layers stopped at the eave, the triangle left open —
+        # the showcase house, 2026-11-03)
         seg = W.drawn(w)
-        top = max([top] + [z0 + W.top_h(w, (p[0] - seg.p0[0]) * seg.u[0]
-                                        + (p[1] - seg.p0[1]) * seg.u[1])
-                           for pc in pieces for p in pc["outer"]])
+        top = max([top, z0 + W.top_peak(W.top_of(w))]
+                  + [z0 + W.top_h(w, (p[0] - seg.p0[0]) * seg.u[0]
+                                  + (p[1] - seg.p0[1]) * seg.u[1])
+                     for pc in pieces for p in pc["outer"]])
     if top - b < 0.01:
         return None
     # a RAISED wall's doors and windows go up with it (László #65): fitted
@@ -2970,7 +4446,9 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
         return curtain.faces(w, pieces, z0, b, top, ops), made
     made = []
     seg = W.centre(w)
-    if len(W.layers_of(w)) > 1:          # its LAYERS (0.15.0)
+    from . import framing as FR
+    if len(W.layers_of(w)) > 1 or FR.frame_of(w) is not None:
+        # its LAYERS (0.15.0) — or a LIGHT-FRAMED core (framing.py)
         faces = layered_faces(w, pieces, seg, ops, z0, b, top, drop > 0)
     elif ops:
         faces = [f for pc in pieces
@@ -2986,6 +4464,10 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
         faces = W.topped(faces, w, z0)
     if caps and seg.kind == "line":
         faces = CC.joined(faces, caps)
+    hid = LV.indexes(W.layers_of(w), w.get("_hide"))
+    if hid and len(W.layers_of(w)) > 1:     # (a corner cap's hidden layer)
+        faces = [f for f in faces if layer_of_color(
+            f.get("color") if isinstance(f, dict) else None) not in hid]
     for o in ops:
         parts = opening_parts(o, seg, z0, w, top)
         if parts:
@@ -3019,14 +4501,50 @@ def layered_faces(w: dict, pieces, seg, ops, z0: float, b: float,
     to the window (2026-11-01, his photo: the core's colour showed in
     every window): outside the frame the outer layer's, inside it the
     inner one's; the layer the frame goes through is cut at it. The lines
-    between them in the reveal are hidden (seams.reveal_edges)."""
+    between them in the reveal are hidden (seams.reveal_edges).
+
+    A LIGHT-FRAMED core (framing.py, 2026-11-02): its studs, plates,
+    headers and the insulation between — none of its faces against a
+    finish (the finish keeps its own: an empty cavity shows the board).
+
+    Its layers HIDDEN in the 3D (``_hide``, layerview.py — the eye): none
+    of their faces, the others where they are; a joint the hidden one kept
+    is kept by its visible neighbour (no hole), a reveal it lent its finish
+    to wears the layer's own; a framed core's studs / insulation each on
+    its own."""
+    from . import framing as FR
     out = []
     bands = W.layer_bands(w)
     last = len(bands) - 1
+    hide = set(w.get("_hide") or ())
+    hid = LV.indexes(W.layers_of(w), hide)
+    core = next((i for i, la in enumerate(W.layers_of(w))
+                 if la["role"] == "core"), 0)
+    fr = FR.frame_of(w)
     # the outer layer's side of the centre line (the frame's plane)
     outer = -1 if (bands[0][0] + bands[0][1]) / 2 < 0 else 1
+    # (a joint whose finish is hidden: the studs' faces on it are seen)
+    joints = [e for e, n in ((W.shared_edge(w, core), core - 1),
+                             (W.shared_edge(w, core + 1), core + 1))
+              if e is not None and n not in hid]
     for pc in pieces:
-        for i, part in W.layer_pieces(w, pc):
+        lp = W.layer_pieces(w, pc)
+        frames = {k: FR.faces(w, part, seg, ops, z0, b, top,
+                              layer_color(i), dropped, joints)
+                  for k, (i, part) in enumerate(lp)
+                  if fr is not None and i == core}
+        framed = bool(frames) and all(v is not None
+                                      for v in frames.values())
+        for k, (i, part) in enumerate(lp):
+            if framed and k in frames:
+                out += [f for f in frames[k]
+                        if not f.get("on_joint")
+                        and not any(_on_offset(f, seg, e) for e in joints)
+                        and not (LV.FILL if FR.is_fill(f.get("color"))
+                                 else LV.STUDS) in hide]
+                continue
+            if i in hid:                    # its eye off: not built
+                continue
             if ops and seg.kind == "line":
                 raw = wall_with_openings(part, seg, ops, z0, b, top, dropped,
                                          split_c=0.0,
@@ -3034,11 +4552,14 @@ def layered_faces(w: dict, pieces, seg, ops, z0: float, b: float,
             else:
                 raw = W.solid(part, b, top)
             edge = W.shared_edge(w, i + 1)          # the next layer keeps it
-            if edge is not None:
+            if edge is not None and not (framed and i + 1 == core) \
+                    and i + 1 not in hid:           # (…unless it is hidden)
                 raw = [f for f in raw if not _on_offset(f, seg, edge)]
             for f in raw:
                 side = f.get("reveal") if isinstance(f, dict) else None
                 j = i if side is None else (0 if side == outer else last)
+                if j in hid:
+                    j = i
                 out += _faces([f], layer_color(j))
     return out
 
@@ -3136,6 +4657,8 @@ def walls_live(doc: dict, elevations, wall_ids, openings: list,
     dict kept through one drag of a door's / window's bar — the level's
     joins and drops (20 ms of 61 walls) read once, while its walls and
     slabs stay as they are (0.15.0, C2)."""
+    # (a framed wall at a pitched roof's gable end: up to the roof)
+    doc = with_roof_tops(doc, elevations, wall_ids)
     info = levels_info(doc, elevations)
     want = set(wall_ids)
     out = {}
@@ -3152,23 +4675,31 @@ def walls_live(doc: dict, elevations, wall_ids, openings: list,
         if cuts is None:
             cuts = flight_cuts(doc, elevations)
         opened = slab_openings(doc.get("structure") or [], lid, cuts)
-        sig = (repr(mine), repr(slabs), li["slab"], li["z0"], repr(opened))
+        beams = [e for e in doc.get("structure") or []
+                 if e.get("type") == "beam" and e["level"] == lid]
+        sig = (repr(mine), repr(slabs), li["slab"], li["z0"], repr(opened),
+               repr(beams))
         got = cache.get(lid) if cache is not None else None
         if got is not None and got[0] == sig:
-            plans, drops, caps = got[1], got[2], got[3]
+            plans, drops, caps, fix = got[1], got[2], got[3], got[4]
         else:
             plans, found = W.corners(mine)
             drops = wall_drops(mine, plans, slabs, li["slab"],
                                _depth_under(doc, info, lid), opened,
                                _has_below(info, lid))
             caps = CC.caps(mine, plans, found, li["z0"], li["under"])
+            fix = frame_marks(doc, lid, mine, plans)     # (4a)
             if cache is not None:
-                cache[lid] = (sig, plans, drops, caps)
+                cache[lid] = (sig, plans, drops, caps, fix)
         if runs is None:
             runs = ramp_runs(doc, elevations)
         for w in mine:
             if w["id"] in want:
-                out[w["id"]] = wall_parts(w, plans.get(w["id"]), openings,
+                if w["id"] in fix:
+                    w = dict(w, _fix=fix[w["id"]])
+                # (its layers hidden in the 3D — layerview.py)
+                out[w["id"]] = wall_parts(LV.mark(doc, "wall", w),
+                                          plans.get(w["id"]), openings,
                                           li["z0"], li["under"],
                                           drops.get(w["id"], 0.0), runs,
                                           caps.get(w["id"], ()))
@@ -3205,6 +4736,55 @@ def elements_live(doc: dict, elevations, ids) -> dict:
     return out
 
 
+def frame_marks(doc: dict, lid: str, mine: list, plans: dict) -> dict:
+    """{wall id: [(s0, s1)]}: the studs of its own each framed wall of the
+    level ``lid`` gets where a wall meets it in a T or a beam's end bears
+    on it (framing.marks — PLANO_ESTRUTURA_LEVE_FASE4 4a). The 3D, the
+    quantities and the sheets all read it, so they show the same studs."""
+    from . import framing as FR
+    if not any(FR.frame_of(w) is not None for w in mine):
+        return {}
+    beams = [e for e in doc.get("structure") or []
+             if e.get("level") == lid and e.get("type") == "beam"
+             and why_not(e) is None]
+    try:
+        return FR.marks(mine, plans, beams)
+    except Exception:  # noqa: BLE001 — the frame as before, never a crash
+        return {}
+
+
+def _sill_on_masonry(walls: list, mine: list, plans: dict, order: list,
+                     lid: str) -> set:
+    """The wood-framed walls of a level whose BOTTOM PLATE lies on concrete
+    or masonry (PLANO_PISOS_BARROTES D8 — a sill plate, pressure-treated):
+    none of the walls of the level under them framed where they stand (a
+    slab on the ground, a block stem wall, a concrete wall); over a framed
+    wall the plate is a plain one."""
+    from . import framing as FR
+    wood = [w for w in mine if (FR.frame_of(w) or {}).get("kind") == "wood"]
+    if not wood:
+        return set()
+    i = order.index(lid) if lid in order else 0
+    under = [w for w in walls if i > 0 and w["level"] == order[i - 1]
+             and FR.frame_of(w) is not None]
+    if not under:
+        return {w["id"] for w in wood}
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+        below = unary_union([Polygon(pc["outer"]).buffer(0)
+                             for pcs in W.plan(under).values() for pc in pcs])
+        out = set()
+        for w in wood:
+            g = unary_union([Polygon(pc["outer"]).buffer(0)
+                             for pc in plans.get(w["id"]) or ()])
+            if g.is_empty or g.intersection(below).area < 0.5 * g.area:
+                out.add(w["id"])
+        return out
+    except Exception:  # noqa: BLE001 — plain plates, as before
+        return set()
+
+
 def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
     """[{"kind", "id", "name", "level", "faces"}] for every wall and
     structural element of the building, at its true heights. ``only``:
@@ -3215,6 +4795,8 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
 
     def skip(e) -> bool:
         return only is not None and e["id"] not in only
+    # (a framed wall at a pitched roof's gable end: up to the roof)
+    doc = with_roof_tops(doc, elevations)
     info = levels_info(doc, elevations)
     out = []
     walls = doc.get("walls") or []
@@ -3262,10 +4844,21 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                     else unary_union([cutter, slot])
             except Exception:  # noqa: BLE001 — the slab whole, as before
                 pass
+        sill = _sill_on_masonry(walls, mine, plans, order, lid)
+        # (T / beam studs, 4a — only when one of its framed walls is built:
+        # a guard / a glass grid dragged builds none of them)
+        fix = frame_marks(doc, lid, mine, plans) if any(
+            not skip(w) and w.get("frame") for w in mine) else {}
         for w in mine:
             if skip(w):
                 continue
-            made = wall_parts(w, plans.get(w["id"]), openings, z0, under,
+            if w["id"] in sill:              # (its bottom plate treated, D8)
+                w = dict(w, _treated=True)
+            if w["id"] in fix:
+                w = dict(w, _fix=fix[w["id"]])
+            # (its layers hidden in the 3D: the eye — layerview.py)
+            made = wall_parts(LV.mark(doc, "wall", w), plans.get(w["id"]),
+                              openings, z0, under,
                               drops.get(w["id"], 0.0), runs,
                               caps.get(w["id"], ()))
             if made is None:
@@ -3365,12 +4958,17 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                     cut = None
                 if cut is not None and not cut.is_empty:
                     parts = trim_slab(parts, cut)
-            if len(slab_layers(s)) > 1:
+            if len(slab_layers(s)) > 1 or slab_frame(s) is not None:
                 if wallfoot is None:
                     wallfoot = walls_footprint(plans)
                     rooms = level_rooms(doc, lid)
-                main, floors = slab_layered_faces(s, parts, top, wallfoot,
-                                                  rooms)
+                # its JOISTS inside the outside walls that go down through
+                # it (PLANO_PISOS_BARROTES D5 — the rim at their inner face)
+                rimcut = _outside_cut(mine, plans, drops) \
+                    if slab_frame(s) is not None else None
+                main, floors = slab_layered_faces(LV.mark(doc, "slab", s),
+                                                  parts, top, wallfoot,
+                                                  rooms, rimcut)
                 out.append(_el(s, lid, main))
                 # each room's floor its own piece: «Floor · Kitchen», its
                 # own material (materials.py, kind «floor»). A group of the
@@ -3423,7 +5021,8 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
         wall_t = max((float(w["t"]) for w in mine), default=0.20)
         topped = [w for w in mine if W.top_of(w) is not None]
         for r in (e for e in els if e["type"] == "roof" and not skip(e)):
-            rf = roof_faces(r, roof_base(r, li), wall_t)
+            rf = roof_faces(LV.mark(doc, "roof", r), roof_base(r, li),
+                            wall_t)
             if topped and r.get("kind") not in ("flat", "hidden"):
                 rf = _off_own_tops(rf, topped)
             out.append(_el(r, lid, rf))

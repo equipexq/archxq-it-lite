@@ -1266,20 +1266,32 @@ def outer_loop(pieces) -> list | None:
 
 #: ArchXQ's look at every command the host runs (edits.py): fn(history, cmd)
 _AFTER_COMMAND = {"fn": None}
+#: …and just BEFORE it runs (an Explode of a wall with layers hidden in
+#: the 3D: made whole first — layerview.py)
+_BEFORE_COMMAND = {"fn": None}
 
 
-def watch_commands(fn) -> None:
+def watch_commands(fn, before=None) -> None:
     """``fn(history, cmd)`` runs after every command the host's history
     executes (its Move, Rotate, Copy… on ArchXQ's elements are adopted
-    there). The class is wrapped once — a new document's history too —
-    and ``fn=None`` takes ArchXQ out again (the wrapper stays, idle)."""
+    there); ``before(history, cmd)`` just before it. The class is wrapped
+    once — a new document's history too — and ``fn=None`` takes ArchXQ
+    out again (the wrapper stays, idle)."""
     from core.history import History
     _AFTER_COMMAND["fn"] = fn
+    _BEFORE_COMMAND["fn"] = before
     if getattr(History.execute, "_axq", False):
         return
     orig = History.execute
 
     def execute(self, cmd, *a, **kw):
+        b = _BEFORE_COMMAND["fn"]
+        if b is not None:
+            try:
+                b(self, cmd)
+            except Exception:  # noqa: BLE001 — never break the host's undo
+                import traceback
+                traceback.print_exc()
         out = orig(self, cmd, *a, **kw)
         f = _AFTER_COMMAND["fn"]
         if f is not None:
@@ -1417,6 +1429,46 @@ def commit_some(viewport, key: str, doc: dict, elevations, level_layer_of,
         [_SwapSome(), SetPluginDataCommand(key, doc)]))
     viewport.update()
     return doc
+
+
+def whole_meshes(viewport, doc: dict, elevations, groups) -> list:
+    """[(group, its element built WHOLE)] for the groups of walls / slabs
+    with layers hidden in the 3D (layerview.py, his OK 02/11): an Explode
+    and a sheet's view see them whole. Painted as built."""
+    from . import layerview as LV
+    from . import materials
+    from . import structure as S
+    if not doc.get("hidden_layers"):
+        return []
+    els = {e["id"]: ("wall", e) for e in doc.get("walls") or ()}
+    els.update({e["id"]: ("slab", e) for e in doc.get("structure") or ()
+                if e.get("type") == "slab"})
+    want = []
+    for g in groups:
+        r = _rec(g)
+        k, el = els.get(r.get("id"), (None, None))
+        if el is not None and kind_of(g) == k \
+                and LV.hidden_of(doc, k, el):
+            want.append((g, r))
+    if not want:
+        return []
+    built = S.build(LV.show_all(doc), elevations,
+                    only={r["id"] for _g, r in want})
+    out = []
+    for g, r in want:
+        e = next((e for e in built if e["id"] == r["id"]
+                  and e["kind"] == kind_of(g)
+                  and e.get("floor") == r.get("floor")), None)
+        if e is None:
+            continue
+        m = mesh_of(e["faces"])
+        whole = type(g)(m, name=g.name)
+        if e.get("floor"):
+            materials.paint(viewport.scene, whole, "floor", e["floor"], doc)
+        else:
+            materials.paint(viewport.scene, whole, e["kind"], e["id"], doc)
+        out.append((g, whole.mesh))
+    return out
 
 
 def mesh_of(faces, hide=()):

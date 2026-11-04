@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-__version__ = "0.11.1-lite"
+__version__ = "0.11.2-lite"
 
 _instance = None
 

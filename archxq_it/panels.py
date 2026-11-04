@@ -139,6 +139,26 @@ class SideStrip(QFrame):
         except RuntimeError:            # gone meanwhile (reload)
             pass
 
+    # the «Building elements» under it follow its size and its showing: it
+    # was placed by the size measured BEFORE _fit — the title's alone — and
+    # stayed over the methods (his screen, 2026-11-03: a new project, then
+    # Terrain › Draw plot under «Building elements»)
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._relayout_soon()
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        self._relayout_soon()
+
+    def _relayout_soon(self) -> None:
+        def go():
+            try:
+                self.owner.layout_floating()
+            except Exception:  # noqa: BLE001 — (while being built / torn down)
+                pass
+        QTimer.singleShot(0, go)
+
     def _guide(self, key: str) -> None:
         from .guide import open_guide
         open_guide(key, self.window())

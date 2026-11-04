@@ -1,5 +1,24 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.11.2
+
+**A clear «＋ New level» button, and excavations that start at the right depth.** Also: windows that free the memory once closed.
+
+- **NEW: «＋ New level» in the levels strip** — a clear button in place of
+  the small «+». It opens the level's window, where «New level» now comes
+  first: **＋ Level on top** (over the highest level) or **＋ Basement**
+  (under the lowest one), each as high as its neighbour. The window **stays
+  open** after each one, so you can add the next without opening it again.
+- **Excavations start at the right depth** — when the project has
+  basements, a new excavation's bottom is set under the lowest one by
+  default (otherwise 3 m below ground, as before). The bottom you pick
+  yourself is kept.
+- **«No plot yet» shows by the mouse** — trying to draw an excavation or a
+  fill before the plot now says so in a balloon by the cursor (and in the
+  status bar), not only in the status bar.
+- **Closed windows are freed from memory** — after many edits, the
+  windows you had closed are now released as new ones open.
+
 ## 0.11.1
 
 **Hiding works again on IngeTrazo 0.5.10 and newer (0.5.11, 0.6.0):**

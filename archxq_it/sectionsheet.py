@@ -20,8 +20,10 @@ import datetime
 import math
 
 from . import docstyle as DS
+from . import framing as FR
 from . import plansheet as PS
 from . import structure as S
+from . import walls as W
 
 FOOT_M = 1.0              # shown under the lowest floor (footings, ground)
 TOP_M = 0.4               # over the highest point
@@ -184,6 +186,89 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     pc.rect("border", bx0, by0, bx1, by1, "border")
     pc.items.append(dict(view, key="view"))
     pc.items[-1]["kind"] = "view"
+
+    # --- light-framed walls the cut crosses, at 1:50 or closer: plates and
+    # headers with their X, the studs outlined, the insulation's zigzag —
+    # their cut's fill taken off (phase 3b)
+    if G["plane"] and n <= FR.SYMBOL_SCALE:
+        def PG(p):
+            return (X(p[0] * rx + p[1] * ry), Y(p[2]))
+        qn = G["plane"]["normal"][:2]
+        ops_all = doc.get("openings") or []
+        for lid, li in info.items():
+            walls = [w for w in doc.get("walls") or []
+                     if w.get("level") == lid]
+            framed = [w for w in walls if FR.frame_of(w) is not None]
+            if not framed:
+                continue
+            plans = W.plan(walls)
+            fix = S.frame_marks(doc, lid, walls, plans)
+            z0 = li["z0"]
+            # (a sill plate on concrete: its anchor bolt — 4c, D8)
+            sill = S._sill_on_masonry(doc.get("walls") or [], walls, plans,
+                                      [lv["id"] for lv in doc["levels"]],
+                                      lid)
+            # (where it is built: down through its slab — its plates there)
+            try:
+                drops = S.level_drops(doc, elevations, lid, walls, plans)
+            except Exception:  # noqa: BLE001 — from its floor, as before
+                drops = {}
+            for w in framed:
+                pcs = plans.get(w["id"])
+                if not pcs:
+                    continue
+                if w["id"] in sill:
+                    w = dict(w, _treated=True)
+                if w["id"] in fix:                   # (T / beam studs, 4a)
+                    w = dict(w, _fix=fix[w["id"]])
+                b = z0 + float(w.get("base", 0.0)) - drops.get(w["id"], 0.0)
+                top = li["under"] if w.get("height", "level") == "level" \
+                    else z0 + float(w["height"])
+                ops = [f for f in (S.fitted(o, w, ops_all, top - z0)
+                                   for o in ops_all
+                                   if o["wall"] == w["id"])
+                       if f is not None]
+                got = FR.section_symbols(w, pcs, ops, z0, b, top,
+                                         (qx, qy), qn)
+                if not got:
+                    continue
+                for j, poly in enumerate(got["blank"]):
+                    pc.items.append({"kind": "fill",
+                                     "key": f"frame:{w['id']}:b{j}",
+                                     "poly": [PG(p) for p in poly],
+                                     "color": "#ffffff", "opacity": 1.0})
+                for j, (a, c) in enumerate(got["lines"]):
+                    pc.line(f"frame:{w['id']}:l{j}", PG(a), PG(c),
+                            "symbol")
+        # a roof's rafters and insulation (PLANO_TELHADO_CAMADAS 2c)
+        for r in doc.get("structure") or []:
+            if r.get("type") != "roof" or r.get("level") not in info:
+                continue
+            got = S.roof_section_symbols(doc, elevations, r, (qx, qy), qn)
+            if not got:
+                continue
+            for j, poly in enumerate(got["blank"]):
+                pc.items.append({"kind": "fill",
+                                 "key": f"rframe:{r['id']}:b{j}",
+                                 "poly": [PG(p) for p in poly],
+                                 "color": "#ffffff", "opacity": 1.0})
+            for j, (a, c) in enumerate(got["lines"]):
+                pc.line(f"rframe:{r['id']}:l{j}", PG(a), PG(c), "symbol")
+        # a floor's joists and insulation (PLANO_PISOS_BARROTES D9)
+        for e in doc.get("structure") or []:
+            if e.get("type") != "slab" or e.get("level") not in info \
+                    or S.slab_frame(e) is None:
+                continue
+            got = S.slab_section_symbols(doc, elevations, e, (qx, qy), qn)
+            if not got:
+                continue
+            for j, poly in enumerate(got["blank"]):
+                pc.items.append({"kind": "fill",
+                                 "key": f"sframe:{e['id']}:b{j}",
+                                 "poly": [PG(p) for p in poly],
+                                 "color": "#ffffff", "opacity": 1.0})
+            for j, (a, c) in enumerate(got["lines"]):
+                pc.line(f"sframe:{e['id']}:l{j}", PG(a), PG(c), "symbol")
 
     # --- level marks, both sides (or the left) --------------------------------------
     marks = show.get("sec_marks", "both")

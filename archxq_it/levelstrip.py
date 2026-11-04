@@ -5,7 +5,8 @@ The building's levels top → bottom, as a section reads: floors, the ground
 floor, basements, and the Terrain at the foot. Each row: name · ✎ ·
 elevation · ghost (that level in light blue in the plan) · eye. The level you work on is lit; a click on another makes it current.
 The ✎ or a double-click opens the level's own window (name,
-height, a level above / below, delete). «+» adds a level on top.
+height, a new level on top / a basement, delete). «＋ New level» opens
+that window for the level you are on.
 
 Only levels live here — the outliner (every item of the model) is a piece
 of its own.
@@ -183,12 +184,17 @@ class LevelStrip(QFrame):
         title.setObjectName("axq_title")
         head.addWidget(title)
         head.addStretch()
+        # «＋ New level» (his call, 2026-11-03: the bare «+» went unseen, it
+        # made a level on top only, blind): a button of its own colour that
+        # opens the level's window — a level on top or a basement there
         add = QToolButton()
         add.setObjectName("axq_lvadd")
-        add.setText("+")
-        add.setToolTip("Add a level on top")
+        add.setText("＋ New level")
+        add.setToolTip("A new level — on top of the building or a basement "
+                       "(opens the level's window)")
         add.setFocusPolicy(Qt.NoFocus)
-        add.clicked.connect(owner.on_add_floor)
+        add.setCursor(Qt.PointingHandCursor)
+        add.clicked.connect(owner.on_new_level)
         head.addWidget(add)
         lay.addLayout(head)
         self.scroll = QScrollArea()

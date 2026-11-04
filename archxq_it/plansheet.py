@@ -21,6 +21,7 @@ import datetime
 import math
 
 from . import docstyle as DS
+from . import framing as FR
 from . import structure as S
 from . import walls as W
 
@@ -258,6 +259,61 @@ def opening_types(openings: list[dict]) -> tuple[dict, list]:
 
 
 # ---- paper and scale ------------------------------------------------------------------
+def framing_plan(doc: dict, lid: str) -> list:
+    """The FLOOR FRAMING a plan of level ``lid`` shows (4c): the joists of
+    the floor above it — [("dash", a, b)] each joist's axis in plan,
+    [("arrow", a, b)] along them over each zone (its span), [("text", at,
+    "Joists 4×24 @ 40")] — empty: that floor is solid (or none)."""
+    from shapely.geometry import Polygon
+    from .docs import _s
+    order = [lv["id"] for lv in doc.get("levels") or []]
+    if lid not in order or order.index(lid) + 1 >= len(order):
+        return []
+    up = order[order.index(lid) + 1]
+    out = []
+    for s in doc.get("structure") or []:
+        if s.get("type") != "slab" or s.get("level") != up:
+            continue
+        fr = S.slab_frame(s)
+        if fr is None or S.why_not(s) is not None:
+            continue
+        cnt = S.slab_count(s)
+        depth = cnt.get("depth", 0.0)
+        try:
+            poly = Polygon([tuple(p) for p in s["corners"]],
+                           [[tuple(p) for p in h]
+                            for h in s.get("holes") or []]).buffer(0)
+        except Exception:  # noqa: BLE001
+            continue
+        for q in getattr(poly, "geoms", [poly]):
+            if q.geom_type != "Polygon" or q.is_empty:
+                continue
+            for z in S.floor_zones(q):
+                _rim, joists, _f, v, span = S.joist_layout(
+                    z, fr, s.get("jdir") == "turn")
+                for jq in getattr(joists, "geoms", [joists]):
+                    if jq.geom_type != "Polygon" or jq.is_empty:
+                        continue
+                    rr = list(jq.minimum_rotated_rectangle.exterior.coords)
+                    e0 = math.dist(rr[0], rr[1])
+                    e1 = math.dist(rr[1], rr[2])
+                    if e0 >= e1:      # its axis: between the short sides' mids
+                        a = ((rr[1][0] + rr[2][0]) / 2, (rr[1][1] + rr[2][1]) / 2)
+                        b = ((rr[3][0] + rr[0][0]) / 2, (rr[3][1] + rr[0][1]) / 2)
+                    else:
+                        a = ((rr[0][0] + rr[1][0]) / 2, (rr[0][1] + rr[1][1]) / 2)
+                        b = ((rr[2][0] + rr[3][0]) / 2, (rr[2][1] + rr[3][1]) / 2)
+                    out.append(("dash", a, b))
+                c = z.representative_point()
+                h = min(span, 3.0) / 2 * 0.8
+                out.append(("arrow", (c.x - v[0] * h, c.y - v[1] * h),
+                            (c.x + v[0] * h, c.y + v[1] * h)))
+                out.append(("text", (c.x, c.y), _s(
+                    "Joists {w}×{d} @ {s}", w=f"{fr['w'] * 100:.0f}",
+                    d=f"{depth * 100:.0f}", s=f"{fr['s'] * 100:g}")))
+    return out
+
+
 def layout(paper: str, style: dict) -> dict:
     """The page's parts (mm): border, side column, drawing area, title
     strip."""
@@ -541,6 +597,33 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             "target": [CX, CY, z0 + cut], "cut_z": z0 + cut, "level": lid}
     items.append(dict(view, kind="view", key="view"))
 
+    # --- light-framed walls at 1:50 or closer: the studs with their X /
+    # C, the insulation's zigzag — their cut's fill taken off (phase 3b)
+    if n <= FR.SYMBOL_SCALE:
+        plans = W.plan(walls)
+        li = info[lid]
+        fix = S.frame_marks(doc, lid, walls, plans)  # (T / beam studs, 4a)
+        for w in walls:
+            pcs = plans.get(w["id"])
+            if not pcs or FR.frame_of(w) is None:
+                continue
+            if w["id"] in fix:
+                w = dict(w, _fix=fix[w["id"]])
+            b = z0 + float(w.get("base", 0.0))
+            top = li["under"] if w.get("height", "level") == "level"                 else z0 + float(w["height"])
+            ops = [f for f in (S.fitted(o, w, openings, top - z0)
+                               for o in openings if o["wall"] == w["id"])
+                   if f is not None]
+            got = FR.plan_symbols(w, pcs, ops, z0, b, top, z0 + cut)
+            if not got:
+                continue
+            for j, poly in enumerate(got["blank"]):
+                items.append({"kind": "fill", "key": f"frame:{w['id']}:b{j}",
+                              "poly": [P(p) for p in poly],
+                              "color": "#ffffff", "opacity": 1.0})
+            for j, (a, c) in enumerate(got["lines"]):
+                line(f"frame:{w['id']}:l{j}", P(a), P(c), "symbol")
+
     # --- rooms: fill, name, area, level ------------------------------------------
     rooms = spaces.of_level(doc, lid) if show.get("rooms", True) else []
     lvl_txt = level_text(z0 - ground, style)
@@ -591,6 +674,46 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                      (pa[0] + ux * e, pa[1] + uy * e), "symbol", follow=True)
                 t, i = e + 1.0, i + 1
 
+    # --- the FLOOR FRAMING over it, at 1:50 or closer (PLANO_ESTRUTURA_LEVE_
+    # FASE4 4c): the joists of the floor above, dashed (over the cut, as
+    # anything above), one line each on its axis, and per zone the joists'
+    # size and spacing on an arrow along them — the plan a builder frames
+    # the floor from
+    if n <= FR.SYMBOL_SCALE:
+        try:
+            for k, (key, a, b) in enumerate(framing_plan(doc, lid)):
+                if key == "dash":
+                    pa, pb = P(a), P(b)
+                    L_ = math.dist(pa, pb)
+                    if L_ < 1e-6:
+                        continue
+                    ux, uy = (pb[0] - pa[0]) / L_, (pb[1] - pa[1]) / L_
+                    t, i = 0.0, 0
+                    while t < L_:          # 3 mm strokes, 1.5 mm apart
+                        e = min(t + 3.0, L_)
+                        line(f"joist:{k}:{i}",
+                             (pa[0] + ux * t, pa[1] + uy * t),
+                             (pa[0] + ux * e, pa[1] + uy * e), "symbol",
+                             follow=True)
+                        t, i = e + 1.5, i + 1
+                elif key == "arrow":
+                    pa, pb = P(a), P(b)
+                    line(f"jarrow:{k}", pa, pb, "symbol", follow=True)
+                    L_ = math.dist(pa, pb) or 1.0
+                    ux, uy = (pb[0] - pa[0]) / L_, (pb[1] - pa[1]) / L_
+                    for tip, sg in ((pa, 1.0), (pb, -1.0)):
+                        for side in (1.0, -1.0):
+                            line(f"jarrow:{k}:{sg}:{side}", tip,
+                                 (tip[0] + sg * ux * 2.0 - side * uy * 0.8,
+                                  tip[1] + sg * uy * 2.0 + side * ux * 0.8),
+                                 "symbol", follow=True)
+                elif key == "text":
+                    px, py = P(a)
+                    text(f"jtext:{k}", px, py + 0.6, b, "area", "center",
+                         follow=True)
+        except Exception:  # noqa: BLE001 — the plan without it
+            pass
+
     # --- doors' leaves and swings (the cut draws the jambs) ----------------------
     byid = {w["id"]: w for w in walls}
     for o in openings:
@@ -614,6 +737,8 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     room_polys = [r["poly"] for r in rooms]
     if show.get("tags", True):
         for o in openings:
+            if o["id"] not in tags:     # a void: no door / window type
+                continue
             gp = _gap(o, byid[o["wall"]])
             if gp is None:
                 continue

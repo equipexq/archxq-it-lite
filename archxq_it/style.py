@@ -109,9 +109,10 @@ QLabel[axq="lvhidden"] {{ color: #6b7280; }}
 QToolButton[axq="eye"] {{ background: transparent; border: none;
     border-radius: 4px; padding: 2px; }}
 QToolButton[axq="eye"]:hover {{ background: rgba(255,255,255,34); }}
-QToolButton#axq_lvadd {{ color: #9aa5b1; background: transparent;
-    border-radius: 4px; padding: 0 6px; font-size: 15px; }}
-QToolButton#axq_lvadd:hover {{ color: white; background: rgba(255,255,255,30); }}
+QToolButton#axq_lvadd {{ color: #f0a06a; background: rgba(232,116,44,40);
+    border: 1px solid #e8742c; border-radius: 4px; padding: 1px 8px;
+    font-weight: 600; }}
+QToolButton#axq_lvadd:hover {{ color: white; background: #e8742c; }}
 QLineEdit[axq="lvedit"] {{ background: #2c3238; color: white;
     border: 1px solid {BLUE}; border-radius: 3px; padding: 1px 4px; }}
 """

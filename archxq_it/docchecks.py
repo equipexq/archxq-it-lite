@@ -95,7 +95,8 @@ def unify(doc: dict, level_ids: list[str]) -> tuple[dict, int]:
     tags, _rows = PS.opening_types(ops)
     by_tag: dict = {}
     for o in ops:
-        by_tag.setdefault(tags[o["id"]], []).append(o)
+        if o["id"] in tags:             # (a void has no type)
+            by_tag.setdefault(tags[o["id"]], []).append(o)
     changed = 0
     for group in by_tag.values():
         sizes: dict = {}

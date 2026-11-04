@@ -258,8 +258,8 @@ def joined(faces: list, wall_caps: list) -> list:
             continue
         cut = False
         for cp in wall_caps:
-            if _on_diag(loop, cp["diag"]) and _upright(loop):
-                loop = _below(loop, cp["zl"])
+            if loop and _on_diag(loop, cp["diag"]) and _upright(loop):
+                loop = _below(loop, cp["zl"])     # (all above: none left)
                 cut = True
         if cut and not loop:
             continue

@@ -23,6 +23,7 @@ import functools
 import math
 
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer
+from PySide6.QtWidgets import QDialog
 
 from . import compat, edition, model, paintlog
 from . import profiles as PF
@@ -521,6 +522,43 @@ class _HoverOff(QObject):
         return False
 
 
+class _DialogReaper(QObject):
+    """ArchXQ's windows (a wall's, a stair's, a door's…) are made with the
+    main window as parent and were never deleted: each one opened stayed in
+    memory with its tabs and pictures (~20 wall windows after an afternoon,
+    2026-11-01). When a new one shows, those already closed go — by
+    deleteLater, so never under code that still reads them (it runs once
+    the event loop is back)."""
+
+    ROOT = __name__.split(".")[0]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed: list = []
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.ChildPolished:
+            d = event.child()
+            if (isinstance(d, QDialog) and not getattr(d, "_axq_reap", False)
+                    and type(d).__module__.split(".")[0] == self.ROOT):
+                d._axq_reap = True
+                self._reap()
+                d.finished.connect(lambda _r=0, d=d: self.closed.append(d))
+        return False
+
+    def _reap(self) -> None:
+        keep = []
+        for d in self.closed:
+            try:
+                if d.isVisible():             # opened again (exec once more)
+                    keep.append(d)
+                else:
+                    d.deleteLater()
+            except RuntimeError:              # already gone
+                pass
+        self.closed = keep
+
+
 class _LevelsKey(QObject):
     """N shows / hides the levels strip (Blender's N panel) — only when
     nothing is being typed into the measurements box."""
@@ -856,9 +894,12 @@ class ArchXQ:
                                           self.library_fit)
         self.props.library.dyn = self.library_dyn
         # YOUR wall types' cards (0.15.0)
+        # (one with layers hidden in the 3D: «_hidden» — its card says so)
         self.props.library.your_types = lambda key="wall": (
             self._profile_types() if key == "profile"
-            else self.doc().get(f"{key}_types") or [])
+            else [dict(t, _hidden=True)
+                  if t.get("id") in (self.doc().get("hidden_layers") or {})
+                  else t for t in self.doc().get(f"{key}_types") or []])
         self._live_meshes: dict = {}     # groups reshaped while dragging
         self._live_ctx: dict = {}        # a bar's drag: its level's joins
         self._lib_box = QScrollArea()
@@ -945,6 +986,9 @@ class ArchXQ:
         self._space_pan = _SpacePan(self.viewport)
         self.viewport.installEventFilter(self._space_pan)
         self.window.installEventFilter(self._space_pan)
+        # our windows, once closed, deleted when the next one shows
+        self._reaper = _DialogReaper()
+        self.window.installEventFilter(self._reaper)
         # the host's «Clean screen» hides its toolbars and menus — and with
         # them every shortcut on them (O = Orbit: his recording, 2026-10-19,
         # «only the wheel works»): while it is on, its actions are put on
@@ -1007,8 +1051,9 @@ class ArchXQ:
                           # a BLOCK (0.15.0): its bottom over the floor
                           "block": False, "base": 0.0,
                           # its LAYERS (slab layers): one of YOUR types, or
-                          # a ready-made card's stack (None: plain)
-                          "stype": "", "layers": None}
+                          # a ready-made card's stack (None: plain) — and its
+                          # joists (a «By market» card, PLANO_PISOS_BARROTES)
+                          "stype": "", "layers": None, "frame": None}
         self.foot_opts = {"shape": "pads", "w": 1.20, "sw": 0.60, "d": 0.50}
         # low walls & guards (guards.py — Pro): the next one drawn
         #: a room separator: how it is drawn (SEP_SHAPES)
@@ -1061,7 +1106,10 @@ class ArchXQ:
                           "gutter": 0.30,
                           # on the walls, or its eaves at a height of their
                           # own (a lean-to — Badis, 2026-10-18)
-                          "zmode": "walls", "zh": 2.50}
+                          "zmode": "walls", "zh": 2.50,
+                          # its layers and rafters (a «By market» card —
+                          # PLANO_TELHADO_CAMADAS 2c): none, a solid slab
+                          "layers": None, "frame": None}
         # the openings' sizes, per kind (the usual ones to start) — and
         # their trim / stone sill (trim.py: none until picked)
         from .trim import DEFAULTS as TRIM_OPTS
@@ -1205,7 +1253,7 @@ class ArchXQ:
         if hasattr(app, "on_document_closed"):         # IngeTrazo 0.6.0
             app.on_document_closed(self._on_doc_closed)
         # the host's Move / Rotate / Copy on ArchXQ's elements: adopted
-        compat.watch_commands(self._after_command)
+        compat.watch_commands(self._after_command, self._before_command)
         self._adopting = False
         self._stamp_old()
         app.add_overlay(self._overlay)
@@ -1564,7 +1612,28 @@ class ArchXQ:
         compat.flash(self.viewport, f"Finish «{PHASES[prev].label}» first")
         return True
 
+    def _drop_tool(self) -> None:
+        """A phase / element picked: ArchXQ's tool still out goes (back to
+        Select) — its library held the right strip while the top bar said
+        another (his screen, 2026-11-03: Tools › Along a path, then
+        Openings: the Profiles library stayed)."""
+        if compat.ours(getattr(self.viewport, "active_tool", None)):
+            compat.back_to_select(self.viewport)
+
     def go(self, key: str) -> None:
+        # a Tool on (Tools ▾ keeps the phase): a click on any phase — its
+        # own too — leaves it for that phase's first element
+        if self.element in TOOLS.elements and not self._blocked(key):
+            self._drop_tool()
+            if key == self.current:
+                self.element = PHASES[key].elements[0]
+                self.method = None
+                self._sel_at_phase = set(self._lib_picked()[1])
+                self.refresh()
+                if key != "project":
+                    return
+        elif key != self.current and not self._blocked(key):
+            self._drop_tool()
         # the top bar's «Project» opens its window straight away (his ask,
         # 2026-10-08: as the tutorial shows — not a second click on the
         # right) — also when Project is already the phase on
@@ -1602,6 +1671,8 @@ class ArchXQ:
             if self._blocked(phase):
                 return
             self.current = phase
+        if element != self.element:
+            self._drop_tool()             # another element: its tool goes
         self.element = element
         self.method = None
         self._sel_at_phase = set(self._lib_picked()[1])
@@ -1987,8 +2058,14 @@ class ArchXQ:
         choices = [("depth", "Depth below ground")] + \
             [(f"level:{r['id']}", f"Under {r['name']}") for r in under] + \
             [("elev", "At an elevation")]
-        if o["bottom"] not in [c[0] for c in choices]:
-            o["bottom"] = "depth"                         # 3 m: his default
+        # the BEST by default (his rule, 2026-11-03): with basements, the pit
+        # starts under the lowest one — tied to it, it follows its height;
+        # without, 3 m below the ground. A bottom he picks himself is kept
+        basements = [r for r in doc["levels"] if r["kind"] == "basement"]
+        best = f"level:{basements[0]['id']}" if basements else "depth"
+        if not o.get("bottom_picked") or \
+                o["bottom"] not in [c[0] for c in choices]:
+            o["bottom"] = best
         opts = []
         if rect:
             opts.append({"key": "align", "label": "Align", "kind": "choice",
@@ -2084,7 +2161,13 @@ class ArchXQ:
     def start_dig_tool(self, name: str, kind: str = "cut") -> None:
         from . import plottools
         if not self.has_plot(self.doc()):
-            compat.flash(self.viewport, "Draw the plot first")
+            # by the mouse, not only a line in the status bar (his ask,
+            # 2026-11-03: it went unseen)
+            self._say_at_cursor(tr("No plot yet — a fill is drawn inside "
+                                   "it." if kind == "fill" else
+                                   "No plot yet — an excavation is drawn "
+                                   "inside it.") + "\n" +
+                                tr("Draw the plot first: Terrain › Draw plot."))
             return
         cls = getattr(plottools, DIG_TOOLS[name])
         if name == "Ramp":
@@ -2256,6 +2339,8 @@ class ArchXQ:
     def _on_dig_option(self, key: str, value) -> None:
         self._mod_opts()[key] = value
         if key == "bottom":                  # the fields that follow change
+            # his own pick: kept over the default from now on
+            self._mod_opts()["bottom_picked"] = True
             QTimer.singleShot(0, self._refill_options)
         if key == "align":
             tool = getattr(self.viewport, "active_tool", None)
@@ -4393,6 +4478,7 @@ class ArchXQ:
                     opts["ceiling"] = bool(rec.get("ceiling"))
                     opts["stype"] = rec.get("stype") or ""
                     opts["layers"] = rec.get("layers") or None
+                    opts["frame"] = rec.get("frame") or None
                 if key == "street":              # as it was made
                     opts["how"] = "plot" if rec.get("edges") else "axis"
                     opts["align"] = rec.get("align") or "centre"
@@ -4981,6 +5067,41 @@ class ArchXQ:
         self._live_ctx.clear()            # a drag's joins / drops (C2)
 
     # ---- The LIVE WINDOW (livewin.py — PLANO_JANELA_AO_VIVO.md, L2) -------------------
+    def _layer_eyes(self, dlg, el_id: str) -> None:
+        """The EYE on ``dlg``'s layer rows (layerview.py, his OK 02/11): a
+        layer hidden in the 3D at once — the type's (every element of it)
+        or the element's own; one Ctrl+Z each."""
+        if getattr(dlg, "_rows", None) is None:
+            return
+        from . import layerview as LV
+        ui = self
+
+        class _Eyes:
+            def __init__(self) -> None:
+                self.el_id = el_id
+
+            def hidden(self, who) -> set:
+                return LV.hidden(ui.doc(), who)
+
+            def set(self, who, key, off) -> None:
+                ui._layer_eye_commit(dlg, LV.set_key(
+                    ui._live(ui.doc()), who, key, off))
+
+            def show_all(self, who) -> None:
+                ui._layer_eye_commit(dlg, LV.show_all(ui._live(ui.doc()),
+                                                      who))
+        dlg.layer_eye = _Eyes()
+        dlg._build_rows()
+
+    def _layer_eye_commit(self, dlg, doc: dict) -> None:
+        """An eye clicked: rebuilt, one Ctrl+Z — the window's own changes
+        not stored yet drawn again over it (livewin)."""
+        self._live_back()
+        self._commit_all(doc)
+        live = getattr(dlg, "_axq_live", None)
+        if live is not None:
+            live.shown = None
+
     def _live_window(self, dlg, kind: str) -> None:
         """``dlg`` (a wall's / an opening's window) shows its element live:
         ONLY it — the others selected, the other walls of its type, on OK
@@ -5504,6 +5625,30 @@ class ArchXQ:
             self._wall_types_act(changes["_types"], key,
                                  changes.get("_tid"))
             return None
+        if changes.get("_market") and key == "wall":
+            # a market card (markets.py, 2026-11-02): the type put in HIS
+            # types the first time (its own Ctrl+Z), then picked as his
+            from . import markets as MK
+            mk = changes["_market"]
+            ty = MK.find(self.doc().get(K["types"]), mk)
+            if ty is None:
+                doc = self._live(self.doc())
+                types = list(doc.get(K["types"]) or [])
+                ty = MK.new_type(mk, {t["id"] for t in types})
+                if ty is None:
+                    return None
+                doc[K["types"]] = types + [ty]
+                # …with what each layer is made of (the type's look: its
+                # walls wear it; changed in a wall's «Material» as ever)
+                m = dict(doc.get("materials") or {})
+                m["wtype"] = dict(m.get("wtype") or {},
+                                  **{ty["id"]: MK.look(mk)})
+                doc["materials"] = m
+                self._commit_all(doc)
+                compat.flash(self.viewport, tr(
+                    "«{n}» is one of your types now — edit it as yours",
+                    n=ty["name"]) + " — Ctrl+Z undoes it", 6000)
+            changes = {K["opt"]: ty["id"]}
         if changes.get("_newtype"):
             # its window (typedlg, 28/10): the name, the layers, the section
             # large — from the one selected, else a core of the next one's
@@ -5518,6 +5663,7 @@ class ArchXQ:
             ls = [dict(la) for la in (sty or src or {}).get("layers") or []] \
                 or [{"id": "core", "name": "", "t": t, "role": "core"}]
             dlg = TypeDialog(key, None, ls, from_sel=src is not None,
+                             frame=(sty or src or {}).get("frame"),
                              parent=self.window)
             if not dlg.exec():
                 return None
@@ -5525,7 +5671,8 @@ class ArchXQ:
             name, ls, t = got["name"], got["layers"], got["t"]
             tid = uuid.uuid4().hex[:8]
             doc[K["types"]] = list(doc.get(K["types"]) or []) + [
-                {"id": tid, "name": name, "layers": ls, "t": t}]
+                {"id": tid, "name": name, "layers": ls, "t": t,
+                 "frame": got.get("frame")}]
             if src is not None:          # the one it came from is of it
                 doc[K["els"]] = [dict(e, **{rk: tid})
                                  if e["id"] == src["id"] else e
@@ -5607,10 +5754,15 @@ class ArchXQ:
             from .typedlg import TypeDialog
             n = sum(1 for e in doc[K["els"]] if e.get(rk) == tid)
             dlg = TypeDialog(key, ty, None, n=n, parent=self.window)
+            self._layer_eyes(dlg, tid)
             if not dlg.exec():
                 return
+            # (its eyes, clicked while it was open, stay as they were set)
+            doc["hidden_layers"] = dict(self.doc().get("hidden_layers")
+                                        or {})
             got = dlg.result()
-            if (got["name"], got["layers"]) == (ty["name"], ty["layers"]):
+            if (got["name"], got["layers"], got.get("frame")) == (
+                    ty["name"], ty["layers"], ty.get("frame")):
                 return
             ty.update(got)
             if opts.get(K["opt"]) == tid:
@@ -5636,7 +5788,8 @@ class ArchXQ:
             lay = [dict(la) for la in ty["layers"]]
             doc[K["els"]] = [dict({k: v for k, v in e.items() if k != rk},
                                   layers=[dict(la) for la in lay]
-                                  if len(lay) > 1 else None, t=ty["t"])
+                                  if len(lay) > 1 else None, t=ty["t"],
+                                  frame=ty.get("frame"))
                              if e.get(rk) == tid else e
                              for e in doc[K["els"]]]
             if opts.get(K["opt"]) == tid:
@@ -6594,7 +6747,10 @@ class ArchXQ:
         if o.get("stype"):
             return {"stype": o["stype"]}
         if o.get("layers"):
-            return {"layers": [dict(la) for la in o["layers"]]}
+            got = {"layers": [dict(la) for la in o["layers"]]}
+            if o.get("frame"):
+                got["frame"] = dict(o["frame"])
+            return got
         return {}
 
     def _slab_drawn(self, corners) -> None:
@@ -6629,7 +6785,9 @@ class ArchXQ:
                 else 0.0,
                 "pt": o["pt"], "fall": o["fall"], "slopes": o["slopes"],
                 "pauto": o["pauto"], "gutter": o["gutter"],
-                "zmode": o["zmode"], "zh": o["zh"]}
+                "zmode": o["zmode"], "zh": o["zh"],
+                "layers": [dict(la) for la in o.get("layers") or []]
+                or None, "frame": o.get("frame")}
 
     def _roof_drawn(self, corners) -> None:
         self._struct_done([self._roof_rec(corners)])
@@ -6924,12 +7082,17 @@ class ArchXQ:
         text = (tr("On «{level}»: {why} — nothing built.", level=level,
                    why=tr(why)) + "\n"
                 + tr(self.NOTHING_UNDER.get(element, ""))).rstrip()
-        compat.flash(self.viewport, text.replace("\n", " "), 9000)
+        self._say_at_cursor(text)
+
+    def _say_at_cursor(self, text: str, ms: int = 9000) -> None:
+        """A «not yet» said by the mouse, where the eye is (a balloon, no
+        window to close) — and in the status bar too."""
+        compat.flash(self.viewport, text.replace("\n", " "), ms)
         try:
             from PySide6.QtCore import QRect
             from PySide6.QtGui import QCursor
             from PySide6.QtWidgets import QToolTip
-            QToolTip.showText(QCursor.pos(), text, None, QRect(), 9000)
+            QToolTip.showText(QCursor.pos(), text, None, QRect(), ms)
         except Exception:  # noqa: BLE001 — the status bar says it anyway
             pass
 
@@ -7086,10 +7249,17 @@ class ArchXQ:
         group was deleted with the host's own tools (Delete key, eraser):
         they are gone, they must not come back at the next rebuild. (One
         that can't be built has no group, and stays.)"""
+        from . import layerview as LV
         from . import structure as S
         from . import walls as W
         have = compat.built_ids(self.viewport)
         built = doc.get("built")
+        # every eye off: no group because nothing is shown, not deleted
+        shown_off = doc
+        why_wall = lambda r: W.why_not(r) \
+            or LV.nothing_shown(shown_off, "wall", r)
+        why_el = lambda r: S.why_not(r) \
+            or LV.nothing_shown(shown_off, r.get("type") or "slab", r)
         if built is None:               # an older file: the old rule
             if not have:
                 return doc              # nothing built yet: keep it all
@@ -7103,16 +7273,16 @@ class ArchXQ:
             gone = lambda r, why: r["id"] in built and r["id"] not in have \
                 and not why(r)
         doc = dict(doc)
-        doc["walls"] = [w for w in doc["walls"] if not gone(w, W.why_not)]
+        doc["walls"] = [w for w in doc["walls"] if not gone(w, why_wall)]
         from . import autoslabs
         st = doc.get("structure") or []
         # an automatic slab deleted stays away (else the next rebuild made
         # it again)
         off = {autoslabs.key_of(e) for e in st
-               if autoslabs.key_of(e) and gone(e, S.why_not)}
+               if autoslabs.key_of(e) and gone(e, why_el)}
         if off:
             doc["auto_off"] = sorted(set(doc.get("auto_off") or []) | off)
-        doc["structure"] = [e for e in st if not gone(e, S.why_not)]
+        doc["structure"] = [e for e in st if not gone(e, why_el)]
         # an opening goes with its wall; a door / window deleted with the
         # host's tools leaves its HOLE — an Opening (a void), as the screen
         # shows it (his demo, 2026-10-16: he deleted a window to put a
@@ -7829,6 +7999,7 @@ class ArchXQ:
                             picks=[text for text, _ids in picks],
                             types=self.doc().get("slab_types") or [])
         self._mat_tab(dlg, el["type"], el_id)
+        self._layer_eyes(dlg, el_id)
         from . import structure as S
         apply = self._batch_window(dlg, "struct", el_id, self.apply_element,
                                    S.LABEL[el["type"]].lower() + "s",
@@ -7978,10 +8149,11 @@ class ArchXQ:
             # (its id came with it: an Apply then OK updates the same)
             types = [t for t in types if t["id"] != named["id"]]
             types.append({"id": named["id"], "name": named["name"],
-                          "layers": ls, "t": new["t"]})
+                          "layers": ls, "t": new["t"],
+                          "frame": new.get("frame")})   # (its joists, 4b)
             new[key] = named["id"]
         elif new.get(key):
-            types = [dict(t, layers=ls, t=new["t"])
+            types = [dict(t, layers=ls, t=new["t"], frame=new.get("frame"))
                      if t["id"] == new[key] else t for t in types]
         return types
 
@@ -9655,6 +9827,7 @@ class ArchXQ:
             dict(wall, height="level"))), self.window,
                          types=doc.get("wall_types") or [])
         self._mat_tab(dlg, "wall", wall_id)
+        self._layer_eyes(dlg, wall_id)
         apply = self._batch_window(dlg, "wall", wall_id, self.apply_wall,
                                    "walls", lambda: self.edit_wall(wall_id))
         self._in_place(dlg, apply)
@@ -9786,7 +9959,7 @@ class ArchXQ:
             was = new.get("type")
             types = [t for t in types if t["id"] != tid]
             types.append({"id": tid, "name": named["name"], "layers": ls,
-                          "t": new["t"]})
+                          "t": new["t"], "frame": new.get("frame")})
             new["type"] = tid
             named = named["name"]
             # the new type wears the look of the one it came from (31/10)
@@ -9796,7 +9969,7 @@ class ArchXQ:
                 looks[tid] = dict(looks[was])
                 doc["materials"] = dict(m, wtype=looks)
         elif new.get("type"):
-            types = [dict(t, layers=ls, t=new["t"])
+            types = [dict(t, layers=ls, t=new["t"], frame=new.get("frame"))
                      if t["id"] == new["type"] else t for t in types]
         doc["wall_types"] = types
         return new, named, bool(every)
@@ -10243,6 +10416,35 @@ class ArchXQ:
     def on_add_floor(self) -> None:
         self._change_levels(model.add_floor)
 
+    def _add_level_now(self, kind: str) -> list[dict]:
+        """The level window's «＋ Level on top» / «＋ Basement» (its window
+        stays open — his ask, 2026-11-03): made and stored now, one Ctrl+Z
+        each, shown in the levels strip; → the levels as they are now."""
+        doc = self.doc()
+        ids = {r["id"] for r in doc["levels"]}
+        levels = [dict(r) for r in doc["levels"]]
+        levels = model.add_floor(levels) if kind == "top" else \
+            model.add_basement(levels, levels[0]["height"])
+        new = next((r["id"] for r in model.fix_levels(levels)
+                    if r["id"] not in ids), None)
+        self._save_levels(doc, levels, current=new)
+        added = next((r for r in self.doc()["levels"] if r["id"] == new),
+                     None)
+        if added is not None:
+            compat.flash(self.viewport, f"«{added['name']}» added", 3000)
+        return [dict(r) for r in self.doc()["levels"]]
+
+    def on_new_level(self) -> None:
+        """The levels strip's «＋ New level» (his call, 2026-11-03): the
+        window of the level you are on, its «New level» first — on top or
+        a basement, never a level made blind."""
+        doc = self.doc()
+        if not doc["levels"]:
+            return
+        i = self.floor if 0 <= self.floor < len(doc["levels"]) \
+            else self._ground_index(doc)
+        self.edit_level(doc["levels"][i]["id"])
+
     # ---- Levels strip (right, N) ---------------------------------------------------
     def _level_layer(self, key: str, doc: dict) -> str:
         if key == TERRAIN_ROW:
@@ -10407,11 +10609,16 @@ class ArchXQ:
         layer = compat.level_layer(doc["levels"][i]["name"])
         dlg = LevelDialog(doc, i, compat.layer_content(self.viewport, layer),
                           self.window,
-                          on_show=lambda off: self.set_level_parts(key, off))
+                          on_show=lambda off: self.set_level_parts(key, off),
+                          on_add=self._add_level_now)
         if not dlg.exec():
             return
         action, name, height = dlg.result_data()
         doc = self.doc()               # fresh: nothing changed meanwhile lost
+        ids = [r["id"] for r in doc["levels"]]
+        if key not in ids:
+            return
+        i = ids.index(key)             # (a basement added under it moved it)
         levels = [dict(r) for r in doc["levels"]]
         levels[i]["name"], levels[i]["height"] = name, height
         if action == "repeat":
@@ -10420,8 +10627,15 @@ class ArchXQ:
         if action == "copy":
             self.copy_level(key, dlg.target())
             return
-        if action == "above" or action == "below":
-            levels = model.insert_level(levels, i, action == "above")
+        if action in ("above", "below", "top", "basement"):
+            # top / basement (2026-11-03): over the highest / under the
+            # lowest, as high as it — whichever level's window it was
+            if action == "top":
+                levels = model.add_floor(levels)
+            elif action == "basement":
+                levels = model.add_basement(levels, levels[0]["height"])
+            else:
+                levels = model.insert_level(levels, i, action == "above")
             new = next(r["id"] for r in model.fix_levels(levels)
                        if r["id"] not in ids)
             self._save_levels(doc, levels, current=new)
@@ -12382,6 +12596,30 @@ class ArchXQ:
             compat.flash(self.viewport, " · ".join(notes)
                          + " — Ctrl+Z undoes it", 5000)
 
+    def _before_command(self, history, cmd) -> None:
+        """Just before a command of the host: an EXPLODE of a wall / slab
+        with layers hidden in the 3D gets it WHOLE (layerview.py, his OK
+        02/11 — nothing left behind; the explode is the professionals'
+        nº 1). Its build's mark dropped: rebuilt at the next change."""
+        from core.history import ExplodeGroupCommand
+        if not self.alive or history is not self.viewport.history:
+            return
+
+        def groups(c):
+            if isinstance(c, ExplodeGroupCommand):
+                g = getattr(c, "group", None)
+                return [g] if g is not None else []
+            return [g for k in getattr(c, "commands", None) or ()
+                    for g in groups(k)]
+        gs = groups(cmd)
+        if not gs or not self.doc().get("hidden_layers"):
+            return
+        from . import model
+        for g, mesh in compat.whole_meshes(self.viewport, self.doc(),
+                                           model.elevations, gs):
+            g.mesh = mesh
+            compat._rec(g)["sig"] = None
+
     def _after_delete(self, history, cmd, doc: dict, live: dict) -> None:
         """A wall deleted with the host's own tools (Delete key, eraser —
         support #64, 2026-10-27): its neighbours stayed mitred to nothing
@@ -13485,6 +13723,7 @@ class ArchXQ:
         self.window.removeEventFilter(self._tool_esc)
         self.viewport.removeEventFilter(self._space_pan)
         self.window.removeEventFilter(self._space_pan)
+        self.window.removeEventFilter(self._reaper)
         if getattr(self, "_clean_act", None) is not None:
             try:
                 self._clean_act.toggled.disconnect(self._clean_keys)

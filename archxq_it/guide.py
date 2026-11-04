@@ -305,9 +305,11 @@ GUIDES.update({
                 "floor); the <b>elevations</b> are worked out for you from "
                 "the ground floor.",
         "steps": [
-            ("Add floor above", "A new level on top, with the height of the "
-             "one under it."),
-            ("Add basement", "A new level under the lowest one."),
+            ("＋ New level", "In the levels strip: it opens the level's "
+             "window, «New level» first. It stays open, for the next one."),
+            ("＋ Level on top", "A new level over the highest one, as high as "
+             "its neighbour."),
+            ("＋ Basement", "A new level under the lowest one."),
             ("Edit levels…", "The table of levels: names and heights."),
         ],
         "tips": [

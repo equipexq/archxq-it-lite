@@ -990,6 +990,29 @@ class Drawing(QWidget):
             p.end()
 
 
+def paint_frame(p, band: QRectF, frame: dict, depth: float) -> None:
+    """A LIGHT-FRAMED core across the wall (framing.py, 2026-11-02): the
+    insulation (or the empty cavity) and the studs at their spacing — to
+    scale while three fit, else closer (a drawing, not a plan)."""
+    fill = frame.get("fill") != "empty"
+    p.fillRect(band, QColor("#edcc78" if fill else "#2b2e33"))
+    ppm = band.height() / max(depth, 1e-3)
+    # (zoomed in, the spacing is brought down to fit three — the studs
+    # with it, keeping their share)
+    k = min(1.0, band.width() / 3.2 / max(float(frame.get("s", 0.40))
+                                          * ppm, 1e-6))
+    sw = max(float(frame.get("w", 0.038)) * ppm * k, 2.0)
+    sp = max(float(frame.get("s", 0.40)) * ppm * k, sw * 2.5)
+    p.setPen(pen("#5a4630", 1.0))
+    x = band.left() + sp / 2
+    while x + sw <= band.right() - 1:
+        stud = QRectF(x, band.top(), sw, band.height())
+        p.fillRect(stud, QColor("#d8b27a" if frame.get("kind") != "steel"
+                                else "#a9b0b8"))
+        p.drawRect(stud)
+        x += sp
+
+
 def draw_layers_cut(p, r: QRectF, _hot, data: dict) -> None:
     """Layers across, LARGE (``Drawing``): ``layers`` the first side on top,
     each band as tall as its share (never under 4 px), its name and
@@ -1013,11 +1036,15 @@ def draw_layers_cut(p, r: QRectF, _hot, data: dict) -> None:
     p.drawText(QRectF(x0, r.top() + 2, x1 - x0, 14), Qt.AlignLeft,
                tr(sides[0]))
     y = top
+    frame = data.get("frame")
     for la, h in zip(layers, hs):
         h *= k
         core = la.get("role") == "core"
         band = QRectF(x0, y, x1 - x0, h)
-        p.fillRect(band, QColor("#b5654a" if core else "#d9d4c7"))
+        if core and frame:                 # its studs (framing.py)
+            paint_frame(p, band, frame, float(la["t"]))
+        else:
+            p.fillRect(band, QColor("#b5654a" if core else "#d9d4c7"))
         p.setPen(pen("#1d1f22", 1.0))
         p.drawRect(band)
         if h >= 11:

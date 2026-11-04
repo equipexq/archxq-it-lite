@@ -392,7 +392,7 @@ def _planes(w: dict, z0: float) -> list:
     stays where it was drawn (``at`` of its length)."""
     top, L = top_of(w), max(drawn(w).L, EPS)
     sa, sb = top_span(w)
-    h0, h1 = top["h0"], top["h1"]
+    h0, h1 = _end_heights(top, sa, sb, L)
     if top["kind"] == "slope":
         k = (h1 - h0) / max(sb - sa, EPS)
         return [(k, h0 - k * sa)]
@@ -408,8 +408,28 @@ def _zones(w: dict, z0: float) -> list:
     h1 (top_h) — None: open that way."""
     top = top_of(w)
     sa, sb = top_span(w)
-    return [(None, sa, [(0.0, top["h0"])]), (sa, sb, _planes(w, z0)),
-            (sb, None, [(0.0, top["h1"])])]
+    h0, h1 = _end_heights(top, sa, sb, max(drawn(w).L, EPS))
+    return [(None, sa, [(0.0, h0)]), (sa, sb, _planes(w, z0)),
+            (sb, None, [(0.0, h1)])]
+
+
+def _end_heights(top: dict, sa: float, sb: float, L: float) -> tuple:
+    """Its heights at its top's ends ``sa`` / ``sb``: its h0 / h1 — or, a
+    top read off a roof (structure.roof_tops: ``s0`` / ``s1``, where h0 /
+    h1 hold), its lines carried on to the ends the building gives it (over
+    a lower wall's corner it runs on to the far face: the roof's slope with
+    it — it stood 8 cm into the eave there, 2026-11-02)."""
+    h0, h1 = top["h0"], top["h1"]
+    if "s0" not in top:
+        return h0, h1
+    s0, s1 = top["s0"], top["s1"]
+    if top["kind"] == "slope":
+        k = (h1 - h0) / max(s1 - s0, EPS)
+        return h0 + k * (sa - s0), h0 + k * (sb - s0)
+    sp = top["at"] * L
+    k1 = (top["hp"] - h0) / max(sp - s0, EPS)
+    k2 = (h1 - top["hp"]) / max(s1 - sp, EPS)
+    return h0 + k1 * (sa - s0), top["hp"] + k2 * (sb - sp)
 
 
 def _plane_of(loop):
@@ -437,6 +457,8 @@ def topped(faces: list, w: dict, z0: float) -> list:
     (its colour). Past its ends (the corner pieces) the top is level at
     that end's height (``_zones``): each face is cut by the three zones and
     put back together — one face, no seam where the slope ends."""
+    if not faces:                       # every eye of its layers off
+        return []
     from shapely.geometry import Polygon
     from shapely.geometry.polygon import orient
     from shapely.ops import unary_union

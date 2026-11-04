@@ -265,7 +265,8 @@ class _TypedEnter(QObject):
 
     def eventFilter(self, obj, event) -> bool:
         try:
-            if event.type() == QEvent.KeyPress                     and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.type() == QEvent.KeyPress \
+                    and event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 typed = compat.typed_value(obj)
                 if typed and D.parse(typed) is not None:
                     compat.clear_typed(obj)

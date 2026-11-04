@@ -117,6 +117,9 @@ DEFAULT_DOC = {
     # parts of a level switched off in its window («Show»): {level id:
     # [part keys of LEVEL_PARTS]} — view state too (compat.set_hidden_parts)
     "hidden_parts": {},
+    # the LAYERS hidden in the 3D (the eye on a layer's row — layerview.py):
+    # {type or element id: [layer ids, «studs», «fill»]} — one Ctrl+Z each
+    "hidden_layers": {},
     # the levels drawn as a GHOST (light blue) under the plan of the one
     # worked on — the levels strip's per-level icon; view state too
     "ghosts": [],
@@ -235,6 +238,9 @@ def load(raw) -> dict:
     _settle_owners(doc)
     if isinstance(raw.get("hidden_ids"), list):
         doc["hidden_ids"] = sorted({str(x) for x in raw["hidden_ids"]})
+    if raw.get("hidden_layers"):
+        from . import layerview
+        doc["hidden_layers"] = layerview.clean(raw["hidden_layers"], doc)
     if raw.get("materials"):
         from . import materials
         doc["materials"] = materials.clean(raw["materials"], doc)
@@ -373,6 +379,14 @@ def wall_types(raw) -> list[dict]:
         out.append({"id": tid,
                     "name": str(t.get("name") or f"Type {len(out) + 1}")[:40],
                     "t": round(sum(L["t"] for L in ls), 4), "layers": ls})
+        # a LIGHT-FRAME core (framing.py, 2026-11-02): its walls take it
+        from .framing import clean_frame
+        fr = clean_frame(t.get("frame"))
+        if fr is not None:
+            out[-1]["frame"] = fr
+        # one made from a market card (markets.py): found again by it
+        if t.get("market"):
+            out[-1]["market"] = str(t["market"])[:16]
     return out
 
 
@@ -399,7 +413,8 @@ def typed(w: dict, ty: dict) -> dict:
     """The wall as one of YOUR types makes it: the type's thickness and
     layers (a one-layer type: none)."""
     return dict(w, t=ty["t"], layers=[dict(L) for L in ty["layers"]]
-                if len(ty["layers"]) > 1 else None)
+                if len(ty["layers"]) > 1 else None,
+                frame=dict(ty["frame"]) if ty.get("frame") else None)
 
 
 def _walls(raw, level_ids: set, types: dict | None = None) -> list[dict]:
@@ -460,6 +475,11 @@ def _walls(raw, level_ids: set, types: dict | None = None) -> list[dict]:
                     core["t"] = round(rec["t"] - fin, 4)
                 rec["layers"] = ls
                 rec["t"] = round(sum(L["t"] for L in ls), 4)
+            # its core LIGHT-FRAMED (framing.py — one layer or many)
+            from .framing import clean_frame
+            fr = clean_frame(w.get("frame"))
+            if fr is not None:
+                rec["frame"] = fr
         rec["align"] = w.get("align") if w.get("align") in WALL_ALIGNS \
             else "centre"
         if w.get("align") == "core_out":
@@ -939,6 +959,17 @@ def _structure(raw, level_ids: set,
                             rec["zc"] = zc
                 else:
                     _slab_layers(rec, e, slab_types)
+                    # its core LIGHT-FRAMED: joists (PLANO_PISOS_BARROTES
+                    # D1) — and which way they run (D3)
+                    from .framing import clean_frame
+                    # (one of YOUR types: its joists — 4b)
+                    ty = slab_types.get(str(rec.get("stype") or ""))
+                    fr = clean_frame((ty if ty is not None else e)
+                                     .get("frame"))
+                    if fr is not None and not rec.get("ceiling"):
+                        rec["frame"] = fr
+                        if e.get("jdir") == "turn":
+                            rec["jdir"] = "turn"
                 # openings through it (a stair, a lift, a void)
                 rec["holes"] = [[_pt(p) for p in h]
                                 for h in e.get("holes") or []
@@ -992,7 +1023,24 @@ def _structure(raw, level_ids: set,
                            zh=min(max(float(e.get("zh", 2.50)), 0.5), 50.0),
                            # a mansard's break: its steep part's height
                            mh=min(max(float(e.get("mh", 1.20)), 0.3), 6.0))
-            elif t == "ramp":               # a «Building element» (ramps.py)
+                # a gable's other side at a slope of its own (Marec,
+                # 2026-11-02): none = both sides at «slope»
+                if e.get("slope2") is not None:
+                    rec["slope2"] = min(max(float(e["slope2"]), 5.0), 75.0)
+                # …and its other eave higher (+) or lower (−), m (Marec,
+                # 2026-11-02): none = both eaves on the walls' top
+                if e.get("eave2") is not None \
+                        and abs(float(e["eave2"])) > 1e-6:
+                    rec["eave2"] = min(max(float(e["eave2"]), -5.0), 5.0)
+                # its LAYERS, top → bottom (PLANO_TELHADO_CAMADAS, his OK
+                # 2026-11-02): as a slab's, ``t`` their sum
+                _slab_layers(rec, e, {})
+                # its core LIGHT-FRAMED: rafters (step 2b, as a wall's)
+                from .framing import clean_frame
+                fr = clean_frame(e.get("frame"))
+                if fr is not None:
+                    rec["frame"] = fr
+            elif t == "ramp":              # a «Building element» (ramps.py)
                 rec.update(start="terrain" if e.get("start") == "terrain"
                            else "level",
                            to=str(e.get("to") or "z"),

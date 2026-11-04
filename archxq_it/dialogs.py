@@ -1099,13 +1099,14 @@ class LevelDialog(QDialog):
     what it shows, a level above / below it, repeating or copying it, and
     deleting it — never the ground floor, never a level with anything on
     it. ``result_data()`` after ``exec()`` → (action, name, height);
-    action: "apply" | "above" | "below" | "repeat" | "copy" | "delete".
+    action: "apply" | "top" | "basement" | "repeat" | "copy" | "delete"
+    ("above" / "below", next to this one, still read — no button now).
 
     The window of 0.10.0 (look.py): tabs Level · Show · Repeat & copy, the
     height on a bar, the building's levels stacked beside (this one lit)."""
 
     def __init__(self, doc: dict, index: int, content: int,
-                 parent=None, on_show=None) -> None:
+                 parent=None, on_show=None, on_add=None) -> None:
         from PySide6.QtWidgets import QSpinBox
         from . import look as L
         super().__init__(parent)
@@ -1130,6 +1131,31 @@ class LevelDialog(QDialog):
 
         # ---- Level ---------------------------------------------------------------
         pg, gl = L.page()
+        # a NEW level, first (his call, 2026-11-03): only two there are —
+        # one more on top of the highest, or a basement under the lowest —
+        # whichever level's window this is (it was relative to this one,
+        # and on the «Repeat & copy» tab, where nobody looked for it)
+        # ``on_add(kind)`` (ui): the level made at once and stored — the
+        # window STAYS open for the next one (his ask, 2026-11-03: 30
+        # storeys were 30 windows); without it, the window closes with it
+        self.key = lv["id"]
+        self._on_add = on_add
+        fold = L.Fold("New level", "level.add")
+        row = QHBoxLayout()
+        self.b_top = QPushButton("＋ Level on top")
+        self.b_top.setObjectName("axqChip")
+        self.b_top.clicked.connect(lambda: self._new_level("top"))
+        row.addWidget(self.b_top)
+        self.b_base = QPushButton("＋ Basement")
+        self.b_base.setObjectName("axqChip")
+        self.b_base.clicked.connect(lambda: self._new_level("basement"))
+        row.addWidget(self.b_base)
+        row.addStretch(1)
+        fold.box.addLayout(row)
+        self.l_new = L.hint("")
+        fold.box.addWidget(self.l_new)
+        gl.addWidget(fold)
+        self._new_hint()
         self.fold_h = L.Fold("Height", "level.height")
         form = self.fold_h.form()
         self.f_height = L.metres(lv["height"], model.MIN_HEIGHT,
@@ -1165,21 +1191,6 @@ class LevelDialog(QDialog):
 
         # ---- Repeat & copy -------------------------------------------------------
         pg, rl_ = L.page()
-        g = next(i for i, r in enumerate(self.levels) if r["kind"] == "ground")
-        fold = L.Fold("Add a level", "level.add")
-        row = QHBoxLayout()
-        b_up = QPushButton("+ Level above")
-        b_up.setObjectName("axqChip")
-        b_up.clicked.connect(lambda: self._done("above"))
-        row.addWidget(b_up)
-        b_down = QPushButton("+ Basement below" if index <= g
-                             else "+ Level below")
-        b_down.setObjectName("axqChip")
-        b_down.clicked.connect(lambda: self._done("below"))
-        row.addWidget(b_down)
-        row.addStretch(1)
-        fold.box.addLayout(row)
-        rl_.addWidget(fold)
         # REPEAT it upwards (repeatlevel.py — his ask, 2026-10-11): one
         # floor drawn, the tower made
         fold = L.Fold("Repeat above", "level.repeat")
@@ -1362,6 +1373,46 @@ class LevelDialog(QDialog):
     def _done(self, action: str) -> None:
         self.action = action
         self.accept()
+
+    def _new_hint(self) -> None:
+        """Where the next «on top» / «basement» would go (tooltips too)."""
+        from .plottools import elev_text
+        zs = model.elevations(self.levels, self.ground_level)
+        top = elev_text(zs[-1] + float(self.levels[-1]["height"]))
+        low = elev_text(zs[0] - float(self.levels[0]["height"]))
+        self.l_new.setText(f"On top: at {top}  ·  Basement: at {low}")
+        self.b_top.setToolTip(f"A new level over the highest one, at {top}, "
+                              "as high as it")
+        self.b_base.setToolTip(f"A new basement under the lowest level, at "
+                               f"{low}, as high as it")
+
+    def _new_level(self, kind: str) -> None:
+        """«＋ Level on top» / «＋ Basement»: made now by ui (one Ctrl+Z
+        each), the window kept open, its stack and lists redrawn."""
+        if self._on_add is None:
+            self._done(kind)
+            return
+        levels = self._on_add(kind)
+        if not levels:
+            return
+        own = self.levels[self.index]
+        self.levels = copy.deepcopy(levels)
+        ids = [r["id"] for r in self.levels]
+        self.index = ids.index(self.key) if self.key in ids else self.index
+        # what is typed here (name, height) is kept until OK / Apply
+        self.levels[self.index]["name"] = own["name"]
+        cur = self.f_target.currentData()
+        self.f_target.blockSignals(True)
+        self.f_target.clear()
+        for r in reversed(self.levels):
+            if r["id"] != self.key:
+                self.f_target.addItem(r["name"], r["id"])
+        k = self.f_target.findData(cur)
+        if k >= 0:
+            self.f_target.setCurrentIndex(k)
+        self.f_target.blockSignals(False)
+        self._new_hint()
+        self._refresh()
 
     def result_data(self):
         name = self.f_name.text().strip() or self.levels[self.index]["name"]
@@ -1928,6 +1979,9 @@ class WallDialog(QDialog):
         ll.addWidget(bar)
         self.l_type = L.hint("")
         ll.addWidget(self.l_type)
+        if getattr(self, "_no_types", False):   # (a roof: no types yet)
+            bar.hide()
+            self.l_type.hide()
         self.fold_layers = L.Fold("Layers", lw["fold"])
         self._rows_host = QWidget()
         self._rows = QVBoxLayout(self._rows_host)
@@ -1946,6 +2000,41 @@ class WallDialog(QDialog):
         add.addWidget(self.l_total)
         self.fold_layers.box.addLayout(add)
         ll.addWidget(self.fold_layers)
+        # a wall's core: solid or LIGHT-FRAMED (framing.py, 2026-11-02)
+        self.frame_box = None
+        if self.TYPE_KEY == "type" and not wall.get("cw"):
+            from .framebox import FrameBox
+            self.frame_box = FrameBox(
+                wall.get("frame"),
+                lambda: (self._type_gate(), self._cut_refresh(),
+                         # (its studs' / insulation's eyes follow)
+                         self._eye_owner() and self._build_rows()),
+                curved=False)   # (a full circle framed too — 4c)
+            ll.addWidget(self.frame_box)
+        elif self.TYPE_KEY == "rtype":
+            # a ROOF's core: rafters (PLANO_TELHADO_CAMADAS 2b) — the
+            # wall's box, its words; «solid for now» on the other roofs
+            from . import structure as S
+            from .framebox import FrameBox
+            self.frame_box = FrameBox(
+                wall.get("frame"),
+                lambda: (self._cut_refresh(), self._layers_refresh(),
+                         self._eye_owner() and self._build_rows()),
+                curved=not S.layered_roof(dict(wall, frame={"kind": "wood"})),
+                roof=True,
+                trusses_ok=wall.get("kind") in ("gable", "shed"))
+            ll.addWidget(self.frame_box)
+        elif self.TYPE_KEY == "stype":
+            # a FLOOR's core: joists (PLANO_PISOS_BARROTES 4b) — the
+            # wall's box, its words, their direction and the span warning
+            from .framebox import FrameBox
+            self.frame_box = FrameBox(
+                wall.get("frame"),
+                lambda: (self._type_gate(), self._cut_refresh(),
+                         self._eye_owner() and self._build_rows()),
+                floor=True, turn=wall.get("jdir") == "turn",
+                span=self._joist_span)
+            ll.addWidget(self.frame_box)
         ll.addWidget(L.hint(lw["hint"]))
         ll.addStretch(1)
         self._build_rows()
@@ -1978,7 +2067,9 @@ class WallDialog(QDialog):
 
     def _cut_refresh(self) -> None:
         if getattr(self, "cut", None) is not None:
-            self.cut.set(layers=[dict(la) for la in self.layers])
+            fb = getattr(self, "frame_box", None)
+            self.cut.set(layers=[dict(la) for la in self.layers],
+                         frame=fb.value() if fb is not None else None)
 
     def _build_rows(self) -> None:
         from PySide6.QtWidgets import QLineEdit, QToolButton
@@ -2001,6 +2092,7 @@ class WallDialog(QDialog):
             rl.setContentsMargins(0, 0, 0, 0)
             rl.setSpacing(6)
             core = la["role"] == "core"
+            self._eye_buttons(rl, la, core)     # (the eye — layerview.py)
             role = QLabel("Core" if core else "Finish")
             # (room for «Acabamento», «Tragschicht» — 52 px cut it to «Acabar»)
             role.setFixedWidth(92)
@@ -2042,7 +2134,71 @@ class WallDialog(QDialog):
                 rl.addWidget(b)
             self._rows.addWidget(row)
         side_word(self.LW["sides"][1])
+        self._eye_show_all()
         self._layers_changed(rebuild=False)
+
+    # -- the eye: a layer hidden in the 3D (layerview.py, 2026-11-02) -----------
+    def _eye_owner(self):
+        """Whose eyes the rows show: its type's (every element of it) —
+        else its own. None: no eyes (ui gives ``layer_eye``)."""
+        ctl = getattr(self, "layer_eye", None)
+        if ctl is None:
+            return None
+        return getattr(self, "type_id", None) or ctl.el_id
+
+    def _eye_keys(self, la: dict, core: bool) -> list:
+        """[(key, tip)] of a row: a layer; a framed core: its studs and its
+        insulation, each on its own. None for a one-layer solid wall (its
+        «Hide» hides it whole)."""
+        fb = getattr(self, "frame_box", None)
+        fr = fb.value() if fb is not None else None
+        if core and fr:
+            out = [("studs", tr("Studs — shown / hidden in the 3D"))]
+            if fr.get("fill") != "empty":
+                out.append(("fill",
+                            tr("Insulation — shown / hidden in the 3D")))
+            return out
+        if len(self.layers) < 2:
+            return []
+        return [(la.get("id"), tr("This layer — shown / hidden in the 3D "
+                                  "(plans, sheets and quantities keep it)"))]
+
+    def _eye_buttons(self, rl, la: dict, core: bool) -> None:
+        from PySide6.QtWidgets import QToolButton
+        from . import icons
+        who = self._eye_owner()
+        if who is None:
+            return
+        off = self.layer_eye.hidden(who)
+        for key, tip in self._eye_keys(la, core):
+            b = QToolButton()
+            b.setAutoRaise(True)
+            hid = key in off
+            b.setIcon(icons.icon("eye_off" if hid else "eye"))
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _c=False, key=key, hid=hid:
+                              self._eye_click(key, not hid))
+            rl.addWidget(b)
+
+    def _eye_click(self, key: str, off: bool) -> None:
+        who = self._eye_owner()
+        if who is None:
+            return
+        self.layer_eye.set(who, key, off)
+        self._build_rows()
+
+    def _eye_show_all(self) -> None:
+        """«Show all layers» under the rows while one is hidden — so none
+        stays forgotten."""
+        who = self._eye_owner()
+        if who is None or not self.layer_eye.hidden(who):
+            return
+        b = QPushButton(tr("Show all layers"))
+        b.setObjectName("axqChip")
+        b.setToolTip(tr("Every layer of it seen again in the 3D"))
+        b.clicked.connect(lambda: (self.layer_eye.show_all(who),
+                                   self._build_rows()))
+        self._rows.addWidget(b)
 
     # -- its type ----------------------------------------------------------------
     def _type_picked(self, _i: int) -> None:
@@ -2057,6 +2213,8 @@ class WallDialog(QDialog):
             for la in self.layers:
                 if la["role"] == "core" and not la.get("name"):
                     la["name"] = "Core"
+            if getattr(self, "frame_box", None) is not None:
+                self.frame_box.set(self.types[tid].get("frame"))
             self._layers_changed()
         else:
             self._show_type()
@@ -2504,6 +2662,13 @@ class WallDialog(QDialog):
                 w.pop("layers", None)
                 if w["align"] == "core_out":
                     w["align"] = "outside"
+            fb = getattr(self, "frame_box", None)
+            if fb is not None:            # its core: solid / a frame
+                fr = fb.value()
+                if fr is not None:
+                    w["frame"] = fr
+                else:
+                    w.pop("frame", None)
             # its type (A2): kept, left — or every wall of it changed /
             # these layers saved as a new one (ui.apply_wall reads the marks)
             if self.type_id:
@@ -2771,6 +2936,48 @@ class _ElView(QWidget):
         oy = rr.center().y() + (y1 - y0) * k / 2
         return lambda x, y: (ox + (x - x0) * k, oy - (y - y0) * k)
 
+    @staticmethod
+    def _rect_roof(p, L, S, e, q) -> None:
+        """A rectangular gable / hip in plan, in the frame its 3D is built
+        in (``structure._roof_faces``): the ridge where it really stands —
+        a gable's off the middle with slope2 / eave2 — and its two sides
+        named, «Other side» on its eave (Marec, 2026-11-02: which one is
+        it?). A hip: the ridge and its four hips."""
+        (cx, cy), u0, ha, v0, hb = S.rect_frame(e["corners"])
+        along = ha >= hb
+        gable = e["kind"] == "gable"
+        if gable and e.get("ridge", "long") == "short":
+            along = not along
+        ux, A, B = (u0, ha, hb) if along else (v0, hb, ha)
+        uy = (-ux[1], ux[0])
+
+        def Q(x, y):
+            return q(cx + ux[0] * x + uy[0] * y, cy + ux[1] * x + uy[1] * y)
+        if not gable:
+            r = max(A - B, 0.0)
+            p.setPen(L.pen(L.ACCENT, 1.4, dash=True))
+            for a, b in (((-r, 0), (r, 0)), ((-r, 0), (-A, -B)),
+                         ((-r, 0), (-A, B)), ((r, 0), (A, -B)),
+                         ((r, 0), (A, B))):
+                p.drawLine(QPointF(*Q(*a)), QPointF(*Q(*b)))
+            return
+        _t1, _t2, ym = S.gable_ridge(e, B)
+        p.setPen(L.pen(L.ACCENT, 1.8))
+        p.drawLine(QPointF(*Q(-A, ym)), QPointF(*Q(A, ym)))
+        # the other side's eave, drawn over the outline
+        p.setPen(L.pen(L.ACCENT, 3.0))
+        p.drawLine(QPointF(*Q(-A, B)), QPointF(*Q(A, B)))
+        s1 = float(e.get("slope", 30.0))
+        s2 = float(e.get("slope2", s1))
+        dh = float(e.get("eave2") or 0.0)
+        two = f"{tr('Other side')} · {s2:.0f}°" + (
+            f" · {'+' if dh > 0 else '−'}{compat.fmt_len(abs(dh))}"
+            if abs(dh) > 1e-6 else "")
+        for y, s, c in (((ym - B) / 2, f"{s1:.0f}°", L.BLUE),
+                        ((ym + B) / 2, two, L.ACCENT)):
+            x, yy = Q(0, y)
+            L.text(p, x, yy + 4, s, c, 8, True, align=Qt.AlignHCenter)
+
     def _paint(self, p, L) -> None:
         import math
 
@@ -2793,12 +3000,7 @@ class _ElView(QWidget):
                 for a, b in S.roof_plan_lines(e):
                     p.drawLine(QPointF(*q(*a)), QPointF(*q(*b)))
             elif t == "roof" and e.get("kind") in ("gable", "hip"):
-                cx = sum(c[0] for c in outer) / len(outer)
-                cy = sum(c[1] for c in outer) / len(outer)
-                p.setPen(L.pen(L.ACCENT, 1.4, dash=True))
-                for c in outer:
-                    a, b = q(*c), q(cx, cy)
-                    p.drawLine(QPointF(*a), QPointF(*b))
+                self._rect_roof(p, L, S, e, q)
             return
         if t == "beam":
             a, b = e["a"], e["b"]
@@ -2879,6 +3081,23 @@ class ElementDialog(QDialog):
         "gate_title": "Slab type", "gate": "This slab is a «{n}». Change…",
         "only": "Only this slab", "every": "Every «{n}» slab",
         "fold": "slab.layers"})
+    #: a ROOF's Layers tab (PLANO_TELHADO_CAMADAS, his OK 2026-11-02): the
+    #: slab's, its words — top (the covering) → underneath (the ceiling)
+    ROOF_LW = dict(LW, **{
+        "sides": ("TOP — THE COVERING", "UNDERNEATH"),
+        "add": (("+ Layer on top",
+                 "A layer over the roof's core: battens, a membrane, "
+                 "sheathing, the tiles", "Battens"),
+                ("+ Layer underneath",
+                 "A layer under the core: a ceiling board, a lining",
+                 "Plasterboard")),
+        "hint": "Top first: the covering, then what lies under it down to "
+                "the ceiling. Built in layers on gable, hip, shed and "
+                "butterfly roofs (a gable or a hip on a rectangle); the "
+                "others solid for now. "
+                "Each layer's material: the Material tab.",
+        "total": "Total {t} = the roof's thickness",
+        "fold": "roof.layers"})
     TYPE_KEY = "stype"
 
     def _layers_of(self, rec: dict) -> list:
@@ -2892,6 +3111,21 @@ class ElementDialog(QDialog):
         if hasattr(self, "view"):            # (not while the window is made)
             self._sync()
         self._cut_refresh()
+        fb = getattr(self, "frame_box", None)
+        if fb is not None and fb._floor:     # its depth: the span warning
+            fb.recheck()
+
+    def _joist_span(self, fr: dict, turn: bool) -> tuple:
+        """(its longest joist, their depth — the core's thickness): the
+        Structure box's span warning (PLANO_PISOS_BARROTES D4)."""
+        from . import structure as S
+        ls = self.layers or []
+        core = next((la for la in ls if la.get("role") == "core"), None)
+        depth = float(core["t"]) if core is not None and len(ls) > 1 \
+            else float(self.fields["t"].value())
+        s = {"type": "slab", "corners": self.el["corners"],
+             "holes": self.el.get("holes") or [], "frame": fr}
+        return S.joist_span(s, turn), depth
 
     def __init__(self, el: dict, level: dict, parent=None,
                  picks=(), types=None) -> None:
@@ -3074,6 +3308,24 @@ class ElementDialog(QDialog):
             form = fold.form(self.d_size)
             measure(form, "slope", "Slope", 5.0, 75.0, 5.0, "°")
             self.fields["slope"].setSingleStep(5.0)
+            # a gable's OTHER side at a slope of its own (Marec, 2026-11-02):
+            # the ridge moves off the middle; it follows «Slope» while the
+            # two are the same
+            el.setdefault("slope2", el["slope"])
+            measure(form, "slope2", "Other side", 5.0, 75.0, 5.0, "°")
+            self.fields["slope2"].setSingleStep(5.0)
+            self.rows["slope2"].setToolTip(
+                "The slope on the other side of the ridge — the same as "
+                "Slope for a symmetric roof. Swap the two values to turn it "
+                "round")
+            self._slope_was = float(el["slope"])
+
+            def follow(v: float) -> None:
+                s2 = self.fields["slope2"]
+                if abs(s2.value() - self._slope_was) < 1e-6:
+                    s2.setValue(v)
+                self._slope_was = float(v)
+            self.fields["slope"].valueChanged.connect(follow)
             measure(form, "overhang", "Eaves overhang", 0.0, 3.0)
             el.setdefault("go", el.get("overhang", 0.5))
             measure(form, "go", "Gable ends' overhang", 0.0, 3.0)
@@ -3101,6 +3353,15 @@ class ElementDialog(QDialog):
                 "The height of its eaves (the low edge, for a Shed) over the "
                 "level's floor — where its underside meets the walls' / "
                 "beams' outer line")
+            # a gable's OTHER eave higher / lower (Marec, 2026-11-02: a
+            # French house's section, its eaves 0.45 apart) — the ridge
+            # moves off the middle, the slopes stay
+            el.setdefault("eave2", 0.0)
+            measure(form, "eave2", "Other side's eave", -3.0, 3.0)
+            self.rows["eave2"].setToolTip(
+                "How much higher (+) or lower (−) the eave on the other side "
+                "of the ridge is — 0: both eaves at the same height. The "
+                "wall under the higher one is filled up to the roof")
             self.zh_note = L.hint("")
             form.addRow("", self.zh_note)
             self.f_zmode.currentIndexChanged.connect(self._sync)
@@ -3181,6 +3442,14 @@ class ElementDialog(QDialog):
         self.tabs.addTab(pg, "Geometry", "geometry")
         if t == "slab" and not el.get("ceiling") and not el.get("block"):
             # its LAYERS (slab layers, 2026-10-23): the wall's tab
+            self._layers_tab(el)
+            self.fields["t"].valueChanged.connect(self._t_to_core)
+        elif t == "roof" and el.get("kind") not in ("flat", "hidden"):
+            # its LAYERS (PLANO_TELHADO_CAMADAS, his OK 2026-11-02): the
+            # slab's tab, its own words — no roof types yet
+            self.LW = self.ROOF_LW
+            self.TYPE_KEY = "rtype"
+            self._no_types = True
             self._layers_tab(el)
             self.fields["t"].valueChanged.connect(self._t_to_core)
 
@@ -3295,17 +3564,26 @@ class ElementDialog(QDialog):
                                    f"{compat.fmt_cm(e['t'], 0)} thick",
                                    f"{n} opening" + ("" if n == 1 else "s")])
             self.fold_main.set_pick(compat.fmt_cm(e['t'], 0))
+            core = (compat.fmt_volume(area * S.slab_core_t(e), 2,
+                                      group=False), "concrete")
+            if S.slab_frame(e) is not None:  # its joists (4b): not concrete
+                try:
+                    core = (f"{S.slab_count(e).get('joists', 0)}", "joists")
+                except Exception:  # noqa: BLE001 — the volume then
+                    pass
             self.stats.set([(compat.fmt_area(area), "area"),
                             (compat.fmt_len(e['t']), "thickness"),
-                            (compat.fmt_volume(area * S.slab_core_t(e), 2,
-                                               group=False), "concrete"),
-                            (f"{n}", "openings")])
+                            core, (f"{n}", "openings")])
         elif t == "roof":
             k = e["kind"]
             self.fold_kind.set_pick(self.f_kind.currentText())
             sloped = k in ("gable", "hip", "shed")
             is_l = getattr(self, "_is_l", False)
+            from . import roof_any
+            rect_gable = k == "gable" and roof_any.is_rect(e["corners"])
             for key, on in (("slope", sloped or k == "hidden"),
+                            ("slope2", rect_gable),
+                            ("eave2", rect_gable),
                             ("overhang", k != "hidden"),
                             ("go", k == "gable"),
                             ("ridge", k == "gable" and not is_l),
@@ -3321,8 +3599,18 @@ class ElementDialog(QDialog):
             self.fields["zh"].setEnabled(own)
             self.fold_height.set_pick(compat.fmt_len(e["zh"]) if own
                                       else "On the walls")
-            self.zh_note.setText(self._roof_heights(e) if own else
-                                 "Its eaves at the top of the level's walls.")
+            dh = float(e.get("eave2") or 0.0) if rect_gable else 0.0
+            if own:
+                note = self._roof_heights(e)
+            elif abs(dh) > 1e-6:          # a lifted eave (eave2)
+                note = tr("Its eaves at the top of the level's walls — the "
+                          "other side's {d} higher." if dh > 0 else
+                          "Its eaves at the top of the level's walls — the "
+                          "first side's {d} higher.",
+                          d=compat.fmt_len(abs(dh)))
+            else:
+                note = "Its eaves at the top of the level's walls."
+            self.zh_note.setText(note)
             hid = k == "hidden"
             for key in ("gutter",):
                 self.fields[key].setVisible(hid)
@@ -3331,13 +3619,17 @@ class ElementDialog(QDialog):
             self.fields["parapet"].setEnabled(
                 not (hid and self.f_pauto.isChecked()))
             area = abs(S._area(e["corners"]))
+            two = e.get("slope2") is not None \
+                and abs(e["slope2"] - e["slope"]) > 1e-6
+            deg = f"{e['slope']:.0f}°" + (f" / {e['slope2']:.0f}°" if two
+                                          else "")
             self.head.set_summary([self.f_kind.currentText(),
-                                   "{" + f"{e['slope']:.0f}°" + "}"
+                                   "{" + deg + "}"
                                    if sloped else "", compat.fmt_area(area)])
-            self.fold_main.set_pick(f"{e['slope']:.0f}° · "
+            self.fold_main.set_pick(f"{deg} · "
                                     f"{compat.fmt_len(e['overhang'])}")
             self.stats.set([(compat.fmt_area(area), "covers (no eaves)"),
-                            (f"{e['slope']:.0f}°", "slope"),
+                            (deg, "slope"),
                             (compat.fmt_len(e['overhang']), "eaves")])
         else:
             self.head.set_summary(["{" + compat.fmt_wh(e['w'], e['d']) + "}",
@@ -3369,6 +3661,14 @@ class ElementDialog(QDialog):
             return (f"Low edge {compat.fmt_len(zh)} → high edge "
                     f"{compat.fmt_len(zh + across * tan)} (over the floor, "
                     "at the walls' line).")
+        if k == "gable":                  # each side its slope (slope2)
+            t1, _t2, ym = S.gable_ridge(e, across / 2)
+            h1, h2 = S.gable_eaves(e, across / 2)    # …and its eave (eave2)
+            eaves = compat.fmt_len(zh + h1) if abs(h2 - h1) < 1e-6 else \
+                f"{compat.fmt_len(zh + h1)} / {compat.fmt_len(zh + h2)}"
+            return (f"Eaves {eaves} → ridge "
+                    f"{compat.fmt_len(zh + h1 + (across / 2 + ym) * t1)} "
+                    "(over the floor).")
         return (f"Eaves {compat.fmt_len(zh)} → ridge "
                 f"{compat.fmt_len(zh + across / 2 * tan)} (over the floor).")
 
@@ -3406,6 +3706,14 @@ class ElementDialog(QDialog):
             e["slopes"] = int(self.f_slopes.currentData())
             e["pauto"] = self.f_pauto.isChecked()
             e["zmode"] = self.f_zmode.currentData()
+            from . import roof_any
+            rect_gable = e["kind"] == "gable" \
+                and roof_any.is_rect(e["corners"])
+            if not rect_gable \
+                    or abs(e.get("slope2", e["slope"]) - e["slope"]) < 1e-6:
+                e.pop("slope2", None)          # both sides at «slope»
+            if not rect_gable or abs(e.get("eave2", 0.0)) < 1e-6:
+                e.pop("eave2", None)           # both eaves on the walls
             # turned hidden: sheets' 10° / back from hidden: tiles' 30° —
             # unless the slope was changed here too
             if e["kind"] != was and abs(e["slope"] - self.el["slope"]) < 1e-6:
@@ -3417,6 +3725,16 @@ class ElementDialog(QDialog):
             e["holes"] = [h for h, cb in zip(self.el.get("holes") or [],
                                              self.f_holes)
                           if not cb.isChecked()]
+        if getattr(self, "frame_box", None) is not None:
+            fr = self.frame_box.value()  # a roof's rafters (2b), a floor's
+            if fr is not None:           # joists (4b)
+                e["frame"] = fr
+            else:
+                e.pop("frame", None)
+            if fr is not None and self.frame_box.turn():
+                e["jdir"] = "turn"
+            else:
+                e.pop("jdir", None)
         if self.layers is not None:      # a floor slab's layers: t = their sum
             if len(self.layers) > 1:
                 e["layers"] = [dict(la) for la in self.layers]
@@ -3447,7 +3765,8 @@ class ElementDialog(QDialog):
 for _name in ("_layers_tab", "_build_rows", "_type_picked", "_save_type",
               "_show_type", "_type_gate", "_add_layer", "_move", "_remove",
               "_layer_name", "_layer_t", "_layers_changed", "_t_to_core",
-              "_cut_side", "_cut_refresh"):
+              "_cut_side", "_cut_refresh", "_eye_owner", "_eye_keys",
+              "_eye_buttons", "_eye_click", "_eye_show_all"):
     setattr(ElementDialog, _name, getattr(WallDialog, _name))
 del _name
 

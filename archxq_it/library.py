@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (QButtonGroup, QDialog, QGridLayout,
 
 from . import edition
 from . import favourites as FV
+from . import markets as MK
 from . import profiles as PF
 
 INK = QColor("#d6d9dd")
@@ -656,7 +657,11 @@ CATALOG = {
              "Glass from floor to floor: mullions, and a dark band over "
              "each slab's edge — drawn, joined and moved as any wall. Its "
              "window (double-click): the mullions', transoms' and posts' "
-             "widths and depths, the glass, the colours")),
+             "widths and depths, the glass, the colours")) + tuple(
+            # BY MARKET (markets.py, 2026-11-02): a click puts the type in
+            # the project's types and picks it (frames are the Pro's)
+            Type("m_" + m[0], m[1], "mk_" + m[0], {"_market": m[0]}, m[2])
+            for m in (() if edition.lite() else MK.TYPES)),
         (Part("cw_band", "Band at each floor", ((True, "Yes"), (False, "No")),
               lambda o: bool(o.get("cw"))),
          # how high it rises over the floor — on the OUTER face, flush with
@@ -678,31 +683,32 @@ CATALOG = {
         Type("b2060", "20 × 60", "beam_l", {"w": 0.20, "h": 0.60}))),
     "slab": Shelf("Slabs", (
         # (a plain card: none of YOUR types — «stype» "" — and no layers)
+        # (and no joists: «frame» None — a «By market» floor's taken off)
         Type("s12", "12 cm", "slab_12",
              {"t": 0.12, "ceiling": False, "block": False, "stype": "",
-              "layers": None}),
+              "layers": None, "frame": None}),
         Type("s15", "15 cm", "slab_15",
              {"t": 0.15, "ceiling": False, "block": False, "stype": "",
-              "layers": None}),
+              "layers": None, "frame": None}),
         Type("s20", "20 cm", "slab_20",
              {"t": 0.20, "ceiling": False, "block": False, "stype": "",
-              "layers": None}),
+              "layers": None, "frame": None}),
         # slabs with LAYERS (slab layers, 2026-10-23): its top the finished
         # floor, the finishes on top laid room by room
         Type("tiles", "Floor — tiles", "slab_tiles",
              {"t": 0.205, "ceiling": False, "block": False, "stype": "",
-              "layers": SLAB_TILES},
+              "layers": SLAB_TILES, "frame": None},
              "A floor of tiles: porcelain 1 · mortar bed 2 · screed 4 on a "
              "12 cm slab, plaster 1.5 under it — its top is the finished "
              "floor; the walls stand on the slab"),
         Type("timber", "Floor — timber", "slab_timber",
              {"t": 0.215, "ceiling": False, "block": False, "stype": "",
-              "layers": SLAB_TIMBER},
+              "layers": SLAB_TIMBER, "frame": None},
              "A timber floor: boards 2 · underlay 0.5 · screed 5.5 on a 12 cm "
              "slab, plaster 1.5 under it"),
         Type("roofslab", "Roof slab", "slab_roof",
              {"t": 0.225, "ceiling": False, "block": False, "stype": "",
-              "layers": SLAB_ROOF},
+              "layers": SLAB_ROOF, "frame": None},
              "A flat roof's slab: protection 3 · waterproofing 1 · sloped "
              "screed 3 on a 12 cm slab, plaster 1.5 under it"),
         # a CEILING (0.15.0, B4 — Badis' plenum, 2026-10-13): a board hung
@@ -716,7 +722,11 @@ CATALOG = {
              {"ceiling": True, "block": False, "t": 0.02},
              "A suspended ceiling: a board at its own height over the floor "
              "(the plenum above it) — drawn as a slab, «Inside the walls» "
-             "gives a room's in one click")),
+             "gives a room's in one click")) + (
+        # BY MARKET (markets.py — PLANO_PISOS_BARROTES 4b): its layers and
+        # joists, on the selected slabs and the next ones
+        tuple(Type("f_" + m[0], m[1], "fk_" + m[0], MK.floor_set(m[0]), m[2])
+              for m in MK.FLOORS)),
         (_size("ch", "Ceiling height", 2.00, 5.00, 0.05, 2.60,
                (2.40, 2.50, 2.60, 2.70, 2.80, 3.00),
                lambda o: bool(o.get("ceiling")),
@@ -1188,7 +1198,13 @@ CATALOG = {
         Type("lt", "L / T / U plan", "roof_lt",
              {"kind": "hip", "lplan": True},
              "One click: a hip roof over this level's walls, whatever their "
-             "plan — L, T, U, oblique: hips outside, valleys inside")),
+             "plan — L, T, U, oblique: hips outside, valleys inside")) + (
+            # BY MARKET (markets.py — PLANO_TELHADO_CAMADAS 2c): its layers
+            # and rafters, on the selected roofs and the next ones
+            Type("rsolid", "Solid slab", "rk_solid", dict(MK.ROOF_SOLID),
+                 "One solid slab, no layers — as a roof always was"),) +
+        tuple(Type("r_" + m[0], m[1], "rk_" + m[0], MK.roof_set(m[0]), m[2])
+              for m in MK.ROOFS),
         (Part("ridge", "Ridge along", (("long", "Long side"),
                                        ("short", "Short side")),
               lambda o: o.get("kind") == "gable"),
@@ -1269,6 +1285,9 @@ def current_type(shelf: Shelf, opts: dict) -> str | None:
     plan» = Hip + L, 2026-10-16); equal: the first."""
     best = None
     for t in shelf.types:
+        if t.key == "rsolid" or t.key.startswith("r_"):
+            continue      # (a roof's «By market» card: never its type —
+            # «Gable» stays lit, and its name in the quantities)
         if t.set is not None and all(
                 _same(opts.get(k, UNSET.get(k)), v)
                 or opts.get(k) in ALIKE.get((k, v), ())
@@ -2007,33 +2026,76 @@ def _two_lines(name: str, width: int = 11) -> str:
     return name[:cut] + "\n" + name[cut + 1:]
 
 
-def layers_icon(layers, t: float | None = None) -> QIcon:
+def layers_icon(layers, t: float | None = None, frame=None) -> QIcon:
     """A wall type's card: its layers across, outside at the bottom (as a
-    plan with the building up) — the core brick-red, the finishes light."""
+    plan with the building up) — the core brick-red, the finishes light; a
+    light-framed core (``frame``, framing.py): its studs."""
     pm = QPixmap(PX, PX)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
+    _layers_pic(p, layers, t, frame)
+    p.end()
+    return QIcon(pm)
+
+
+def _layers_pic(p: QPainter, layers, t: float | None = None,
+                frame=None) -> None:
+    """``layers_icon``'s drawing (a market card's picture too)."""
+    from .look import paint_frame
     tot = sum(float(la["t"]) for la in layers) or float(t or 0.2)
     h = 26.0 + min(tot, 0.5) * 60.0              # thicker wall, taller band
     y = (PX + h) / 2
     for la in layers:                              # outside → inside, upward
         dh = h * float(la["t"]) / tot
         core = la.get("role") == "core"
-        p.fillRect(QRectF(12, y - dh, PX - 24, dh),
-                   QColor("#b5654a") if core else QColor("#d9d4c7"))
+        if core and frame:
+            paint_frame(p, QRectF(12, y - dh, PX - 24, dh), frame,
+                        float(la["t"]))
+        else:
+            p.fillRect(QRectF(12, y - dh, PX - 24, dh),
+                       QColor("#b5654a") if core else QColor("#d9d4c7"))
         y -= dh
     p.setPen(_pen(INK, 2.0))
     p.drawRect(QRectF(12, (PX - h) / 2, PX - 24, h))
-    p.end()
-    return QIcon(pm)
+
+
+def _market_pic(p: QPainter, m) -> None:
+    """A market card's picture: its layers (its «EXP» tag taken off, his
+    call 2026-11-02)."""
+    _layers_pic(p, m[3], None, m[4])
+
+
+# the market cards' pictures: their layers (markets.py)
+for _m in MK.TYPES:
+    PICS["mk_" + _m[0]] = (lambda p, m=_m: _market_pic(p, m))
+for _m in MK.ROOFS:                       # the roofs' (2c)
+    PICS["rk_" + _m[0]] = (lambda p, m=_m: _market_pic(p, m))
+for _m in MK.FLOORS:                      # the floors' (4b): top on top
+    PICS["fk_" + _m[0]] = (lambda p, m=_m: _layers_pic(
+        p, tuple(reversed(m[3])), None, m[4]))
+PICS["rk_solid"] = (lambda p: _layers_pic(
+    p, ({"name": "", "t": 0.20, "role": "core"},), None, None))
 
 
 def your_icon(key: str, t: dict) -> QIcon:
     """One of YOUR types' cards: a wall / slab type's layers, a profile's
-    cut (never cached: it is his, edited at will)."""
+    cut (never cached: it is his, edited at will). Layers of it hidden in
+    the 3D (``_hidden``, layerview.py): a struck eye in its corner."""
     if key != "profile":
-        return layers_icon(t["layers"], t["t"])
+        ic = layers_icon(t["layers"], t["t"], t.get("frame"))
+        if not t.get("_hidden"):
+            return ic
+        from . import icons
+        pm = ic.pixmap(PX, PX)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor(30, 33, 37, 220))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(PX - 38, 2, 36, 36))
+        p.drawPixmap(PX - 35, 5, icons.icon("eye_off").pixmap(30, 30))
+        p.end()
+        return QIcon(pm)
     PF.add([t])
     pm = QPixmap(PX, PX)
     pm.fill(Qt.transparent)
@@ -2042,6 +2104,22 @@ def your_icon(key: str, t: dict) -> QIcon:
     _profile(p, t["id"])
     p.end()
     return QIcon(pm)
+
+
+def card_tip(t: Type) -> str:
+    """A ready-made card's tooltip — a light-framed market type's says
+    what it does not do yet."""
+    from .i18n import tr
+    tip = tr(t.tip or t.label)
+    m = MK.get(t.key[2:]) if t.key.startswith("m_") else None
+    if m is not None and m[4]:
+        from .framebox import FRAME_TIP
+        tip += "\n\n" + tr(FRAME_TIP)
+    m = MK.roof(t.key[2:]) if t.key.startswith("r_") else None
+    if m is not None and m[4]:
+        from .framebox import ROOF_TIP
+        tip += "\n\n" + tr(ROOF_TIP)
+    return tip
 
 
 def type_changes(t: Type, opts: dict, picked: int) -> dict:
@@ -2511,7 +2589,10 @@ class LibraryPanel(QWidget):
             b.setToolTip(t["name"] + ("  (ArchXQ IT Pro)" if pro_locked
                                       else "") + "\n"
                          + (tr("Double-click: its name and category") if prof
-                            else tr("Double-click: its name and layers")))
+                            else tr("Double-click: its name and layers"))
+                         + ("\n" + tr("Some of its layers are hidden in the "
+                                      "3D — «Show all layers» in its window")
+                            if t.get("_hidden") else ""))
             b.clicked.connect(lambda _c=False, tid=t["id"]: self.on_pick(
                 self.key, {opt: tid}))
             b.on_double = lambda tid=t["id"]: self.on_pick(
@@ -2708,7 +2789,7 @@ class LibraryPanel(QWidget):
             b.setText(t.label + ("\n" + tr("in use") if in_use else ""))
             b.setCheckable(True)
             b.setChecked(t.key == cur)
-            b.setToolTip((t.tip or t.label)
+            b.setToolTip(card_tip(t)
                          + ("  (ArchXQ IT Pro)" if pro_locked else ""))
             ch = type_changes(t, opts, picked)
             b.clicked.connect(lambda _c=False, ch=ch:
@@ -2942,7 +3023,7 @@ class AllTypesDialog(QDialog):
                 b.setEnabled(False)
                 b.setToolTip(tr("Coming soon — the library keeps growing"))
                 return b
-            b.setToolTip(t.tip or t.label)
+            b.setToolTip(card_tip(t))
             ch = type_changes(t, self.opts, self.picked)
         b.setCheckable(True)
         b.setChecked(on)

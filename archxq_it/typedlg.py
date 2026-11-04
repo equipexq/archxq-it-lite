@@ -37,7 +37,8 @@ class _Total:
 class TypeDialog(QDialog):
     """``kind`` "wall" | "slab"; ``ty`` the type to edit (None: a new one);
     ``layers`` to start a new one with; ``n`` its elements (editing).
-    ``result()`` after ``exec()`` → {"name", "layers", "t"}."""
+    ``result()`` after ``exec()`` → {"name", "layers", "t", "frame"} (a
+    wall's core: solid — None — or light-framed, framing.py)."""
 
     #: the rows, as a wall's Layers tab draws and changes them
     _build_rows = WallDialog._build_rows
@@ -47,9 +48,16 @@ class TypeDialog(QDialog):
     _layer_name = WallDialog._layer_name
     _layer_t = WallDialog._layer_t
     _layers_changed = WallDialog._layers_changed
+    #: the eye (layerview.py): a type being edited — ui gives ``layer_eye``
+    _eye_owner = WallDialog._eye_owner
+    _eye_keys = WallDialog._eye_keys
+    _eye_buttons = WallDialog._eye_buttons
+    _eye_click = WallDialog._eye_click
+    _eye_show_all = WallDialog._eye_show_all
 
     def __init__(self, kind: str, ty: dict | None, layers: list | None,
-                 n: int = 0, from_sel: bool = False, parent=None) -> None:
+                 n: int = 0, from_sel: bool = False, frame=None,
+                 parent=None) -> None:
         super().__init__(parent)
         self.kind = kind
         self.LW = ElementDialog.LW if kind == "slab" else WallDialog.LW
@@ -121,6 +129,13 @@ class TypeDialog(QDialog):
         add.addWidget(self.l_total)
         self.fold_layers.box.addLayout(add)
         left.addWidget(self.fold_layers)
+        self.frame_box = None
+        if kind == "wall":               # its core: solid or a frame
+            from .framebox import FrameBox
+            self.frame_box = FrameBox(
+                ty.get("frame") if ty is not None else frame,
+                lambda: self._build_rows())
+            left.addWidget(self.frame_box)
         left.addWidget(L.hint(
             tr("Top first: the finished floor. The core carries; each "
                "finish's material: the slab's window, «Material».")
@@ -160,7 +175,11 @@ class TypeDialog(QDialog):
         return self._tot
 
     def _layers_refresh(self) -> None:
-        self.cut.set(layers=[dict(la) for la in self.layers])
+        if getattr(self, "cut", None) is None:
+            return
+        self.cut.set(layers=[dict(la) for la in self.layers],
+                     frame=self.frame_box.value() if self.frame_box
+                     else None)
 
     # ---------------------------------------------------------------------------------
     def _ok(self) -> None:
@@ -173,4 +192,5 @@ class TypeDialog(QDialog):
     def result(self) -> dict:
         ls = [dict(la) for la in self.layers]
         return {"name": self.f_name.text().strip()[:40], "layers": ls,
-                "t": round(sum(float(la["t"]) for la in ls), 4)}
+                "t": round(sum(float(la["t"]) for la in ls), 4),
+                "frame": self.frame_box.value() if self.frame_box else None}
