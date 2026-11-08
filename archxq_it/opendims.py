@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The DIMENSIONS of a door / window on its wall (PLANO_COTAS_ABERTURAS.md —
 Nazareno, support #60, his OK 2026-10-25: «in my BIM I hover a corner,
 type 60, Enter, and the door is 60 cm from it»).

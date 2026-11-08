@@ -1,11 +1,15 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Drawing the STRUCTURE in the 3D view — on the current level's floor.
 
 The same habits as the walls: the options bar holds the choices (section,
 sizes, how many), the tool shows the result LIVE (outlines, lines only),
 hands ``on_done(records)`` and stays out for the next.
 
-- ColumnTool: «single» (click = a column), «row» (start, end: the
-  options bar's count, evenly, ends included — or a typed length), «grid»
+- ColumnTool: «single» (click = a column), «row» (a PATH, point by point
+  like a wall — each stretch gets the options bar's count / spacing, a
+  column on every corner once; the first point again closes it; it is kept
+  as a «Column row» group, colrows.py), «grid»
   (two opposite corners: columns × rows, edges included — or «w;d»).
 - BeamTool: point by point, like a run of walls — the walls engine joins
   the beams (L, T, X); width from the options bar.
@@ -46,33 +50,8 @@ def _draw_loops(viewport, painter, loops, z, fill: bool = False) -> None:
     painter.restore()
 
 
-def row_stations(length: float, o: dict) -> list[float]:
-    """Where a row's columns stand, as fractions of its line: by COUNT
-    (evenly) or by SPACING (from the first point), with the clicked ends
-    in or out (``ends``: both | first | last | none)."""
-    ends = o.get("ends", "both")
-    first, last = ends in ("both", "first"), ends in ("both", "last")
-    if length < 1e-9:
-        return [0.0]
-    if o.get("by", "count") == "spacing":
-        s = max(0.05, float(o.get("spacing", 5.0)))
-        k = int(math.floor(length / s + 1e-6))
-        ts = [i * s / length for i in range(k + 1)]
-        if ts and abs(ts[-1] - 1.0) < 1e-6:
-            ts[-1] = 1.0
-        if not first:
-            ts = [t for t in ts if t > 1e-9]
-        if last and (not ts or ts[-1] < 1.0 - 1e-6):
-            ts.append(1.0)
-        if not last:
-            ts = [t for t in ts if t < 1.0 - 1e-9]
-        return ts
-    n = max(1, int(o.get("count", 4)))
-    slots = n - 1 + (0 if first else 1) + (0 if last else 1)
-    if slots <= 0:
-        return [0.0 if first else 1.0]
-    start = 0 if first else 1
-    return [(start + k) / slots for k in range(n)]
+#: (moved to colrows.py with the path, 07/11/2026 — kept here by name)
+from .colrows import row_stations  # noqa: E402,F401
 
 
 def _upright(viewport, painter, loops, z, rise) -> None:
@@ -206,8 +185,47 @@ class ColumnTool(OnPlane, _PlotTool):
             self.vcb_label = "Dimensions"
             self.vcb_comma_lists = True
 
+    #: ui sets (row mode): (tool, points, closed) → the row made / changed
+    #: at each click — its columns are there at once, stretch by stretch
+    on_path = None
+    CLOSE_PX = 14            # a click this near the first point closes
+
+    #: the level's floor (the plan's plane), and — in 3D, the cursor on a
+    #: footing — that footing's top: the preview stands ON it (his test,
+    #: 07/11/2026: in the basement it floated 30 cm over the pads)
+    z_floor = None
+    _foot_z = None
+
+    def _plane_z(self) -> None:
+        from . import place3d as P3
+        if self.z_floor is None:
+            self.z_floor = self.z
+        z = self._foot_z if self._foot_z is not None \
+            and P3.in_3d(self.viewport) else self.z_floor
+        if abs(z - self.z) > 1e-9:
+            self.z = z
+            self._sync()
+
+    def _on_foot(self, z) -> None:
+        """The cursor on a footing (its top ``z``) or not — a row begun on
+        one stays at its top to the end."""
+        if z is None and (self.a is not None or getattr(self, "pts", None)):
+            return
+        if z != self._foot_z:
+            self._foot_z = z
+            self._plane_z()
+
+    def _rise_now(self) -> float:
+        """How tall the preview stands: to the same top from a footing."""
+        if self.z_floor is None:
+            return self.rise
+        return self.rise + max(0.0, self.z_floor - self.z)
+
     def _reset(self) -> None:
+        self._foot_z = None
         self.a = None
+        self.pts: list = []          # a row's path: the points clicked
+        self.row_id = None           # …and the «Column row» it made (ui)
         self.diag = None
         self._sync()
 
@@ -224,7 +242,11 @@ class ColumnTool(OnPlane, _PlotTool):
 
     def _align_sources(self):
         return [list(S.column_centre(c)) for c in self.existing()] \
-            + [list(p) for p in self.magnets]
+            + [list(p[:2]) for p in self.magnets]
+
+    #: the footings' axes ((x, y), (x, y), z top) — ui sets them (as the
+    #: beam's: BeamTool._axis_snap)
+    axes: list = []
 
     face_x: list = []
     face_y: list = []
@@ -269,74 +291,47 @@ class ColumnTool(OnPlane, _PlotTool):
         return None
 
     def _pit_inset(self, a, b, o):
-        """(a, b) moved inside the pit whose side both lie on: the row's
-        line half a column in from the side, its ends half a column in from
-        the corners clicked. Not on one side of a pit: as clicked."""
-        from . import plotgeo
-        L = math.dist(a, b)
-        if L < 1e-6:
-            return a, b
-        u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
-        along = float(o["w"])
-        across = along if o.get("section") == "round" else float(o["d"])
-        if abs((float(o.get("angle", 0)) % 180) - 90) < 1e-6:
-            along, across = across, along         # turned square to the row
-        # a click within a column's depth of the side counts as ON it (his
-        # left side, 2026-10-06: both clicks ~17 cm in, the row came out
-        # skewed by 0.04° and off the face) — laid back onto the side
-        tol = across + 0.05
-        for poly in self.pits:
-            n = len(poly)
-            for i in range(n):
-                p, q = poly[i], poly[(i + 1) % n]
-                fa, fb = _foot(a, p, q, tol), _foot(b, p, q, tol)
-                if fa is None or fb is None or math.dist(a, fa) > tol \
-                        or math.dist(b, fb) > tol or math.dist(fa, fb) < 1e-6:
-                    continue
-                # onto the side, and onto its corner when that near
-                a = next((list(c) for c in (p, q) if math.dist(fa, c) <= tol),
-                         fa)
-                b = next((list(c) for c in (p, q) if math.dist(fb, c) <= tol),
-                         fb)
-                L = math.dist(a, b)
-                u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
-                nx, ny = -u[1], u[0]
-                m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-                if not plotgeo.inside_polygon(
-                        (m[0] + nx * 0.01, m[1] + ny * 0.01), poly):
-                    nx, ny = -nx, -ny
-                h = across / 2
-                ka = along / 2 if any(math.dist(a, c) < 0.02 for c in poly) \
-                    else 0.0
-                kb = along / 2 if any(math.dist(b, c) < 0.02 for c in poly) \
-                    else 0.0
-                return ([a[0] + nx * h + u[0] * ka, a[1] + ny * h + u[1] * ka],
-                        [b[0] + nx * h - u[0] * kb, b[1] + ny * h - u[1] * kb])
-        return a, b
+        """(a, b) moved inside the pit whose side both lie on (colrows)."""
+        from . import colrows
+        return colrows.pit_inset(a, b, o, self.pits)
 
     def _pick(self, ctx) -> list[float]:
         p = super()._pick(ctx)
         self.guides = []
         if self.viewport is None or self._guide_hit:
             return p
-        if self.mode == "row" and self.pits:
-            q = self._pit_snap(p)
-            if q is not None:
-                self._aligned = []
-                return q
         here = compat.to_pixel(self.viewport, p[0], p[1], self.z)
-        if not here:
-            return p
+        # the exact points first — a wall's corner, a column / a row's point
+        # of the level below or above (his ask, 08/11/2026: a column over
+        # another one was set by eye) — then an excavation's side
         best = None
-        for q in self.magnets or ():
-            px = compat.to_pixel(self.viewport, q[0], q[1], self.z)
+        for q in (self.magnets or ()) if here else ():
+            # (a footing's point: seen at its top)
+            px = compat.to_pixel(self.viewport, q[0], q[1],
+                                 float(q[2]) if len(q) > 2 else self.z)
             if px:
                 d = math.dist(here, px)
                 if d <= self.MAGNET_PX and (best is None or d < best[0]):
                     best = (d, q)
         if best is not None:
             self._aligned = []
-            return [round(best[1][0], 4), round(best[1][1], 4)]
+            q = best[1]
+            self._on_foot(float(q[2]) if len(q) > 2 else None)
+            return [round(q[0], 4), round(q[1], 4)]
+        # a footing's line (his test, 07/11/2026: columns on a footing row)
+        hit = self._axis_snap(here) if here and self.axes else None
+        if hit is not None:
+            self._aligned = []
+            self._on_foot(hit[2])
+            return [hit[0], hit[1]]
+        self._on_foot(None)
+        if self.mode == "row" and self.pits:
+            q = self._pit_snap(p)
+            if q is not None:
+                self._aligned = []
+                return q
+        if not here:
+            return p
         # a face laid flush with a wall's / the plot's / another column's
         # (his ask, 2026-10-03: only the centre and the corners pulled) —
         # the column's sides, when it stands square with the axes
@@ -353,7 +348,10 @@ class ColumnTool(OnPlane, _PlotTool):
         return [round(p[0] + dx, 4), round(p[1] + dy, 4)]
 
     def _sync(self) -> None:
-        self._sync_protocol([self.a] if self.a else [], self.hover)
+        if self.mode == "row" and getattr(self, "pts", None):
+            self._sync_protocol(self.pts, self.hover)
+        else:
+            self._sync_protocol([self.a] if self.a else [], self.hover)
         self.chain_first_point = None
 
     # -- the columns -----------------------------------------------------------------
@@ -371,12 +369,14 @@ class ColumnTool(OnPlane, _PlotTool):
         if self.mode == "single" or self.a is None:
             return [self._col(b)]
         if self.mode == "row":
-            a, b = self._pit_inset(self.a, b, o)    # (squared to the side)
-            ang = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
-            return [self._col([a[0] + (b[0] - a[0]) * t,
-                               a[1] + (b[1] - a[1]) * t],
-                              o["angle"] + ang)
-                    for t in row_stations(math.dist(a, b), o)]
+            # the whole path with the stretch to ``b``: a corner turns into
+            # one with a column of its own as soon as the path goes on
+            from . import colrows
+            pts = list(getattr(self, "pts", None) or [self.a])
+            closed = self._closing(b)
+            path = pts if closed else pts + [list(b)]
+            return [self._col([x, y], ang) for x, y, ang in
+                    colrows.stations(path, closed, o, self.pits)]
         nx, ny = max(1, int(o["nx"])), max(1, int(o["ny"]))
         xs = [self.a[0] + (b[0] - self.a[0]) * (k / (nx - 1) if nx > 1 else 0)
               for k in range(nx)]
@@ -385,10 +385,85 @@ class ColumnTool(OnPlane, _PlotTool):
         return [self._col([x, y]) for y in ys for x in xs]
 
     # -- input -----------------------------------------------------------------------
+    def _closing(self, p, ctx=None) -> bool:
+        """The point is the path's first one again (on the screen): the
+        row closes — three points at least."""
+        pts = getattr(self, "pts", None) or []
+        if self.mode != "row" or len(pts) < 3 or p is None:
+            return False
+        a = compat.to_pixel(self.viewport, pts[0][0], pts[0][1], self.z) \
+            if self.viewport is not None else None
+        if a is None:
+            return math.dist(p, pts[0]) < 1e-3
+        here = []
+        scr = getattr(ctx, "screen", None)
+        if scr is not None:
+            here.append((scr.x(), scr.y()))
+        b = compat.to_pixel(self.viewport, p[0], p[1], self.z)
+        if b is not None:
+            here.append(b)
+        return any(math.dist(a, h) <= self.CLOSE_PX for h in here)
+
+    def on_hover(self, ctx) -> None:
+        super().on_hover(ctx)
+        if self._closing(self.hover, ctx):
+            self.hover = list(self.pts[0])      # the rubber band closes
+            self._sync()
+
+    def _path_add(self, p, ctx=None) -> None:
+        """A row's next point: the path so far is made (or changed) at once
+        — the first stretch at the 2nd click, as the row of before."""
+        if self._closing(p, ctx):
+            self._path_end(closed=True)
+            return
+        if math.dist(p, self.pts[-1]) < 1e-3:   # (a double click's 2nd)
+            self._path_end()
+            return
+        self.pts.append(list(p))
+        self.a = list(p)
+        self.last_ab = (list(self.pts[-2]), list(self.pts[-1]))
+        self._sync()
+        if self.on_path is not None:
+            self.on_path(self, [list(q) for q in self.pts], False)
+        self._show_hint()
+        if self.viewport is not None:
+            self.viewport.update()
+
+    def _path_end(self, closed: bool = False) -> None:
+        """The path done — open (Enter, a double click, Esc) or CLOSED (its
+        first point clicked): its columns are already there; the tool stays
+        for the next row."""
+        pts = [list(q) for q in self.pts]
+        if closed and self.on_path is not None and len(pts) >= 3:
+            self.on_path(self, pts, True)
+        self._reset()
+        if self.viewport is not None:
+            self.viewport.update()
+
+    def on_double_click(self, ctx) -> None:
+        if self.mode != "row":
+            self.on_click(ctx)
+            return
+        if not self.pts:
+            return
+        p = self._pick(ctx)
+        if self._closing(p, ctx):
+            self._path_end(closed=True)
+            return
+        if math.dist(p, self.pts[-1]) >= 1e-3:
+            self._path_add(p, ctx)
+        if self.pts:
+            self._path_end()
+
     def on_click(self, ctx) -> None:
         if self._grazes(ctx):                # 3D: a ray along the floor
             return
         p = self._pick(ctx)
+        if self.mode == "row" and self.pts:
+            self._path_add(p, ctx)
+            return
+        if self.mode == "row":
+            self.pts = [list(p)]
         if self.mode != "single" and self.a is None:
             self.a = p
             self._sync()
@@ -411,8 +486,8 @@ class ColumnTool(OnPlane, _PlotTool):
             if d < 1e-9:
                 return False
             L = abs(float(value))
-            self._done(self.columns([self.a[0] + dx / d * L,
-                                     self.a[1] + dy / d * L]))
+            self._path_add([round(self.a[0] + dx / d * L, 4),
+                            round(self.a[1] + dy / d * L, 4)])
             return True
         if self.mode == "grid" and isinstance(value, tuple) \
                 and len(value) >= 2:
@@ -424,8 +499,23 @@ class ColumnTool(OnPlane, _PlotTool):
         return False
 
     def on_key(self, viewport, key, modifiers) -> bool:
-        if key == Qt.Key_Backspace and self.a is not None \
-                and not compat.typed_value(viewport):
+        typing = bool(compat.typed_value(viewport))
+        if self.mode == "row" and self.pts and not typing:
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self._path_end()                 # done, open
+                return True
+            if key == Qt.Key_Backspace:          # the last point back
+                self.pts.pop()
+                if self.on_path is not None and self.row_id is not None:
+                    self.on_path(self, [list(q) for q in self.pts], False)
+                if self.pts:
+                    self.a = list(self.pts[-1])
+                    self._sync()
+                else:
+                    self._reset()
+                viewport.update()
+                return True
+        if key == Qt.Key_Backspace and self.a is not None and not typing:
             self._reset()
             viewport.update()
             return True
@@ -436,7 +526,8 @@ class ColumnTool(OnPlane, _PlotTool):
         if self.a is None or self.hover is None:
             return []
         if self.mode == "row":
-            return [(self._P(self.a), self._P(self.hover))]
+            pts = list(self.pts or [self.a]) + [self.hover]
+            return [(self._P(p), self._P(q)) for p, q in zip(pts, pts[1:])]
         a, h = self.a, self.hover
         q = [[a[0], a[1]], [h[0], a[1]], [h[0], h[1]], [a[0], h[1]]]
         return [(self._P(q[i]), self._P(q[(i + 1) % 4])) for i in range(4)]
@@ -469,8 +560,13 @@ class ColumnTool(OnPlane, _PlotTool):
             return (f"Columns ({self.mode}): click the first one  ·  "
                     "Esc = done")
         if self.mode == "row":
-            return ("Columns (row): click the last one, or type the length + "
-                    "Enter — the count is in the options bar  ·  Esc = drop")
+            if len(getattr(self, "pts", None) or []) < 2:
+                return ("Columns (row): click the next point, or type the "
+                        "length + Enter — the count is in the options bar  ·"
+                        "  Esc = drop")
+            return ("Columns (row): the next point (a column on each corner)"
+                    " · the first point = close · double click / Enter / "
+                    "Esc = done · Backspace = back a point")
         return ("Columns (grid): click the opposite corner, or type w;d + "
                 "Enter — columns × rows in the options bar  ·  Esc = drop")
 
@@ -480,7 +576,7 @@ class ColumnTool(OnPlane, _PlotTool):
                 loops = [S.column_outline(self.adjust(c), 0.0)
                          for c in self.columns(self.hover)]
                 _draw_loops(viewport, painter, loops, self.z, fill=True)
-                _upright(viewport, painter, loops, self.z, self.rise)
+                _upright(viewport, painter, loops, self.z, self._rise_now())
             except Exception:  # noqa: BLE001 — a preview never breaks paint
                 pass
             draw_guides(viewport, painter, self.guides, self.hover, self.z)
@@ -505,10 +601,16 @@ class BeamTool(OnPlane, WallChainTool):
             self.z_floor = self.z
         z = self.z_floor
         if self.under is not None and P3.in_3d(self.viewport):
-            try:
-                z = float(self.under())
-            except Exception:  # noqa: BLE001 — the floor, as in the plan
-                z = self.z_floor
+            if self._foot_z is not None:
+                # on a footing: drawn at ITS top, where the beam will sit
+                # (his test, 07/11/2026: in 3D the line floated 2.50 m up,
+                # off the footings it was pulled onto)
+                z = self._foot_z
+            else:
+                try:
+                    z = float(self.under())
+                except Exception:  # noqa: BLE001 — the floor, as in plan
+                    z = self.z_floor
         if abs(z - self.z) > 1e-9:
             self.z = z
             self._sync()            # the points already placed, at it too
@@ -520,26 +622,117 @@ class BeamTool(OnPlane, WallChainTool):
     MAGNET_PX = 14
 
     def _align_sources(self):
-        return super()._align_sources() + [list(p) for p in self.magnets]
+        return super()._align_sources() + [list(p[:2]) for p in self.magnets]
 
     def _pick(self, ctx) -> list[float]:
         p = super()._pick(ctx)
-        if self.viewport is None or not self.magnets:
+        if self.viewport is None or not (self.magnets or self.axes):
             return p
-        here = compat.to_pixel(self.viewport, p[0], p[1], self.z)
+        here = self._cursor_px(ctx, p)
         if not here:
             return p
         best = None
         for q in self.magnets:
-            px = compat.to_pixel(self.viewport, q[0], q[1], self.z)
+            # a footing's point: seen at ITS top (3D), not at the beam's
+            z = float(q[2]) if len(q) > 2 else self.z
+            px = compat.to_pixel(self.viewport, q[0], q[1], z)
             if px:
                 d = math.dist(here, px)
                 if d <= self.MAGNET_PX and (best is None or d < best[0]):
                     best = (d, q)
         if best is None:
-            return p
+            hit = self._axis_snap(here)
+            if hit is None:
+                self._on_foot(None)
+                return p
+            self._aligned = []
+            self._on_foot(hit[2])
+            return [hit[0], hit[1]]
         self._aligned = []
-        return [round(best[1][0], 4), round(best[1][1], 4)]
+        q = best[1]
+        self._on_foot(float(q[2]) if len(q) > 2 else None)
+        return [round(q[0], 4), round(q[1], 4)]
+
+    _foot_z = None
+
+    def _on_foot(self, z) -> None:
+        """The cursor on a footing (its top ``z``) or not: the plane in 3D
+        follows — a beam begun on a footing stays at its top to the end."""
+        if z is None and getattr(self, "pts", None):
+            return                       # begun: its plane stays
+        if z != self._foot_z:
+            self._foot_z = z
+            self._plane_z()
+
+    def _reset(self) -> None:
+        self._foot_z = None
+        super()._reset()
+
+    #: the footings' AXES of this level, ((x, y), (x, y), z top) — ui sets
+    #: them: the cursor is pulled onto the line (his test, 07/11/2026: a
+    #: beam on top of a footing row — a wall's base — had nothing to hold)
+    axes: list = []
+
+    def _cursor_px(self, ctx, p):
+        """The cursor on the screen (its pixel) — else ``p``'s, which lies
+        on its ray on the plane it is drawn at."""
+        scr = getattr(ctx, "screen", None)
+        if scr is not None:
+            try:
+                return (float(scr.x()), float(scr.y()))
+            except Exception:  # noqa: BLE001
+                pass
+        return compat.to_pixel(self.viewport, p[0], p[1], self.z)
+
+    def _axis_snap(self, here):
+        """The nearest point of a footing's axis, within MAGNET_PX on the
+        screen — or None."""
+        best = None
+        for a, b, z in self.axes:
+            pa = compat.to_pixel(self.viewport, a[0], a[1], z)
+            pb = compat.to_pixel(self.viewport, b[0], b[1], z)
+            if not pa or not pb:
+                continue
+            dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+            L2 = dx * dx + dy * dy
+            if L2 < 1e-9:
+                continue
+            t = max(0.0, min(1.0, ((here[0] - pa[0]) * dx
+                                   + (here[1] - pa[1]) * dy) / L2))
+            d = math.dist(here, (pa[0] + t * dx, pa[1] + t * dy))
+            if d <= self.MAGNET_PX and (best is None or d < best[0]):
+                # (the screen's t is the plan's only in a parallel view:
+                # the plan point found again on the line, by its pixel)
+                best = (d, a, b, z, t)
+        if best is None:
+            return None
+        _d, a, b, z, t = best
+        t = self._plan_t(a, b, z, here, t)
+        return [round(a[0] + t * (b[0] - a[0]), 4),
+                round(a[1] + t * (b[1] - a[1]), 4), z]
+
+    def _plan_t(self, a, b, z, here, t0) -> float:
+        """Where on a→b (0..1) the pixel ``here`` falls — a few steps of
+        bisection on the screen (perspective bends the screen's t)."""
+        lo, hi = 0.0, 1.0
+        def px(t):
+            return compat.to_pixel(self.viewport, a[0] + t * (b[0] - a[0]),
+                                   a[1] + t * (b[1] - a[1]), z)
+        pa, pb = px(0.0), px(1.0)
+        if not pa or not pb:
+            return t0
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        def s(t):                       # its screen position along a→b
+            q = px(t)
+            return ((q[0] - pa[0]) * dx + (q[1] - pa[1]) * dy) if q else 0.0
+        goal = (here[0] - pa[0]) * dx + (here[1] - pa[1]) * dy
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            if s(mid) < goal:
+                lo = mid
+            else:
+                hi = mid
+        return max(0.0, min(1.0, (lo + hi) / 2))
 
     def line_records(self, pts, closed):
         # «Insert» (a customer's ask, 2026-10-10): the line drawn is its
@@ -580,6 +773,64 @@ class PadTool(ColumnTool):
     def status_clause(self) -> str:
         return ("Pad footing: click where it goes — on a column it is "
                 "centred under it  ·  Esc = done")
+
+
+class FootRowTool(ColumnTool):
+    """FOOTINGS ALONG A PATH (PLANO_LINHA_COLUNAS D, his OK 07/11/2026): the
+    columns' row tool — point by point, corners, the first point closes,
+    Backspace, the magnets, flush inside an excavation — its squares the
+    PADS, with the strip along it shown too. No column over them (a timber
+    house's footings). ui makes the «Footing row» at each click."""
+    name = "ArchXQ footing"
+    axq_element = "footing"
+    noun = "Footing"
+    row_what = "footings"
+
+    def __init__(self, on_cancelled, z, opts, existing):
+        super().__init__("row", lambda _recs: None, on_cancelled, z, opts,
+                         existing)
+
+    def _preview(self) -> list:
+        from . import colrows
+        o = self.opts()
+        ft = o["foots"]["type"]
+        loops = []
+        if ft in ("pads", "both"):
+            loops += [S.column_outline(c, 0.0)
+                      for c in self.columns(self.hover)]
+        pts = list(getattr(self, "pts", None) or [])
+        if ft in ("strip", "both") and pts:
+            closed = self._closing(self.hover)
+            path = pts if closed else pts + [list(self.hover)]
+            h = float(o["foots"]["sw"]) / 2
+            for a, b in colrows.stretches(path, closed, o, self.pits)[1]:
+                L = math.dist(a, b)
+                if L < 1e-6:
+                    continue
+                nx, ny = -(b[1] - a[1]) / L * h, (b[0] - a[0]) / L * h
+                loops.append([(a[0] + nx, a[1] + ny), (b[0] + nx, b[1] + ny),
+                              (b[0] - nx, b[1] - ny), (a[0] - nx, a[1] - ny)])
+        return loops
+
+    def draw_overlay(self, viewport, painter) -> None:
+        if self.hover is not None:
+            try:
+                _draw_loops(viewport, painter, self._preview(), self.z,
+                            fill=True)
+            except Exception:  # noqa: BLE001 — a preview never breaks paint
+                pass
+            draw_guides(viewport, painter, self.guides, self.hover, self.z)
+        super(ColumnTool, self).draw_overlay(viewport, painter)
+
+    def status_clause(self) -> str:
+        if self.a is None:
+            return "Footings (path): click the first point  ·  Esc = done"
+        if len(getattr(self, "pts", None) or []) < 2:
+            return ("Footings (path): click the next point, or type the "
+                    "length + Enter  ·  Esc = drop")
+        return ("Footings (path): the next point · the first point = close "
+                "· double click / Enter / Esc = done · Backspace = back a "
+                "point")
 
 
 class StripTool(BeamTool):
@@ -662,6 +913,11 @@ SLAB_TOOLS = {"rect": slab_tool(plottools.PlotRectTool),
 #: how a slab OPENING is drawn — the options bar's «Drawn» (shape «hole»)
 HOLE_DRAWN = (("rect", "Rectangle"), ("rect_r", "Rotated"),
               ("chain", "Points"), ("circle", "Circle"))
+
+
+# a column, too, is pulled onto a footing's line (the beam's way)
+ColumnTool._axis_snap = BeamTool._axis_snap
+ColumnTool._plan_t = BeamTool._plan_t
 
 
 def beams_as_walls(beams: list[dict]) -> list[dict]:

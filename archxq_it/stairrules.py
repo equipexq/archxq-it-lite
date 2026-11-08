@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A STAIR'S CODE CHECK (plan PLANO_ESCADA_NORMA.md, his ask 2026-10-29 —
 the idea from MUZWalls' live checks): a stair's numbers held against a
 building code's — a GUIDE, never a block (why_not stays for the absurd).

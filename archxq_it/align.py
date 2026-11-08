@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ALIGN, as Revit's (his ask, 0.15.0 B1/B2 — 2026-10-20): click a
 REFERENCE (an edge in plan: a wall's face, a column's side, a beam's or a
 slab's edge), then an EDGE of the element to line up — the element moves

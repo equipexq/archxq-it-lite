@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The outliner — every item of the model, in the ArchXQ tab of the side
 tray (above the properties, Blender's arrangement).
 
@@ -177,7 +179,7 @@ class Outliner(QWidget):
             return
         if key.startswith("level:") or key == "terrain":
             self.owner.set_floor(key.split(":", 1)[1] if ":" in key
-                                 else "terrain")
+                                 else "terrain", by_hand=True)
             return
         chosen = [i.data(0, KEY) for i in self.tree.selectedItems()]
         self.owner.outliner_select(chosen)

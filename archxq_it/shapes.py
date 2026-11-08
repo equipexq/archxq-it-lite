@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """OPENINGS WITH A SHAPE (PLANO_ABERTURAS_FORMA.md, his OK 2026-10-30 — a
 YouTube ask, MUZWalls 29/10: «round, oval, arched, gable… openings»).
 

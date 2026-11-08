@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SILENT PAINT FAILURES, kept (his call, 2026-10-26: «take great care not
 to go backwards»). The plan's drawings (dimensions, rooms' tint, ghost…)
 swallow any error so the host's paint never breaks — and so a broken one

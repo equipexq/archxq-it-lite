@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """LAYERS HIDDEN in the 3D (PLANO_OCULTAR_CAMADAS.md, his OK 2026-11-02):
 the eye on a layer's row — the siding and the OSB off, the studs seen.
 

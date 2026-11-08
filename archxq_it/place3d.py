@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PLACING IN THE 3D VIEW (PLANO_ABERTURAS_3D.md, his OK 29/10: «pode
 construir tudo, mas sempre que possível alinhado às linhas que encontrar»).
 

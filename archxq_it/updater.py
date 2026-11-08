@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """UPDATE WITH ONE CLICK (his top ask, 2026-10-16; plan
 PLANO_ATUALIZAR_UM_CLIQUE.md, 2026-10-18).
 

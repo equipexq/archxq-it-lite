@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Modal editors (QDialog.exec): robust in Qt, used to EDIT structured data.
 The permanent regions (top / left / right / bottom) stay the home of the
 interface; a dialog opens only to change a set of values and closes."""
@@ -29,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import compat, model
+from . import compat, edition, model
 from .help import help_button
 from .phases import SYSTEMS
 from .style import BLUE
@@ -304,8 +306,13 @@ class ProjectDialog(QDialog):
         else:
             levels_tab.setParent(self)
             levels_tab.hide()
-        self.tabs.addTab(page(self._docs_tab(), "Sheets", "docs"),
-                         "Documentation", "material")
+        docs_tab = self._docs_tab()
+        if edition.lite():                 # the sheets are the Pro's: their
+            docs_tab.setParent(self)       # fields stay, for _accept
+            docs_tab.hide()
+        else:
+            self.tabs.addTab(page(docs_tab, "Sheets", "docs"),
+                             "Documentation", "material")
         order = (["project", "levels", "documentation"] if self.is_new
                  else ["project", "documentation"])
         self.tabs.setCurrentIndex(order.index(tab) if tab in order else 0)
@@ -384,14 +391,27 @@ class ProjectDialog(QDialog):
         head.addStretch()
         head.addWidget(help_button("levels"))
         lay.addLayout(head)
-        self.table = QTableWidget(0, 4)
+        # «Clear height» and «Floor slab» (support #93, 07/11/2026): a
+        # storey typed as on site — 2.00 clear + 0.27 slab = 2.27
+        self.table = QTableWidget(0, 6)
         self.table.setMinimumHeight(230)       # in a fold: never squeezed
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Height", "Elevation", "Type"])
+            ["Name", "Height", "Clear height", "Floor slab", "Elevation",
+             "Type"])
+        hi = self.table.horizontalHeaderItem
+        hi(1).setToolTip("Floor to floor: from this level's finished floor "
+                         "to the next one's")
+        hi(2).setToolTip("From the finished floor to the underside of the "
+                         "slab above. Typed: the height is worked out")
+        hi(3).setToolTip("The slab this level stands on (its top is the "
+                         "finished floor): its slabs are born this thick")
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in (1, 2, 3):
+        for c in (1, 2, 3, 4, 5):
             hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        if edition.lite():                 # no slabs in the Lite
+            self.table.setColumnHidden(2, True)
+            self.table.setColumnHidden(3, True)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -419,11 +439,18 @@ class ProjectDialog(QDialog):
         form = QFormLayout(w)
         p = self.project
         self.f_paper = QComboBox()
-        from . import docs
-        # only what the sheets draw (IngeTrazo: the A sizes — Letter /
-        # Tabloid offered here came out A3)
-        self.f_paper.addItems(list(docs.PAPERS))
-        self.f_paper.setCurrentText(docs.host_paper(p["paper"]))
+        if edition.lite():
+            # no docs.py in the Lite (support #94: importing it here kept
+            # the window from opening, so no project could be started): the
+            # project's paper is only carried along
+            self.f_paper.addItem(p["paper"])
+            self.f_paper.setCurrentText(p["paper"])
+        else:
+            from . import docs
+            # only what the sheets draw (IngeTrazo: the A sizes — Letter /
+            # Tabloid offered here came out A3)
+            self.f_paper.addItems(list(docs.PAPERS))
+            self.f_paper.setCurrentText(docs.host_paper(p["paper"]))
         form.addRow("Paper", _with_help(self.f_paper, "documentation"))
         self.f_orient = QComboBox()
         self.f_orient.addItems(["Landscape", "Portrait"])
@@ -452,13 +479,28 @@ class ProjectDialog(QDialog):
             spin.valueChanged.connect(
                 lambda v, i=i: self._on_height(i, v))
             self.table.setCellWidget(row, 1, spin)
+            if i + 1 < n:                 # the top one has no slab above
+                c = _metres(lv["height"] - model.slab_t(self.levels[i + 1]),
+                            0.5, model.MAX_HEIGHT, 0.01)
+                c.valueChanged.connect(lambda v, i=i: self._on_clear(i, v))
+                self.table.setCellWidget(row, 2, c)
+            else:
+                c = QTableWidgetItem("—")
+                c.setFlags(c.flags() & ~Qt.ItemIsEditable)
+                c.setTextAlignment(Qt.AlignCenter)
+                c.setToolTip("The top level: no slab above it")
+                self.table.setItem(row, 2, c)
+            s = _metres(model.slab_t(lv), model.MIN_SLAB_T, model.MAX_SLAB_T,
+                        0.01)
+            s.valueChanged.connect(lambda v, i=i: self._on_slab(i, v))
+            self.table.setCellWidget(row, 3, s)
             e = QTableWidgetItem(compat.fmt_level(elev[i]))
             e.setFlags(e.flags() & ~Qt.ItemIsEditable)
             e.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.table.setItem(row, 2, e)
+            self.table.setItem(row, 4, e)
             k = QTableWidgetItem(KIND_LABEL[lv["kind"]])
             k.setFlags(k.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 3, k)
+            self.table.setItem(row, 5, k)
         self.table.blockSignals(False)
         if select is not None:
             self.table.selectRow(n - 1 - select)
@@ -469,9 +511,41 @@ class ProjectDialog(QDialog):
         n = len(self.levels)
         self.table.blockSignals(True)
         for row in range(n):
-            self.table.item(row, 2).setText(
+            self.table.item(row, 4).setText(
                 compat.fmt_level(elev[n - 1 - row]))
         self.table.blockSignals(False)
+        self._refresh_clear()
+
+    def _refresh_clear(self) -> None:
+        """Each clear height again (height − the slab above), quietly."""
+        n = len(self.levels)
+        for row in range(n):
+            i = n - 1 - row
+            w = self.table.cellWidget(row, 2)
+            if w is None or i + 1 >= n:
+                continue
+            w.blockSignals(True)
+            w.setValue(round(self.levels[i]["height"]
+                             - model.slab_t(self.levels[i + 1]), 3))
+            w.blockSignals(False)
+
+    def _on_clear(self, i: int, value: float) -> None:
+        """A clear height typed: the height is clear + the slab above."""
+        h = round(value + model.slab_t(self.levels[i + 1]), 3)
+        h = min(max(h, model.MIN_HEIGHT), model.MAX_HEIGHT)
+        self.levels[i]["height"] = h
+        w = self.table.cellWidget(len(self.levels) - 1 - i, 1)
+        if w is not None:
+            w.blockSignals(True)
+            w.setValue(h)
+            w.blockSignals(False)
+        self._refresh_elevations()
+
+    def _on_slab(self, i: int, value: float) -> None:
+        """A level's floor slab typed: kept; the height stays (floor to
+        floor), the clear height under it changes."""
+        self.levels[i]["slab_t"] = round(value, 3)
+        self._refresh_clear()
 
     def _selected_index(self) -> int | None:
         rows = self.table.selectionModel().selectedRows()
@@ -1166,6 +1240,7 @@ class LevelDialog(QDialog):
         form.addRow("Height", _with_help(self.f_height, "level_height"))
         self.l_elev = QLabel()
         form.addRow("Elevation", self.l_elev)
+        self._slab_rows(doc, form)
         gl.addWidget(self.fold_h)
         gl.addWidget(L.hint(
             KIND_LABEL[lv["kind"]] + (" floor" if lv["kind"] == "ground"
@@ -1373,6 +1448,101 @@ class LevelDialog(QDialog):
     def _done(self, action: str) -> None:
         self.action = action
         self.accept()
+
+    # ---- clear height and slabs (support #93, 07/11/2026) ------------------------
+    def _slab_rows(self, doc: dict, form) -> None:
+        """«Clear height», «Slab above» and «Floor slab»: what a storey is
+        reckoned by on site (2.00 clear + 0.27 slab = 2.27 floor to floor).
+        The height stays floor to floor; these only read / set the slabs."""
+        self._slab0 = {}
+        self.f_clear = self.f_above = self.f_floor = None
+        if edition.lite():                 # no slabs in the Lite
+            return
+        from . import look as L
+        from . import structure as S
+        info = S.levels_info(doc, model.elevations) \
+            if model.has_project(doc) else {}
+        i = self.index
+
+        def real(k: int) -> float:
+            """Level k's floor slab: the slabs on it, or its own «slab_t»."""
+            lv = self.levels[k]
+            t = (info.get(lv["id"]) or {}).get("slab", 0.0)
+            return round(t, 3) if t > 1e-6 else model.slab_t(lv)
+        self._slab0 = {}                   # level id → thickness shown first
+        self.f_clear = self.f_above = None
+        if i + 1 < len(self.levels):
+            up = self.levels[i + 1]
+            self._slab0[up["id"]] = real(i + 1)
+            self.f_above = L.metres(self._slab0[up["id"]], model.MIN_SLAB_T,
+                                    0.60, 0.01)
+            self.f_above.field.setMaximum(model.MAX_SLAB_T)
+            self.f_above.setValue(self._slab0[up["id"]])
+            self.f_above.setToolTip(tr(
+                "The slab between this level and «{n}»: its top is «{n}»'s "
+                "finished floor", n=up["name"]))
+            form.addRow("Slab above", self.f_above)
+            self.f_clear = L.metres(
+                max(self.f_height.value() - self._slab0[up["id"]], 0.5),
+                0.5, min(model.MAX_HEIGHT, 10.0), 0.01)
+            self.f_clear.field.setMaximum(model.MAX_HEIGHT)
+            self.f_clear.setToolTip("From this level's finished floor to the "
+                                    "underside of the slab above. Typed: the "
+                                    "height is worked out (clear + slab above)")
+            form.addRow("Clear height", self.f_clear)
+            self.f_clear.setValue(self.f_height.value()
+                                  - self._slab0[up["id"]])
+        own = self.levels[i]
+        self._slab0[own["id"]] = real(i)
+        self.f_floor = L.metres(self._slab0[own["id"]], model.MIN_SLAB_T,
+                                0.60, 0.01)
+        self.f_floor.field.setMaximum(model.MAX_SLAB_T)
+        self.f_floor.setValue(self._slab0[own["id"]])
+        self.f_floor.setToolTip("The slab this level stands on: its top is "
+                                "this level's finished floor, it grows down")
+        form.addRow("Floor slab", self.f_floor)
+        form.addRow(L.hint(
+            "Height is floor to floor (finished floors). A slab changed here "
+            "changes that level's slabs, except those of a slab type (the "
+            "type sets them)."))
+        self._busy = False
+        if self.f_clear is not None:
+            self.f_clear.valueChanged.connect(self._on_clear)
+            self.f_above.valueChanged.connect(self._on_slab_above)
+            self.f_height.valueChanged.connect(self._clear_from_height)
+
+    def _on_clear(self, v: float) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self.f_height.setValue(round(v + self.f_above.value(), 3))
+        self._busy = False
+
+    def _on_slab_above(self, _v: float) -> None:
+        self._clear_from_height()
+
+    def _clear_from_height(self, *_a) -> None:
+        if self._busy or self.f_clear is None:
+            return
+        self._busy = True
+        self.f_clear.setValue(round(self.f_height.value()
+                                    - self.f_above.value(), 3))
+        self._busy = False
+
+    def slabs(self) -> dict:
+        """{level id: thickness} — only the slabs changed in the window."""
+        out = {}
+        # (by the ids they were made for: a level added meanwhile from this
+        # window — «＋ Level on top» — never shifts them)
+        pairs = [(lid, self.f_floor if lid == self.key else self.f_above)
+                 for lid in self._slab0]
+        for lid, w in pairs:
+            if w is None:
+                continue
+            v = round(w.value(), 3)
+            if abs(v - self._slab0.get(lid, v)) > 1e-4:
+                out[lid] = v
+        return out
 
     def _new_hint(self) -> None:
         """Where the next «on top» / «basement» would go (tooltips too)."""
@@ -3128,10 +3298,12 @@ class ElementDialog(QDialog):
         return S.joist_span(s, turn), depth
 
     def __init__(self, el: dict, level: dict, parent=None,
-                 picks=(), types=None) -> None:
+                 picks=(), types=None, row=None) -> None:
         """``picks``: «Select its row (5 columns)», «Select all … on this
         level» — a button each; it closes with action "pick:<i>".
-        ``types``: YOUR slab types (a floor slab's Layers tab)."""
+        ``types``: YOUR slab types (a floor slab's Layers tab). ``row``: a
+        column of a «Column row» (colrows.py) — {"name", "n", "closed",
+        "opts"}: its «Row» part, and what is changed goes to the row."""
         import math
         from . import look as L
         from . import structure as S
@@ -3222,6 +3394,20 @@ class ElementDialog(QDialog):
             w.valueChanged.connect(self._sync)
             gl.addWidget(fold)
             self.fold_place = fold
+            from . import edition
+            from . import library as LB
+            if not edition.lite():
+                # its base and capital (column_orders.py, Pro — 06/11/2026)
+                fold = L.Fold("Base & capital", "column.orders")
+                form = fold.form()
+                self._column_order_rows(form, el, LB.CATALOG["column"])
+                gl.addWidget(fold)
+            if row:
+                self._row_fold(gl, row)
+                from . import edition
+                if not edition.lite():
+                    self._row_beams_fold(gl, row)
+                    self._row_foots_fold(gl, row)
         elif t == "beam":
             fold = L.Fold("Size", "beam.size")
             form = fold.form(self.d_size)
@@ -3432,11 +3618,18 @@ class ElementDialog(QDialog):
             form = fold.form(self.d_size)
             measure(form, "w", "Width", 0.1, 5.0, hot="w", fmax=10.0)
             measure(form, "d", "Depth", 0.05, 3.0, hot="d", fmax=5.0)
-            form.addRow("Kind", QLabel("Pad (under a column)"
-                                       if el.get("kind") == "pad"
-                                       else "Strip (under a wall)"))
+            if row:            # one of a «Footing row»: no wall, no column
+                kind = (tr("Pad (along «{r}»)", r=row.get("name", ""))
+                        if el.get("kind") == "pad" else
+                        tr("Strip (along «{r}»)", r=row.get("name", "")))
+            else:
+                kind = ("Pad (under a column)" if el.get("kind") == "pad"
+                        else "Strip (under a wall)")
+            form.addRow("Kind", QLabel(kind))
             gl.addWidget(fold)
             self.fold_main = fold
+            if row:            # one of a «Footing row» (colrows, PLANO D)
+                self._row_fold(gl, row)
         gl.addWidget(L.hint(tr("Level: {name}", name=level['name'])))
         gl.addStretch(1)
         self.tabs.addTab(pg, "Geometry", "geometry")
@@ -3503,6 +3696,201 @@ class ElementDialog(QDialog):
         acts.addWidget(bb)
         lay.addLayout(acts)
         self._sync()
+
+    def _row_fold(self, gl, row: dict) -> None:
+        """A column of a «Column row» (PLANO_LINHA_COLUNAS B, 07/11/2026):
+        how many / how far apart, its ends — and the note that this window
+        changes EVERY column of the row."""
+        from PySide6.QtWidgets import QSpinBox
+        from . import look as L
+        o = row.get("opts") or {}
+        foots = row.get("what") == "footings"
+        fold = L.Fold(tr("Row"), "footing.row" if foots else "column.row")
+        form = fold.form()
+        if foots:
+            note = QLabel(tr("One of «{r}» ({n} footings): what you change "
+                             "here goes to every footing of it (one "
+                             "Ctrl+Z).", r=row.get("name", ""),
+                             n=row.get("n", 0)))
+        else:
+            note = QLabel(tr("One of «{r}» ({n} columns): what you change "
+                             "here goes to every column of it (one Ctrl+Z).",
+                             r=row.get("name", ""), n=row.get("n", 0)))
+        note.setWordWrap(True)
+        form.addRow(note)
+        self.f_rftype = None
+        if foots:
+            # what it has: pads, a strip, both (PLANO D)
+            self.f_rftype = L.Chips()
+            for val, text in (("pads", "Pads"), ("strip", "Strip"),
+                              ("both", "Pads + strip")):
+                self.f_rftype.addItem(tr(text), val)
+            self.f_rftype.setCurrentIndex(max(0, self.f_rftype.findData(
+                (o.get("foots") or {}).get("type", "pads"))))
+            form.addRow(tr("Footings"), self.f_rftype)
+        self.f_rby = L.Chips()
+        self.f_rby.addItem(tr("By count"), "count",
+                           tip=tr("So many on each stretch, its two ends "
+                                  "counted"))
+        self.f_rby.addItem(tr("By spacing"), "spacing",
+                           tip=tr("At most that far apart, in equal bays "
+                                  "on each stretch"))
+        self.f_rby.setCurrentIndex(1 if o.get("by") == "spacing" else 0)
+        form.addRow(tr("Pads") if foots else tr("Columns"), self.f_rby)
+        self.f_rcount = QSpinBox()
+        self.f_rcount.setRange(1, 200)
+        self.f_rcount.setValue(int(o.get("count", 4)))
+        self.r_count = QLabel(tr("Count (each stretch)"))
+        form.addRow(self.r_count, self.f_rcount)
+        self.f_rspace = L.metres(float(o.get("spacing", 5.0)), 0.2, 20.0)
+        self.f_rspace.field.setMaximum(100.0)
+        self.f_rspace.setValue(float(o.get("spacing", 5.0)))
+        self.r_space = QLabel(tr("Every"))
+        form.addRow(self.r_space, self.f_rspace)
+        self.f_rends = L.Chips()
+        for val, text in (("both", "First + last"), ("first", "First only"),
+                          ("last", "Last only"), ("none", "Between only")):
+            self.f_rends.addItem(tr(text), val)
+        self.f_rends.setCurrentIndex(max(0, self.f_rends.findData(
+            o.get("ends", "both"))))
+        # how it stands on its line (his ask, 08/11/2026)
+        self.f_ralign = L.Chips()
+        for val, text, tip in (
+                ("inside", "Inside", "Its faces flush with the line, on the "
+                 "inside (in an excavation: against its sides)"),
+                ("centre", "Centre", "Centred on the line"),
+                ("outside", "Outside", "Its faces flush with the line, on "
+                 "the outside")):
+            self.f_ralign.addItem(tr(text), val, tip=tr(tip))
+        self.f_ralign.setCurrentIndex(max(0, self.f_ralign.findData(
+            row.get("align_now", "centre"))))
+        form.addRow(tr("On the line"), self.f_ralign)
+        if row.get("closed"):
+            self.f_rends.setEnabled(False)
+            self.f_rends.setToolTip(tr("A closed row has no ends"))
+        form.addRow(tr("Ends"), self.f_rends)
+
+        def by(_i=0) -> None:
+            sp = self.f_rby.currentData() == "spacing"
+            for w in (self.f_rcount, self.r_count):
+                w.setVisible(not sp)
+            for w in (self.f_rspace, self.r_space):
+                w.setVisible(sp)
+        self.f_rby.currentIndexChanged.connect(by)
+        by()
+        gl.addWidget(fold)
+
+    def _row_beams_fold(self, gl, row: dict) -> None:
+        """The row's BEAMS (PLANO_LINHA_COLUNAS C, his OK 08/11/2026): on
+        top, at the foot (a grade beam), in the middle — each on / off, its
+        width (the columns' own across the row, until you change it) and
+        its height. One per stretch, along the columns' centres."""
+        from PySide6.QtWidgets import QCheckBox
+        from . import look as L
+        b = (row.get("opts") or {}).get("beams") or {}
+        auto = float(row.get("bw_auto", 0.20))
+        fold = L.Fold(tr("Beams"), "column.row.beams")
+        form = fold.form()
+        note = QLabel(tr("Along the row, one on each stretch, from column to "
+                         "column — they follow the row."))
+        note.setWordWrap(True)
+        form.addRow(note)
+        self.f_rbeams = {}
+        for part, text, tip, h0 in (
+                ("top", "Top", "Under the slab above, as every beam", 0.50),
+                ("mid", "Middle", "Centred in the free space, between the "
+                 "floor and the top beam",
+                 0.30),
+                ("foot", "Foot", "A grade beam: its top where the columns "
+                 "start, under the floor (an excavation's floor too)",
+                 0.40)):
+            p = b.get(part) or {}
+            on = QCheckBox(tr(text))
+            on.setToolTip(tr(tip))
+            on.setChecked(bool(p.get("on")))
+            w = L.metres(float(p.get("w") or auto), 0.05, 3.0)
+            w.setValue(float(p.get("w") or auto))
+            h = L.metres(float(p.get("h") or h0), 0.05, 5.0)
+            h.setValue(float(p.get("h") or h0))
+            form.addRow(on)
+            lw, lh = QLabel(tr("Width")), QLabel(tr("Height"))
+            form.addRow(lw, w)
+            form.addRow(lh, h)
+
+            def show(_s=0, _on=on, _ws=(w, h, lw, lh)) -> None:
+                for x in _ws:
+                    x.setVisible(_on.isChecked())
+            on.toggled.connect(show)
+            show()
+            self.f_rbeams[part] = (on, w, h, auto)
+        gl.addWidget(fold)
+
+    def _row_foots_fold(self, gl, row: dict) -> None:
+        """The row's FOOTINGS (PLANO_LINHA_COLUNAS D, his OK 07/11/2026):
+        none, pads (one under each column), a strip along the row, or both
+        — their sizes. Under the grade beam when the row has one."""
+        from . import look as L
+        f = (row.get("opts") or {}).get("foots") or {}
+        fold = L.Fold(tr("Footings"), "column.row.footings")
+        form = fold.form()
+        note = QLabel(tr("Under the row's columns — they follow the row (with "
+                         "a grade beam: under it)."))
+        note.setWordWrap(True)
+        form.addRow(note)
+        self.f_rfoots = L.Chips()
+        for val, text in (("none", "None"), ("pads", "Pads"),
+                          ("strip", "Strip"), ("both", "Pads + strip")):
+            self.f_rfoots.addItem(tr(text), val)
+        self.f_rfoots.setCurrentIndex(max(0, self.f_rfoots.findData(
+            f.get("type", "none"))))
+        form.addRow(tr("Footings"), self.f_rfoots)
+        self.f_rfpw = L.metres(float(f.get("pw") or 1.20), 0.2, 10.0)
+        self.f_rfpw.setValue(float(f.get("pw") or 1.20))
+        self.f_rfpw.setToolTip(tr("A pad's side (never less than its column "
+                                  "+ 0.20)"))
+        self.f_rfsw = L.metres(float(f.get("sw") or 0.60), 0.2, 5.0)
+        self.f_rfsw.setValue(float(f.get("sw") or 0.60))
+        self.f_rfd = L.metres(float(f.get("d") or 0.50), 0.1, 5.0)
+        self.f_rfd.setValue(float(f.get("d") or 0.50))
+        # with a strip, the pads' own depth — deeper (his OK, 07/11/2026)
+        self.f_rfpd = L.metres(float(f.get("pd") or 0.80), 0.1, 5.0)
+        self.f_rfpd.setValue(float(f.get("pd") or 0.80))
+        self.f_rfpd.setToolTip(tr("The pads go deeper than the strip — they "
+                                  "carry the load"))
+        lp, ls, ld = QLabel(tr("Pad")), QLabel(tr("Strip")), \
+            QLabel(tr("Depth"))
+        lpd = QLabel(tr("Pad depth"))
+        form.addRow(lp, self.f_rfpw)
+        form.addRow(ls, self.f_rfsw)
+        form.addRow(ld, self.f_rfd)
+        form.addRow(lpd, self.f_rfpd)
+
+        def show(_i=0) -> None:
+            t = self.f_rfoots.currentData()
+            for x in (lp, self.f_rfpw):
+                x.setVisible(t in ("pads", "both"))
+            for x in (ls, self.f_rfsw):
+                x.setVisible(t in ("strip", "both"))
+            for x in (ld, self.f_rfd):
+                x.setVisible(t != "none")
+            for x in (lpd, self.f_rfpd):
+                x.setVisible(t == "both")
+            ld.setText(tr("Strip depth") if t == "both" else tr("Depth"))
+        self.f_rfoots.currentIndexChanged.connect(show)
+        show()
+        gl.addWidget(fold)
+
+    def _column_order_rows(self, form, el: dict, shelf) -> None:
+        """A column's base and capital: a list each, as in the library."""
+        for key, attr in (("cbase", "f_cbase"), ("ccap", "f_ccap")):
+            part = next(p for p in shelf.parts if p.key == key)
+            w = QComboBox()
+            for val, text in part.choices:
+                w.addItem(tr(text), val)
+            w.setCurrentIndex(max(0, w.findData(el.get(key, "none"))))
+            w.currentIndexChanged.connect(self._sync)
+            setattr(self, attr, w)
+            form.addRow(tr(part.label), w)
 
     # -- live ------------------------------------------------------------------------
     def _sync(self, *_a) -> None:
@@ -3694,6 +4082,9 @@ class ElementDialog(QDialog):
             e["shape"] = self.f_section.currentData()
             e["height"] = "level" if self.f_hmode.currentIndex() == 0 \
                 else round(self.f_h.value(), 3)
+            if hasattr(self, "f_cbase"):
+                e["cbase"] = self.f_cbase.currentData()
+                e["ccap"] = self.f_ccap.currentData()
         if e["type"] == "beam":
             e["zmode"] = self.f_zmode.currentData()
         if e["type"] == "roof":
@@ -3735,6 +4126,29 @@ class ElementDialog(QDialog):
                 e["jdir"] = "turn"
             else:
                 e.pop("jdir", None)
+        if getattr(self, "f_rby", None) is not None:   # a row's column
+            e["_row"] = {"by": self.f_rby.currentData(),
+                         "count": int(self.f_rcount.value()),
+                         "spacing": round(float(self.f_rspace.value()), 4),
+                         "ends": self.f_rends.currentData(),
+                         "align": self.f_ralign.currentData()}
+            if getattr(self, "f_rbeams", None):    # its beams (Pro)
+                bs = {}
+                for part, (on, w, h, auto) in self.f_rbeams.items():
+                    wv = round(float(w.value()), 4)
+                    bs[part] = {"on": on.isChecked(),
+                                "w": None if abs(wv - auto) < 1e-3 else wv,
+                                "h": round(float(h.value()), 4)}
+                e["_row"]["beams"] = bs
+            if getattr(self, "f_rfoots", None) is not None:  # its footings
+                e["_row"]["foots"] = {
+                    "type": self.f_rfoots.currentData(),
+                    "pw": round(float(self.f_rfpw.value()), 4),
+                    "sw": round(float(self.f_rfsw.value()), 4),
+                    "d": round(float(self.f_rfd.value()), 4),
+                    "pd": round(float(self.f_rfpd.value()), 4)}
+            if getattr(self, "f_rftype", None) is not None:  # a footing row
+                e["_row"]["ftype"] = self.f_rftype.currentData()
         if self.layers is not None:      # a floor slab's layers: t = their sum
             if len(self.layers) > 1:
                 e["layers"] = [dict(la) for la in self.layers]
@@ -4047,7 +4461,7 @@ class _Front(QWidget):
                    fill=glass if o["kind"] == "window" else "#8a8f9633")
             zp = SH.spring(o, 0.0)
             if zp is None or o["kind"] != "window" or op not in (
-                    "sliding", "casement", "awning", "pivot") \
+                    "sliding", "casement", "awning", "pivot", "hung") \
                     or zp - z0 < SH.MIN_RECT:
                 return
             p.setPen(L.pen(L.INK, 1.6))
@@ -4056,6 +4470,13 @@ class _Front(QWidget):
         else:
             box(0, z0, w, z1, L.INK, glass if o["kind"] == "window"
                 or o.get("leaf") == "glass" else "#8a8f9633")
+            # a top light: the bar across, the leaves under it (04/11/2026)
+            from .openfinish import top_light
+            th = top_light(o)
+            if th:
+                z1 -= th
+                p.setPen(L.pen(L.INK, 1.6))
+                p.drawLine(q(0, z1), q(w, z1))
         n = int(o.get("leaves", 1) or 1)
         if o["kind"] == "door" and op == "garage":
             # its panels / slats across, as the front shows them
@@ -4108,11 +4529,14 @@ class _Front(QWidget):
         elif op == "casement":
             # each leaf by its role (2026-10-31): the dashed triangle's tip
             # on its hinge side; a fixed one has none (the drawings' rule)
-            from .structure import casement_roles
+            from .openfinish import leaf_shares
+            from .structure import casement_layout, casement_roles
             roles = casement_roles(o)
             n = len(roles)
+            lay, _m = casement_layout(roles, 0.0, w, mullion=0.0, gap=0.0,
+                                      shares=leaf_shares(o, n))
             for i, r in enumerate(roles):
-                a, b = w * i / n, w * (i + 1) / n
+                a, b = lay[i][0], lay[i][1]
                 if r != "F":
                     hx, fx = (b, a) if r == "R" else (a, b)
                     p.setPen(L.pen(L.BLUE, 1.2, dash=True))
@@ -4124,6 +4548,12 @@ class _Front(QWidget):
             p.setPen(L.pen(L.BLUE, 1.2, dash=True))
             p.drawLine(q(0, z0), q(w / 2, z1))
             p.drawLine(q(w, z0), q(w / 2, z1))
+        elif op == "hung":                    # a sash: its two leaves
+            zm = (z0 + z1) / 2
+            p.setPen(L.pen(L.INK, 1.6))
+            p.drawLine(q(0, zm), q(w, zm))
+            self._arrow(p, L, q(w / 2, z0 + (zm - z0) * 0.2),
+                        q(w / 2, z0 + (zm - z0) * 0.8))
         elif op == "pivot":                   # its panes, each on its axis
             from .openfinish import pivot_count
             k = pivot_count(o) or min(max(round((z1 - z0) / 0.28), 2), 8)
@@ -4157,6 +4587,7 @@ WINDOW_TYPES = (("fixed", "Fixed", "_win_fixed"),
                 ("casement", "Casement", "_win_casement"),
                 ("awning", "Awning", "_win_awning"),
                 ("pivot", "Pivot", "_win_pivot"),
+                ("hung", "Sash", "_win_hung"),
                 ("shop", "Shop window", "_win_shop"))
 
 
@@ -4241,6 +4672,7 @@ class OpeningDialog(QDialog):
             # a casement's leaves, each fixed or hinged, left to right seen
             # from inside (2026-10-31, PLANO_JANELAS_FOLHAS.md)
             self.f_roles = []
+            self.f_lw = []
             for i in range(1, 7):
                 c = L.Chips(width=70)
                 for v, text in (("F", "Fixed"), ("L", "Left"),
@@ -4251,6 +4683,19 @@ class OpeningDialog(QDialog):
                 lab = QLabel(f"Leaf {i}")
                 form.addRow(lab, c)
                 self.f_roles.append((lab, c))
+                # its width, a share of the window (Hugo #83, 04/11/2026)
+                sp = QDoubleSpinBox()
+                sp.setRange(0.0, 90.0)
+                sp.setDecimals(0)
+                sp.setSingleStep(5.0)
+                sp.setSuffix(" %")
+                sp.setSpecialValueText("Auto")
+                sp.setValue(float(op.get(f"lw{i}") or 0.0))
+                sp.setToolTip("Its share of the window's width; Auto shares "
+                              "what the others leave")
+                lab2 = QLabel(f"Leaf {i} width")
+                form.addRow(lab2, sp)
+                self.f_lw.append((lab2, sp))
             self._roles_n = None
             if self.kind == "window" and op.get("op") == "casement" and n > 1:
                 from .structure import casement_roles
@@ -4502,6 +4947,8 @@ class OpeningDialog(QDialog):
                       *(c for _l, c in self.f_roles)):
                 c.currentIndexChanged.connect(self._sync)
             self.f_open.valueChanged.connect(self._sync)
+            for _l, sp in self.f_lw:
+                sp.valueChanged.connect(self._sync)
         if self.f_shape is not None:
             self.f_shape.currentIndexChanged.connect(self._on_shape)
             for w_ in (self.f_rise, self.f_top_w):
@@ -4570,7 +5017,8 @@ class OpeningDialog(QDialog):
             # door's glass) stays while it stays a hinged / sliding door
             was = self.op.get("leaf")
             if o["op"] == self.op.get("op") and (
-                    (o["leaf"] == "solid" and was in ("panels", "half"))
+                    (o["leaf"] == "solid" and was in ("panels", "half", "six",
+                                                      "planks", "dutch"))
                     or (o["op"] == "swing" and was == "glass")):
                 o["leaf"] = was
             o["leaves"] = 2 if self.f_leaves.currentData() == 2 else 1
@@ -4588,10 +5036,14 @@ class OpeningDialog(QDialog):
             # count: the usual ones (``_shown`` lays them on the chips)
             for i in range(1, 7):
                 o.pop(f"role{i}", None)
+                o.pop(f"lw{i}", None)
             if o["op"] == "casement" and o["leaves"] > 1 \
                     and self._roles_n == o["leaves"]:
                 for i, (_l, c) in enumerate(self.f_roles[:o["leaves"]]):
                     o[f"role{i + 1}"] = c.currentData()
+                for i, (_l, sp) in enumerate(self.f_lw[:o["leaves"]]):
+                    if sp.value() > 0.0:
+                        o[f"lw{i + 1}"] = sp.value()
         o["swing"] = self.f_swing.currentData()
         o["out"] = bool(self.f_out.currentData())
         o["open"] = round(self.f_open.value() / 100.0, 3)
@@ -4709,7 +5161,7 @@ class OpeningDialog(QDialog):
                 if t == "sliding" else (1, 2, 3, 4, 5, 6)
             swing = t == "casement" and o["leaves"] == 1
             out = t == "casement"
-            opn = t in ("sliding", "casement", "awning", "pivot")
+            opn = t in ("sliding", "casement", "awning", "pivot", "hung")
         for i in range(self.f_leaves.count()):
             self.f_leaves.setItemEnabled(
                 i, self.f_leaves.itemData(i) in ok_n)
@@ -4718,9 +5170,10 @@ class OpeningDialog(QDialog):
         if many and self._roles_n != o["leaves"]:
             from .structure import casement_roles
             self._lay_roles(casement_roles(o))
-        for i, (lab, c) in enumerate(self.f_roles):
-            lab.setVisible(many and i < o["leaves"])
-            c.setVisible(many and i < o["leaves"])
+        for i, (lab, c) in enumerate(self.f_roles + self.f_lw):
+            k = i % 6
+            lab.setVisible(many and k < o["leaves"])
+            c.setVisible(many and k < o["leaves"])
         for lab, w_, on in ((self.r_leaves, self.f_leaves, leaves),
                             (self.r_swing, self.f_swing, swing),
                             (self.r_out, self.f_out, out),
@@ -5003,7 +5456,9 @@ class DigDialog(QDialog):
         # the bottom (a fill: the top): how it is set
         self.modes = self.FILL_MODES if self.fill else self.MODES
         row = QHBoxLayout()
-        row.addWidget(QLabel("Top" if self.fill else "Bottom"))
+        # («Excavation bottom»: in German «Baugrubensohle» — the bare
+        # «Sohle» read as the floor slab, support #93)
+        row.addWidget(QLabel("Top" if self.fill else "Excavation bottom"))
         self.f_mode = QComboBox()
         for key, text in self.modes:
             self.f_mode.addItem(text, key)
@@ -5023,6 +5478,13 @@ class DigDialog(QDialog):
         lay.addLayout(row)
         b = self.dig["bottom"]
         self.f_mode.setCurrentIndex(max(0, self.f_mode.findData(b["mode"])))
+        # «Under a level» picked here later starts under the LOWEST
+        # basement (the list's last), as the tool does (support #93,
+        # 07/11/2026: it was the ground floor — the list's first — and the
+        # pit came out over the ground, 0 m³); a saved one keeps its level.
+        # (A fill's top stays the ground floor's, as before.)
+        if not self.fill:
+            self.f_level.setCurrentIndex(max(0, self.f_level.count() - 1))
         if b["mode"] == "depth":
             self.f_d.setValue(b.get("d", 3.0))
         elif b["mode"] == "height":
@@ -5229,6 +5691,9 @@ class DigDialog(QDialog):
                      + ("high" if self.fill else "deep")
                      + " in «" + ("Height" if self.fill else "Depth")
                      + "» (positive).</span>")
+        if terrain.above_ground(self.dig, self.doc):
+            text += ("<br><span style='color:#d97706'>"
+                     + tr(terrain.ABOVE_GROUND) + "</span>")
         if not fits:
             text += (f"<br><span style='color:#e5484d'>Its slopes reach past "
                      f"the plot — it won't be built until it fits (steeper "

@@ -1,4 +1,8 @@
-"""AUTOMATIC SLABS (his idea, 2026-10-05 — PLANO_RAMPA_ESCADA.md §8):
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""AUTOMATIC SLABS (his idea, 2026-10-05 — PLANO_RAMPA_ESCADA.md §8;
+since 07/11/2026 made only on request — ``sync(create=True)`` — the ones
+a file has still follow their dig):
 every excavation for basements will have its floors one day, so ArchXQ
 makes them at once — the user only hides what he does not want.
 
@@ -15,7 +19,8 @@ with ``auto = {"dig": id}``; ``sync`` keeps them following their dig.
 """
 from __future__ import annotations
 
-T = 0.20                 # m, a new automatic slab's thickness
+T = 0.20                 # m, a new automatic slab's thickness (now the
+#                          level's own «slab_t» — model.SLAB_T — see new_t)
 INSET = 0.01             # m in from the excavation's earth walls
 
 
@@ -64,7 +69,7 @@ def wanted(doc: dict, elevations) -> dict:
             bottom = min(terrain.dig_bottoms(d, doc))
         except Exception:  # noqa: BLE001 — no bottom: no floors
             continue
-        corners = _outline(d["corners"])
+        corners = _outline(terrain.snug(doc, d["corners"]))
         if corners is None:
             continue
         held = [i for i, lv in enumerate(levels)
@@ -77,6 +82,24 @@ def wanted(doc: dict, elevations) -> dict:
             lv = levels[i]
             out[key(d["id"], lv["id"])] = (d, lv, corners)
     return out
+
+
+def new_t(dig: dict, lv: dict) -> float:
+    """A NEW automatic slab's thickness: the level's own («slab_t», 0.20
+    without one) — and the floor slab of the level the pit is dug under
+    («Under a level», 0.30 below its floor) reaches down to the pit's
+    bottom: 0.30 thick, no strip of earth left between them."""
+    from . import model
+    b = dig.get("bottom") or {}
+    if b.get("mode") == "level" and b.get("level") == lv["id"] \
+            and lv.get("kind") == "basement":
+        try:
+            d = -float(b.get("offset", 0.0))
+        except (TypeError, ValueError):
+            d = 0.0
+        if model.MIN_SLAB_T <= d <= model.MAX_SLAB_T:
+            return round(d, 3)
+    return model.slab_t(lv)
 
 
 def _covered(corners, slabs) -> bool:
@@ -97,9 +120,15 @@ def _covered(corners, slabs) -> bool:
     return False
 
 
-def sync(doc: dict, elevations) -> dict:
-    """``doc`` with its automatic slabs made, followed or taken away —
-    the hand-made ones untouched."""
+def sync(doc: dict, elevations, create: bool = False) -> dict:
+    """``doc`` with its automatic slabs followed or taken away — the
+    hand-made ones untouched. ``create`` also MAKES the missing ones.
+
+    (His call, 07/11/2026: an excavation no longer makes its slabs by
+    itself — a lid over the pit, drawn on the Terrain, read as a bug to a
+    first-time user. The slabs a file already has stay and still follow
+    their dig; making them is to come on request, from the Structure
+    phase — ``create=True``.)"""
     from . import edition, model
     if edition.lite():                    # slabs are ArchXQ IT Pro's: the
         return doc                        # Lite keeps a Pro file's as they are
@@ -121,14 +150,17 @@ def sync(doc: dict, elevations) -> dict:
         if _covered(corners, mine):
             continue                      # a hand-made one in its place
         keep.append(dict(e, corners=corners))
-    for k, (d, lv, corners) in want.items():
+    for k, (d, lv, corners) in (want.items() if create else ()):
         if k in by_key or k in off:
             continue
         mine = [m for m in manual if m["level"] == lv["id"]]
         if _covered(corners, mine):
             continue
+        # (support #93, 07/11/2026) only a NEW slab takes these — one that
+        # is there keeps its thickness, whatever changed (above: never
+        # rewritten), so no file changes on opening and no edit is lost
         new.append({"type": "slab", "level": lv["id"], "corners": corners,
-                    "t": T, "offset": 0.0, "holes": [],
+                    "t": new_t(d, lv), "offset": 0.0, "holes": [],
                     "auto": {"dig": d["id"]}})
     if new:
         made = model.new_elements(keep, new)

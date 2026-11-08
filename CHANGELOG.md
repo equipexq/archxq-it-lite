@@ -1,5 +1,63 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.12.0
+
+**A project starts again, and rows of columns are drawn point by point, like a wall.** Please update: in the last versions the Lite could not start a new project.
+
+- **FIXED: «Start a new project» did nothing,** and so no tool could be used:
+  the window failed to open. It opens now, and the tools work from there.
+- **The level's window and the project's table no longer ask for slabs:**
+  slabs are the Pro's. The «Documentation» tab of the project's window went
+  for the same reason.
+- **A row of columns goes point by point, like a wall:** each click fixes a
+  stretch, and its columns are there at once (by count on each stretch, or by
+  spacing, again from each corner). Every corner gets one column, never two.
+  Click the **first point** again to close the row; double-click, Enter or Esc
+  ends it open; Backspace takes the last point back. Two clicks and Esc make
+  the same row as before. Along an excavation it still stands inside it.
+- **A row stays a group, «Column row 1»:** double-click one of its columns and
+  its window changes **every** column of the row (section, sizes, height, angle,
+  and a new **Row** part: count or spacing, ends). One Ctrl+Z.
+  The options bar changes the whole row too. The outliner shows
+  «Column row 1 (12)» with its columns inside. A column of the row you delete
+  stays out of it; one you move on its own leaves the row; move them all and
+  the row goes with them. Rows made before stay loose columns, as they were.
+- **Columns of a row never side by side:** «By spacing» now cuts each stretch
+  into equal bays, none longer than the spacing (it used to leave a short bay
+  before the corner). At a corner the row has one column where the two lines
+  meet, flush with both sides of an excavation, re-entrant corners too.
+- **A row on its line: Inside, Centre or Outside** — in its window. Along an
+  excavation a row stands inside it, as before; elsewhere, centred. It is on the
+  options bar too while you draw a row, and the next row starts as your last one.
+- **A column right over another:** drawing columns, the cursor is pulled onto the
+  centres of the columns of the level below and above, and a row onto the points
+  of the rows.
+- **The Terrain phase works on the Terrain:** going to Terrain, or picking any of
+  its tools (the excavation apart, see below), now switches to the Terrain
+  row by itself. A plot drawn while
+  «Level 1» was the level worked on was hidden by that level's plan, and looked
+  as if it had not been drawn. Going on to the building's phases brings back the
+  level you were on (the ground floor at first).
+- **The Project button's menu: «New project» and «Edit project».** «Levels»
+  left this menu (the levels live in the levels strip). «New project» starts
+  one in this document when it has none; when it already has a project, it
+  opens a new tab with the Start window, so the project you have is never
+  touched. «Edit project» is greyed out until there is a project.
+- **An excavation belongs to its level:** the Excavation tool works on a
+  basement (or the ground floor, without basements), not on the Terrain row.
+  On «Basement 2» its bottom starts «Under Basement 2»; from the Terrain it
+  goes to the basement you last worked on (else the lowest one).
+- **The excavation shows in the basements' plans:** each basement it goes
+  through shows its outline in plan view, and it can be edited there.
+- **Dimensions on by default:** the plot's and the excavations' figures now
+  show in every phase («Settings ▸ Plot dimensions ▸ Always»); choose «In the
+  Terrain phase» or «Off» there if they bother you.
+- **A basement's plan shows its excavations' dimensions** (sides, depth,
+  floor elevation).
+- **A pit inside an excavation:** one drawn inside another and no deeper
+  (0 m³, nothing to see) now opens a window that explains it and offers to
+  make it a pit 1.00 m deeper. «Cancel» makes nothing.
+
 ## 0.11.2
 
 **A clear «＋ New level» button, and excavations that start at the right depth.** Also: windows that free the memory once closed.

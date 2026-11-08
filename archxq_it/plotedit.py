@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Editing the drawn plot in the 3D view — IngeTrazo tools.
 
 - FoldLineTool: where a sloped plot folds. Click a corner, then another:

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Walls MOVED — the walls joined to them stretch (his ask, 2026-10-10: his
 retaining walls had to go out to the columns' face; «move the wall and the
 perpendicular ones stretch», as SketchUp does).

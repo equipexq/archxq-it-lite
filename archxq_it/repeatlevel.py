@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """REPEAT a level upwards (his ask, 2026-10-11: draw one floor of the tower,
 then replicate it up — «it's very quick»).
 
@@ -311,6 +313,22 @@ def _copy(doc: dict, level_id: str, targets: list, new_levels: list,
     out = dict(doc, levels=new_levels, walls=walls, openings=ops,
                structure=st, rooms=model._rooms(rooms, {r["id"] for r in
                                                        new_levels}))
+    # the room separators go with their floor (a room divided by one would
+    # come out whole on the copy): the ones already there are left
+    seps = list(doc.get("separators") or [])
+    if seps:
+        def _key(pts):
+            return sorted(tuple(round(float(c), 2) for c in p) for p in pts)
+        for nid, _nxt in targets:
+            have = [_key(x["pts"]) for x in seps if x.get("level") == nid] \
+                if skip_existing else []
+            seps += [{"id": "", "level": nid,
+                      "pts": copy.deepcopy(x["pts"])}
+                     for x in doc.get("separators") or []
+                     if x.get("level") == level_id
+                     and _key(x["pts"]) not in have]
+        out["separators"] = model._separators(
+            seps, {r["id"] for r in new_levels})
     if mats:
         out["materials"] = dict(doc.get("materials") or {}, el=mats)
     notes = []

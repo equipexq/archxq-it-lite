@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Walls › Edit walls › Move points — a straight wall's ENDS with the mouse
 (a customer's ask, 2026-10-05: «after a wall is created I can only change
 its properties, not where it starts or ends»).

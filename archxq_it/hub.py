@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The top hub: the sovereign switch and the phases (horizontal).
 
 Hovering a phase drops its submenu (vertical) under it — no click needed;
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .i18n import tr
-from .phases import ELEMENTS, PHASES, TOOLS
+from .phases import ELEMENTS, MENU, PHASES, TOOLS
 from .style import CSS
 
 MARK = {"done": "✔", "current": "●", "open": "○", "locked": "○"}
@@ -161,6 +163,19 @@ class Hub(QFrame):
         gear.setToolTip("ArchXQ settings")
         gear.clicked.connect(owner.open_settings)
         env.addWidget(gear)
+        # the AI (aiarch.py, Pro): at the far right of the bar, its own window
+        from . import edition
+        if not edition.lite():
+            ai = QToolButton()
+            ai.setObjectName("axq_ai")
+            pic, size = icons.ai_badge()
+            ai.setIcon(pic)
+            ai.setIconSize(size)
+            ai.setAccessibleName("AI")
+            ai.setToolTip("ArchXQ AI — ask in your own words, see what changes, "
+                          "apply")
+            ai.clicked.connect(owner.open_ai)
+            env.addWidget(ai)
         row.addWidget(self.env)
 
         # -- the hover submenu ------------------------------------------------
@@ -282,12 +297,17 @@ class Hub(QFrame):
                 if w is not None:
                     w.deleteLater()
             tools = key == TOOLS.key
-            for ekey in (TOOLS if tools else PHASES[key]).elements:
+            keys = TOOLS.elements if tools else \
+                MENU.get(key, PHASES[key].elements)
+            for ekey in keys:
                 it = QPushButton(tr(ELEMENTS[ekey].label) + _pro_mark(ekey))
                 it.setFlat(True)
                 it.setCheckable(True)
                 it.setChecked((tools or key == self.owner.current)
                               and ekey == self.owner.element)
+                if ekey == "project_settings" and not self._has_project():
+                    it.setEnabled(False)     # nothing to edit yet
+                    it.setToolTip("No project yet: «New project» starts one")
                 it.setProperty("axq", "item")
                 it.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 it.clicked.connect(
@@ -299,6 +319,13 @@ class Hub(QFrame):
         self.sub.raise_()
         self.relayout()
         QTimer.singleShot(0, self.relayout)
+
+    def _has_project(self) -> bool:
+        try:
+            from . import model
+            return model.has_project(self.owner.doc())
+        except Exception:  # noqa: BLE001 — no document: as without one
+            return False
 
     def close_sub(self) -> None:
         self._close_timer.stop()

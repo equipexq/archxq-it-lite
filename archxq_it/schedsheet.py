@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The AREA SCHEDULE sheet (A-001) of the documentation studio — the one
 the earlier «Make» drew, now with the plans' finish (2026-10-23: «Update
 all» replaced the old sheets and the schedule was left with none).
@@ -128,7 +130,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     pc.rect("border", bx0, by0, bx1, by1, "border")
     ax0, ay0, ax1, ay1 = L["area"]
     x, y = ax0 + 4.0, ay0 + 4.0
-    num = lambda v: DS.num(v, style)                        # noqa: E731
+    num = lambda v: DS.area_cell(v, style)                  # noqa: E731
 
     # --- the table: one row per level, the totals --------------------------------
     pc.text("t:head", x, y, W_["area_schedule"], "heading")

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ONE ArchXQ in IngeTrazo (2026-10-12, IngeTrazo 0.5.8's Extension
 Manager).
 

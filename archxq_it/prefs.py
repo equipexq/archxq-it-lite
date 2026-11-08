@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ preferences — the USER's, for every project (QSettings), not the
 document's. Read with ``get``; the Settings dialog writes them."""
 from __future__ import annotations
@@ -7,7 +9,9 @@ from PySide6.QtCore import QSettings
 #: key → (default, kind)
 DEFAULTS: dict[str, tuple[object, type]] = {
     # Display
-    "plot_dims": ("terrain", str),       # off | terrain | always
+    # off | terrain | always — always by default (his call, 07/11/2026:
+    # a new user sees every figure; one who is bothered looks for this)
+    "plot_dims": ("always", str),
     "live_dims": (True, bool),           # measurements while drawing
     "diag_pull": (True, bool),           # 45° pull while drawing
     "plan_on_tool": (True, bool),        # a drawing tool starts in plan view

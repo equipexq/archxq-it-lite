@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PROFILES that run along a path — Tools ▸ Along a path ▸ Profile along
 (PLANO_TOOLS_CAMINHO.md, his OK 2026-10-29). Pure data, no Qt: the library
 draws the cards from it, the model checks the records against it, and
@@ -22,19 +24,28 @@ STONE = (0.86, 0.84, 0.80, 1.0)
 
 ANCHORS = (("floor", "Floor"), ("ceiling", "Ceiling"), ("height", "Height"),
            ("top", "Wall top"))
-HOWS = (("points", "Point by point"), ("room", "By room"),
-        ("face", "By wall face"), ("element", "By element"))
+HOWS = (("points", "Point by point"), ("line", "On a line"),
+        ("circle", "Circle"), ("rect", "Rectangle"),
+        ("room", "By room"), ("face", "By wall face"),
+        ("element", "By element"))
 #: copies: not round a column (part 5)
-COPY_HOWS = HOWS[:3]
+COPY_HOWS = (("points", "Point by point"), ("line", "On a line"),
+             ("room", "By room"), ("face", "By wall face"))
+#: these make their own path: where it sits comes from the clicks / the line
+FREE_HOWS = ("points", "line", "circle", "rect")
 #: continuous, or pieces this long with a gap between (part 5, P5b)
 RUNS = (("continuous", "Continuous"), ("repeat", "Repeat"))
+#: where its own line runs on it (a path of its own: points, a line)
+HALIGNS = (("outside", "Outside"), ("centre", "Centre"), ("inside", "Inside"))
+VALIGNS = (("top", "Top"), ("middle", "Middle"), ("bottom", "Bottom"))
 
 #: the options of the TOOL (how the next one is made), never a profile's
 TOOL_KEYS = ("how",)
 #: the next one made (ui's ``profile_opts``)
 DEFAULT_OPTS = {"how": "room", "profile": "base_flat", "anchor": "floor",
                 "z": 0.90, "off": 0.001, "cut": True, "run": "continuous",
-                "piece": 0.60, "gap": 0.30}
+                "piece": 0.60, "gap": 0.30, "halign": "outside",
+                "valign": "bottom"}
 
 
 def _arc(cx, cy, r, a0, a1, n=8) -> list:
@@ -106,6 +117,23 @@ NATIVE = {
 }
 _MADE = {"base_mould": _base_mould, "crown_cove": _crown_cove,
          "crown_ogee": _crown_ogee, "chair_rail": _chair_rail}
+try:
+    from . import mouldings as _MOULD    # the big library (the Lite has none)
+    NATIVE.update(_MOULD.natives(WHITE, STONE))
+except ImportError:
+    _MOULD = None
+
+
+def free_standing(key: str) -> bool:
+    """A section with no wall behind it (a handrail): its card shows none."""
+    return bool(_MOULD) and _MOULD.free_standing(key)
+
+
+#: a column's base and capital (column_orders.py, Pro): the keys both editions
+#: keep; "none": a plain shaft
+COLUMN_BASES = ("none", "plinth", "tuscan", "doric", "attic", "stepped",
+                "pedestal")
+COLUMN_CAPS = ("none", "slab", "tuscan", "doric", "empire", "stepped")
 
 
 # ---- COPY ALONG (D7): the objects copied along a path — the data both

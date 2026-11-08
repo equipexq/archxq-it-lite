@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Drawing WALLS in the 3D view — on the current level's floor.
 
 Every shape of the options bar is a tool here; all show the walls LIVE

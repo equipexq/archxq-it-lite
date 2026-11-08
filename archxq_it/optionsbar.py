@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The OPTIONS bar — the choices a creation tool needs BEFORE you start
 (ArchiCAD's Info Box; his idea: a wall aligned by its centre, inside or
 outside…). It shows while such a tool is out, under the phases row (or

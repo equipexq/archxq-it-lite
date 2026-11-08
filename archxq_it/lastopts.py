@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The LAST choice of each element — its type and sizes — kept from one
 session to the next (his call, 2026-10-28: «picked a column, that column and
 its sizes until it is changed»). The user's, for every project (QSettings

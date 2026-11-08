@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ in other LANGUAGES (0.14.0 — PLANO_IDIOMAS.md; Germany and Brazil
 are where it sells most).
 

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """THE LIVE WINDOW (PLANO_JANELA_AO_VIVO.md — his rule, 2026-10-31): while
 an element's window is open, the model shows what it says — ONLY that
 element (and what it carries: a window's hole in its wall, a wall's doors

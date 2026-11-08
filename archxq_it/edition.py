@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Which ArchXQ IT this is: «pro» (the source) or «lite».
 
 The Lite is MADE from this same source by ``ArchXQ_IT_Lite\\build_lite.ps1``,

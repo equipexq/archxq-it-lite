@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """RAMPS — the first «Building element» (his ask, 2026-10-05; plan in
 PLANO_RAMPA_ESCADA.md, mockup C): a sloped concrete slab from one level —
 or from the ground — down (or up) to another level or an elevation.

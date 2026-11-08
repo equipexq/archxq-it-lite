@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tool icons for the left strip.
 
 IngeTrazo draws its own icons (views.icons) — reusing them keeps ArchXQ
@@ -7,8 +9,17 @@ the tool does, light ink with the host's orange accent.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 
 INK = QColor("#d6d9dd")
 ACCENT = QColor("#e8742c")
@@ -306,6 +317,19 @@ def _web(p) -> None:
     p.drawLine(QPointF(13, 44), QPointF(51, 44))
 
 
+def _sparkles(p) -> None:
+    """Sparkles, in a 64 px square: the picture people now read as «AI»."""
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#ff8a3d"))
+    for x, y, r in ((27, 35, 25), (51, 13, 11), (53, 52, 7)):
+        k = r * 0.14                # how far the sides pull in to the middle
+        star = QPainterPath(QPointF(x, y - r))
+        for ex, ey, sx, sy in ((x + r, y, 1, -1), (x, y + r, 1, 1),
+                               (x - r, y, -1, 1), (x, y - r, -1, -1)):
+            star.quadTo(QPointF(x + sx * k, y + sy * k), QPointF(ex, ey))
+        p.drawPath(star)
+
+
 def _doc_dxf(p) -> None:
     """A page with a drawn corner (lines) and an arrow down: export DXF."""
     from PySide6.QtGui import QPolygonF
@@ -435,6 +459,22 @@ def _foot_strip(p) -> None:
     p.drawPolyline(run)
     for x, y in ((8, 54), (8, 14), (54, 14)):
         _dot(p, x, y, 4.5, INK)
+
+
+def _foot_path(p) -> None:
+    """Footings along a path (plan): pads on its points, joined by a strip
+    turning a corner — no column over them."""
+    from PySide6.QtGui import QPolygonF
+    run = QPolygonF([QPointF(10, 54), QPointF(10, 12), QPointF(54, 12)])
+    p.setPen(_pen(ACCENT, 7))
+    p.setBrush(Qt.NoBrush)
+    p.drawPolyline(run)
+    p.setPen(_pen(INK, 2.0, dash=True))
+    p.drawPolyline(run)
+    p.setPen(_pen(INK, 2.5))
+    p.setBrush(ACCENT)
+    for x, y in ((10, 54), (10, 33), (10, 12), (32, 12), (54, 12)):
+        p.drawRect(QRectF(x - 6, y - 6, 12, 12))
 
 
 def _ghost(p) -> None:
@@ -632,7 +672,8 @@ _CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
            "op_window": _op_window, "op_void": _op_void,
            "foot_pads": _foot_pads, "foot_strips": _foot_strips,
            "foot_rows": _foot_rows, "foot_pad": _foot_pad,
-           "foot_strip": _foot_strip, "ghost": _ghost, "ghost_on": _ghost_on,
+           "foot_strip": _foot_strip, "foot_path": _foot_path,
+           "ghost": _ghost, "ghost_on": _ghost_on,
            "sheet": lambda p: _sheet(p, False),
            "sheet_on": lambda p: _sheet(p, True)}
 _cache: dict[str, QIcon] = {}
@@ -658,3 +699,33 @@ def icon(key: str | None) -> QIcon:
             ico = QIcon()
     _cache[key] = ico
     return ico
+
+
+def ai_badge(height: int = 18) -> tuple[QIcon, QSize]:
+    """The AI button's picture and its size on screen: orange sparkles, a blue A,
+    a green I (his choice, 2026-11-05). A button's text has one colour, so the
+    letters are drawn here; drawn 4× large, the icon reduces it smoothly."""
+    scale = 4
+    font = QFont()
+    font.setBold(True)
+    font.setPixelSize(int(height * 7 / 9) * scale)      # 14 px at 18
+    fm = QFontMetricsF(font)
+    a_w = fm.horizontalAdvance("A")
+    start = (height + 3) * scale
+    width = start + a_w + fm.horizontalAdvance("I") + scale
+    pm = QPixmap(int(width), height * scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+    p.save()
+    p.scale(height * scale / PX, height * scale / PX)
+    _sparkles(p)
+    p.restore()
+    p.setFont(font)
+    base = (height * scale + fm.capHeight()) / 2
+    p.setPen(QColor("#4d9bff"))
+    p.drawText(QPointF(start, base), "A")
+    p.setPen(QColor("#5fd38a"))
+    p.drawText(QPointF(start + a_w, base), "I")
+    p.end()
+    return QIcon(pm), QSize(pm.width() // scale, height)

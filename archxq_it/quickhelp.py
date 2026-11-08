@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """QUICK HELP — a small card in the 3D view, bottom-left, listing what the
 tool or feature in use can do: its clicks and keys (PLANO_AJUDA_RAPIDA.md;
 his ask 2026-10-10 / 2026-10-13: «essential for beginners»).
@@ -91,22 +93,32 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Placed", "select it: grips · double-click: its window"),
         ("Esc", "done"))),
     "profile": ("Profile along", (
+        ("Point by point", "click at any height · Enter ends · C closes"),
+        ("On a line", "click a line · Alt: only that stretch · Shift: joins "
+                      "the last one"),
+        ("Circle", "the centre on a face, then the radius · or type it"),
+        ("Rectangle", "two corners on a face · or type width;height"),
         ("By room", "click inside a room — round its walls, doors skipped"),
-        ("Point by point", "along a wall's face · Enter ends · C closes"),
         ("By wall face", "click a face · Shift + click: the next one joins"),
         ("By element", "a column or a beam — Floor: its base, Ceiling: "
                        "its top"),
+        ("Width, Height", "its size, on the right · live in its window"),
+        ("Align", "where the line runs on it: outside, centre, inside · top, "
+                  "middle, bottom"),
+        ("Doors & windows", "it stops at them, or runs on"),
         ("Tab", "the profile on the other side of the line"),
         ("Library", "the profile · where it sits · continuous or repeat"),
         ("Placed", "it follows the room's walls when they move"),
-        ("Esc", "done"))),
+        ("Esc", "put away · its library stays until you pick another tool"))),
     "copy": ("Copy along", (
-        ("Point by point", "the path · Enter ends · C closes"),
+        ("Point by point", "the path, at any height · Enter ends · C closes"),
+        ("On a line", "click a line of the model · Alt: only that stretch"),
         ("By room", "click inside a room — round its walls"),
         ("By wall face", "click a face · Shift + click: the next one joins"),
         ("Tab", "the copies on the other side of the line"),
         ("Library", "the object · count, spacing or gap"),
-        ("Your object", "select it in the model, then its card"),
+        ("From the model", "its card, click the object, then its path · columns "
+                           "and footings become real ones"),
         ("Esc", "done"))),
     "guard_pick": ("Low wall — one click", (
         ("Move", "what a click makes shows under the mouse"),
@@ -150,6 +162,16 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Array", "a copy, then x3 or /3 + Enter"),
         ("Rotate · Edit", "turn it · its window"),
         ("Esc", "close it · F9 switches it off"))),
+    "ai": ("AI — what you can ask", (
+        ("A house", "size, rooms, walls, roof: rectangular, 1 or 2 levels, "
+                    "in an empty project"),
+        ("Many at once", "«all the doors 90 cm» · «shutters on the bedroom "
+                         "windows»"),
+        ("The selected ones", "select them first, then say «the selected»"),
+        ("The sheets", "plans, sections, elevations, area schedule"),
+        ("Apply", "you see it first · Ctrl+Z undoes it all"),
+        ("Not yet", "move or delete · add one element · L shapes · resize a "
+                    "house"))),
     "views": ("Elevations / X-ray", (
         ("Click", "picks THROUGH the faces — details first"),
         ("Click again", "the next one behind, same spot"),

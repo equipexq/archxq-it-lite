@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The survey points' windows: the points table (edit, add, delete) and
 the import of a surveyor's file (CSV / TXT)."""
 from __future__ import annotations

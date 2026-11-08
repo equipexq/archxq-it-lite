@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SLABS AND ROOFS THAT FOLLOW THEIR WALLS (0.13.1 — his project, 2026-10-18:
 he pulled Level 4's walls 3 m out and the roof stayed on the old walls).
 

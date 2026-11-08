@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """YOUR wall / slab type in a window of its own (PLANO_NOVO_TIPO_CAMADAS.md,
 his OK 2026-10-28): its name, its LAYERS — the same editor as a wall's
 Layers tab — and its section drawn LARGE beside them (his: «at a real

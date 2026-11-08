@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """WALL JOINTS drawn clean (2026-10-25, Cesar's ticket #59: «there is
 always a diagonal line between the two walls»). Each wall is its own
 group, so the mitre of an L, the end of a partition against a wall, the

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SECTION LINES IN THE SCENE — seen in the plan and moved with grips (his
 ask, 23/10: «mover a linha de corte na cena»; ``PLANO_LINHA_DE_CORTE.md``,
 5 decisions approved 24/10).

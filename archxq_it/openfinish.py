@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Doors and windows, batch 1 (his go 2026-10-27, PLANO_PORTAS_JANELAS.md):
 their colours, handles, leaf styles, the pivot window and the louvred
 sliding window. Pure (no Qt): ``structure`` builds with it, ``model`` keeps
@@ -34,8 +36,54 @@ LEAF_KEYS = ("wood", "white", "grey", "black")
 HARDWARE = {"silver": (0.79, 0.80, 0.81, 1.0), "black": (0.07, 0.07, 0.08, 1.0),
             "bronze": (0.46, 0.34, 0.21, 1.0)}
 HANDLES = ("none", "lever", "knob", "pull")
-LEAF_STYLES = ("solid", "panels", "half", "glass")
+#: (six, planks, dutch: 04/11/2026, PLANO_PORTAS_JANELAS_CARTOES.md)
+LEAF_STYLES = ("solid", "panels", "half", "glass", "six", "planks", "dutch")
 HANDLE_Z = 1.05          # m over the floor, a door's handle
+#: a window's GLAZING BARS, per leaf (0…BARS_MAX each way)
+BARS_MAX = 6
+BAR_W = 0.016            # m, a bar's face width
+#: a TOP LIGHT (bandeira): the pane's least height; what the leaves keep
+TOP_MIN, TOP_KEEP_WINDOW, TOP_KEEP_DOOR = 0.15, 0.30, 1.60
+#: a casement's leaf, as a share of the window (%): at most
+LEAF_SHARE_MAX = 95.0
+
+
+def bars_of(o: dict) -> tuple:
+    """(vertical bars, horizontal bars) a window's glass has."""
+    def one(k):
+        try:
+            return min(max(int(o.get(k) or 0), 0), BARS_MAX)
+        except (TypeError, ValueError):
+            return 0
+    return one("bars_x"), one("bars_z")
+
+
+def top_light(o: dict) -> float:
+    """A top light's height over the leaves, as it can be built (0: none, or
+    what would leave too little under it). None on a shop front, a garage
+    door, a shape (their own tops)."""
+    if o.get("op") in ("shop", "garage") or o.get("top") == "arched" \
+            or o.get("shape", "rect") != "rect":
+        return 0.0
+    try:
+        th, h = float(o.get("top_h") or 0.0), float(o["h"])
+    except (TypeError, ValueError, KeyError):
+        return 0.0
+    keep = TOP_KEEP_DOOR if o.get("kind") == "door" else TOP_KEEP_WINDOW
+    return th if th >= TOP_MIN and h - th >= keep else 0.0
+
+
+def leaf_shares(o: dict, k: int) -> list:
+    """A casement's leaves, each one's share of the window (0…1; 0: it
+    shares what the others leave)."""
+    out = []
+    for i in range(k):
+        try:
+            v = float(o.get(f"lw{i + 1}") or 0.0)
+        except (TypeError, ValueError):
+            v = 0.0
+        out.append(min(max(v, 0.0), LEAF_SHARE_MAX) / 100.0)
+    return out
 
 
 def _rgb(c) -> tuple:
@@ -91,6 +139,30 @@ def keys_of(o: dict) -> dict:
         p = pivot_count(o)
         if p:
             out["pv_panes"] = p
+    # bars on the glass, a top light, a casement's leaf widths (04/11/2026)
+    if o.get("kind") == "window" and o.get("op") not in ("awning", "pivot",
+                                                         "shop") \
+            and o.get("louvred") is not True:
+        bx, bz = bars_of(o)
+        if bx:
+            out["bars_x"] = bx
+        if bz:
+            out["bars_z"] = bz
+    if o.get("kind") in ("door", "window"):
+        try:
+            th = round(float(o.get("top_h") or 0.0), 3)
+        except (TypeError, ValueError):
+            th = 0.0
+        if th > 0.0 and o.get("op") not in ("shop", "garage"):
+            out["top_h"] = th
+    if o.get("kind") == "window" and o.get("op") == "casement":
+        for i in range(1, 7):
+            try:
+                v = float(o.get(f"lw{i}") or 0.0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if v > 0.0:
+                out[f"lw{i}"] = round(min(v, LEAF_SHARE_MAX), 2)
     return out
 
 
@@ -160,20 +232,89 @@ def leaf(F, a, b, c0, c1, za, zb, style: str, color, glass_color) -> list:
                 + F(b - m, b, c0, c1, g0, g1, color)
                 + F(a + m - 0.005, b - m + 0.005, cm - 0.004, cm + 0.004,
                     g0 - 0.005, g1 + 0.005, glass_color))
+    if style == "dutch":
+        return _dutch(F, a, b, c0, c1, za, zb, color)
+    if style == "planks":
+        return _planks(F, a, b, c0, c1, za, zb, color)
     out = F(a, b, c0, c1, za, zb, color)
-    if style != "panels":
+    if style not in ("panels", "six"):
         return out
     W, H = b - a, zb - za
     m = min(0.11, W / 5)
-    cols = 2 if W > 0.70 else 1
+    cols = 2 if W > 0.70 or style == "six" else 1
     pw = (W - m * (cols + 1)) / cols
     mid = za + H * 0.42                     # the lock rail
     rows = ((za + m * 1.6, mid - m / 2), (mid + m / 2, zb - m))
+    if style == "six":                      # 3 rows: small over tall
+        z1 = za + H * 0.33
+        z2 = za + H * 0.68
+        rows = ((za + m * 1.2, z1 - m / 2), (z1 + m / 2, z2 - m / 2),
+                (z2 + m / 2, zb - m))
     for i in range(cols):
         s0 = a + m + i * (pw + m)
         for z0, z1 in rows:
             out += F(s0, s0 + pw, c1 - 0.001, c1 + 0.004, z0, z1, color)
             out += F(s0, s0 + pw, c0 - 0.004, c0 + 0.001, z0, z1, color)
+    return out
+
+
+def _dutch(F, a, b, c0, c1, za, zb, color) -> list:
+    """A DUTCH door: two halves a little apart, a shelf on the lower one's
+    top (its top 1 mm under the upper half's foot: no shared face)."""
+    zm = za + (zb - za) * 0.50
+    return (F(a, b, c0, c1, za, zm - 0.003, color)
+            + F(a, b, c0, c1, zm + 0.003, zb, color)
+            + F(a - 0.002, b + 0.002, c0 - 0.03, c1 + 0.03, zm - 0.03,
+                zm + 0.002, color))
+
+
+def _planks(F, a, b, c0, c1, za, zb, color) -> list:
+    """A PLANK door (ledged and braced): boards standing 3 mm proud of the
+    leaf with a groove between them; on the back, three ledges and two
+    diagonals rising from the hinge's side."""
+    from .structure import _mbox
+    W, H = b - a, zb - za
+    k = max(3, round(W / 0.12))
+    pw = W / k
+    out = F(a, b, c0, c1, za, zb, color)
+    for i in range(k):
+        out += F(a + i * pw + 0.003, a + (i + 1) * pw - 0.003, c1 - 0.001,
+                 c1 + 0.003, za + 0.001, zb - 0.001, color)
+    ld0, ld1 = c0 - 0.016, c0 + 0.001
+    zs = (za + H * 0.10, za + H * 0.50, za + H * 0.90)
+    lh = 0.05
+    for z in zs:
+        out += F(a + 0.012, b - 0.012, ld0, ld1, z - lh, z + lh, color)
+    # the braces run ledge to ledge, 3 mm less deep (never in the ledges' face)
+    p0, u, n = F.p0, F.u, F.n
+    for z_lo, z_hi in ((zs[0], zs[1]), (zs[1], zs[2])):
+        s0, s1 = a + 0.07, b - 0.07
+        z0, z1 = z_lo + lh, z_hi - lh
+        ln = math.hypot(s1 - s0, z1 - z0)
+        cs, sn = (s1 - s0) / ln, (z1 - z0) / ln
+
+        def M(t, c, w, s0=s0, z0=z0, cs=cs, sn=sn):
+            ss, zz = s0 + t * cs - w * sn, z0 + t * sn + w * cs
+            return (p0[0] + u[0] * ss + n[0] * c, p0[1] + u[1] * ss + n[1] * c,
+                    zz)
+        out += _mbox(M, 0.0, ln, c0 - 0.013, c0 + 0.001, -0.04, 0.04, color)
+    return out
+
+
+def bars(p0, u, n, sa, sb, za, zb, cm: float, nx: int, nz: int, color) -> list:
+    """GLAZING BARS on a pane sa..sb × za..zb, its middle at ``cm``: the
+    upright ones 1 mm deeper than the cross ones (no shared face), their
+    ends 1 mm in what holds them."""
+    from .structure import _box
+    out = []
+    for i in range(nx):
+        s = sa + (sb - sa) * (i + 1) / (nx + 1)
+        out.append(_box(p0, u, n, s - BAR_W / 2, s + BAR_W / 2, cm - 0.009,
+                        cm + 0.009, za - 0.001, zb + 0.001, color))
+    for i in range(nz):
+        z = za + (zb - za) * (i + 1) / (nz + 1)
+        out.append(_box(p0, u, n, sa - 0.001, sb + 0.001, cm - 0.008,
+                        cm + 0.008, z - BAR_W / 2, z + BAR_W / 2, color))
     return out
 
 

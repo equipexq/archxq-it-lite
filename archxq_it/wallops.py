@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Walls › Edit walls › Split / Trim / Extend (0.15.0, PLANO_0150.md B1) —
 the operations, pure (no Qt, no IngeTrazo): ``walledit`` clicks them.
 

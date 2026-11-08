@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GUIDE LINES from inside ArchXQ (his ask, 2026-10-05: «inside ArchXQ,
 using IngeTrazo's Edit menu mixes things up»). The guides ARE IngeTrazo's
 own construction guides — the same lines, the same snap (the snap engine

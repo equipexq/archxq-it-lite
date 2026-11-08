@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """LIGHT-FRAME WALLS — wood / steel frame (PLANO_PAREDE_ESTRUTURA_LEVE, his
 OK 2026-11-02, the MuzWalls picture): a wall's CORE, instead of solid, is
 its studs at a spacing, plates under and over them, at each opening a

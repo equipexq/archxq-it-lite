@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The levels strip — on the right, like Blender's N panel (N shows / hides
 it; remembered).
 
@@ -151,7 +153,7 @@ class _Row(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self.strip.owner.set_floor(self.row["key"])
+            self.strip.owner.set_floor(self.row["key"], by_hand=True)
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:

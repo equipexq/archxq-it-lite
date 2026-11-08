@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The LIBRARY — the «intermediate step» between picking a tool and drawing.
 
 His design, approved 2026-10-08 («maravilhoso… vende»): the right strip
@@ -21,7 +23,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QDialog, QGridLayout,
+from PySide6.QtWidgets import (QButtonGroup, QDialog, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QScrollArea, QSlider, QToolButton, QToolTip,
                                QVBoxLayout, QWidget)
@@ -108,6 +110,31 @@ def _garage(o) -> bool:
 def _plain_door(o) -> bool:
     """A door with leaves of its own — not a shopfront, not a garage door."""
     return not _shop(o) and not _garage(o)
+
+
+#: a column's ready styles: key, label, section, base, capital, tip
+COLUMN_ORDERS = (
+    ("round_tuscan", "Round — Tuscan", "round", "tuscan", "tuscan",
+     "A round column with a Tuscan base and capital"),
+    ("round_doric", "Round — Doric", "round", "doric", "doric",
+     "A round column with a Doric base and capital"),
+    ("round_attic", "Round — Attic", "round", "attic", "tuscan",
+     "A round column on an Attic base"),
+    ("round_empire", "Round — Empire", "round", "plinth", "empire",
+     "A round column with a flared capital"),
+    ("round_pedestal", "Round — pedestal", "round", "pedestal", "doric",
+     "A round column on a tall pedestal"),
+    ("sq_tuscan", "Square — Tuscan", "rect", "tuscan", "tuscan",
+     "A square column with a Tuscan base and capital"),
+    ("sq_doric", "Square — Doric", "rect", "doric", "doric",
+     "A square column with a Doric base and capital"),
+    ("sq_attic", "Square — Attic", "rect", "attic", "tuscan",
+     "A square column on an Attic base"),
+    ("sq_deco", "Square — Art Deco", "rect", "stepped", "stepped",
+     "A square column with stepped ends"),
+    ("sq_pedestal", "Square — pedestal", "rect", "pedestal", "doric",
+     "A square column on a tall pedestal"),
+)
 
 
 def _size(key, label, lo, hi, step, default, snaps=(), show=None, unit="m",
@@ -228,7 +255,7 @@ RAILING_PARTS = (
                                       ("square", "Square")),
          lambda o: _railed(o) and (o.get("railing") != "wall"
                                    or bool(o.get("rail_wall_top")))),
-    Part("rail_wall_top", "Handrail on the wall", ((False, "No"),
+    Part("rail_wall_top", "Handrail on top of the low wall", ((False, "No"),
                                                    (True, "On top")),
          lambda o: o.get("railing") == "wall"),
     # the guard round the hole upstairs — off for a stair outside the
@@ -314,8 +341,13 @@ def _solid_leaf(o) -> bool:
 
 DOOR_FINISH_PARTS = (
     Part("leaf", "Leaf", (("solid", "Plain"), ("panels", "Panels"),
-                          ("half", "Half glass"), ("glass", "Glass")),
+                          ("six", "6 panels"), ("half", "Half glass"),
+                          ("glass", "Glass"), ("planks", "Planks"),
+                          ("dutch", "Dutch")),
          _plain_door, tip="Glass on a swing door: a french door"),
+    _size("top_h", "Top light", 0.0, 1.20, 0.05, 0.0, (0.30, 0.40, 0.50),
+          lambda o: _plain_door(o) and o.get("top", "square") == "square",
+          tip="A fixed glass pane over the door, a bar between (0: none)"),
     Part("handle", "Handle", (("none", "None"), ("lever", "Lever"),
                               ("knob", "Knob"), ("pull", "Pull bar")),
          _plain_door),
@@ -490,9 +522,28 @@ def _leaf_role(i: int) -> Part:
                 roles(o)[i - 1])
 
 
+def _leaf_width(i: int) -> Part:
+    """«Leaf i width»: its share of the window, 0 = it shares what the others
+    leave (Hugo #83, 04/11/2026: a hinged leaf and a wider fixed one)."""
+    return _size(f"lw{i}", f"Leaf {i} width", 0.0, 90.0, 5.0, 0.0,
+                 (25.0, 33.0, 50.0, 60.0, 75.0),
+                 lambda o: o.get("op") == "casement" and _casement_n(o) >= i
+                 and _casement_n(o) > 1, unit="%",
+                 tip="Its share of the window's width; 0 = shares the rest")
+
+
+def _barred(o) -> bool:
+    """A glass that can have bars: not a shape, not a shop window, no
+    louvres, no awning or pivot (their panes turn)."""
+    return o.get("op") in ("fixed", "sliding", "casement", "hung") \
+        and o.get("louvred") is not True \
+        and o.get("oshape", "rect") == "rect"
+
+
 #: the leaves' rows go with their count: picking another count lays the
-#: usual ones again (ui.library_pick)
-ROLE_KEYS = tuple(f"role{i}" for i in range(1, 7))
+#: usual ones again (ui.library_pick) — and their widths
+ROLE_KEYS = tuple(f"role{i}" for i in range(1, 7)) \
+    + tuple(f"lw{i}" for i in range(1, 7))
 
 
 WINDOW_LEAF_PARTS = (
@@ -511,6 +562,15 @@ WINDOW_LEAF_PARTS = (
     Part("leaves", "Leaves", tuple((k, str(k)) for k in range(1, 7)),
          _win_op("casement")),
     *(_leaf_role(i) for i in range(1, 7)),
+    *(_leaf_width(i) for i in range(1, 7)),
+    # bars on the glass, a top light (04/11/2026)
+    Part("bars_x", "Upright bars", tuple((k, str(k)) for k in range(0, 5)),
+         _barred, tip="Glazing bars on each leaf's glass"),
+    Part("bars_z", "Cross bars", tuple((k, str(k)) for k in range(0, 5)),
+         _barred, tip="Glazing bars on each leaf's glass"),
+    _size("top_h", "Top light", 0.0, 1.20, 0.05, 0.0, (0.30, 0.40, 0.50),
+          lambda o: _not_shop(o) and o.get("oshape", "rect") == "rect",
+          tip="A fixed glass pane over the leaves, a bar between (0: none)"),
     # a pivot window (basculante): its panes, 0 = by its height
     Part("pv_panes", "Panes", ((0, "Auto"), (2, "2"), (3, "3"), (4, "4"),
                                (5, "5"), (6, "6")), _win_op("pivot")),
@@ -526,7 +586,7 @@ WINDOW_LEAF_PARTS = (
     Part("out", "Opens", ((False, "In"), (True, "Out")),
          _win_op("casement")),
     Part("open", "Open", (), _win_op("sliding", "casement", "awning",
-                                     "pivot"),
+                                     "pivot", "hung"),
          "slider"))
 #: a SHOP WINDOW (shopfront.py, 2026-10-11): the shops' sides
 SHOP_WINDOW_PARTS = (
@@ -567,21 +627,87 @@ SLAB_ROOF = _slab_stack(("pr", "Protection", 0.03, "finish"),
                         ("pl", "Plaster", 0.015, "finish"))
 
 
+def _door_set(op: str, leaf: str, leaves: int = 1, top_h: float = 0.0) -> dict:
+    """What a door's card sets: everything that tells it from the others.
+    (A card is a whole model: another one picked leaves nothing of the last.)"""
+    return {"op": op, "leaf": leaf, "leaves": leaves, "top_h": top_h,
+            **({"top": "square"} if op == "swing" else {})}
+
+
+def _win_set(op: str, leaves: int | None = None, **more) -> dict:
+    """What a window's card sets (see ``_door_set``); roles and widths left
+    out are the usual ones."""
+    out = {"op": op, "louvred": False, "oshape": "rect", "bars_x": 0,
+           "bars_z": 0, "top_h": 0.0}
+    if leaves is not None:
+        out["leaves"] = leaves
+    out.update(more)
+    return out
+
+
+def _shape_set(shape: str) -> dict:
+    return _win_set("fixed", oshape=shape)
+
+
+def _fixed_path(o) -> bool:
+    """A profile whose height comes from a rule (Floor, Ceiling…): round a
+    room, a face, an element, or an old line drawn in plan. Its own path in
+    3D (points clicked, a line) needs none (his call, 06/11)."""
+    return o.get("how") not in PF.FREE_HOWS or bool(o.get("pts"))
+
+
 CATALOG = {
     "door": Shelf("Doors", (
         # «top» square: an arched door is no Swing (the tie, 2026-10-27 —
         # Arched never marked; picking Swing takes the arch off)
         # (a card brings its handle: lever / pull — 2026-10-27)
-        Type("swing", "Swing", "door_swing",
-             {"op": "swing", "leaf": "solid", "top": "square"},
+        Type("swing", "Swing", "door_swing", _door_set("swing", "solid"),
              "Hinged on a jamb, opens to the inside",
              dict(DOOR_INIT, handle="lever")),
+        Type("panelled", "Panelled", "door_panelled",
+             _door_set("swing", "panels"), "Two raised panels on each face",
+             dict(DOOR_INIT, handle="lever")),
+        Type("six", "6 panels", "door_six", _door_set("swing", "six"),
+             "The classic: six raised panels on each face",
+             dict(DOOR_INIT, handle="lever")),
+        Type("half", "Half glass", "door_half", _door_set("swing", "half"),
+             "Glass over a solid lower half", dict(DOOR_INIT, handle="lever")),
+        Type("french", "French", "door_french", _door_set("swing", "glass"),
+             "A glazed leaf in a slim frame", dict(DOOR_INIT, handle="lever")),
+        Type("plank", "Plank", "door_plank", _door_set("swing", "planks"),
+             "Boards on the front; ledges and braces on the back",
+             dict(DOOR_INIT, handle="lever")),
+        Type("dutch", "Dutch", "door_dutch", _door_set("swing", "dutch"),
+             "Two halves, a shelf between them",
+             dict(DOOR_INIT, handle="lever")),
+        Type("transom", "With top light", "door_transom",
+             _door_set("swing", "solid", top_h=0.40),
+             "A fixed glass pane over the door",
+             {"w": 0.90, "h": 2.50, "handle": "lever"}),
+        Type("double", "Double", "door_double",
+             _door_set("swing", "solid", 2), "Two leaves meeting in the middle",
+             {"w": 1.60, "h": 2.10, "handle": "lever"}),
+        Type("double_panelled", "Double panelled", "door_double_panelled",
+             _door_set("swing", "panels", 2), "Two panelled leaves",
+             {"w": 1.60, "h": 2.10, "handle": "lever"}),
+        Type("french2", "French double", "door_french2",
+             _door_set("swing", "glass", 2), "Two glazed leaves (porta-balcão)",
+             {"w": 1.60, "h": 2.10, "handle": "lever"}),
+        Type("barn2", "Double plank", "door_barn2",
+             _door_set("swing", "planks", 2), "Two plank leaves: sheds, gates",
+             {"w": 2.00, "h": 2.20, "handle": "pull"}),
         Type("sliding", "Sliding", "door_sliding",
-             {"op": "sliding", "leaf": "solid"},
-             "One leaf on a rail along the inside face; two part in the "
-             "middle", dict(DOOR_INIT, handle="pull")),
+             _door_set("sliding", "solid"),
+             "One leaf on a rail along the inside face",
+             dict(DOOR_INIT, handle="pull")),
+        Type("sliding2", "Sliding double", "door_sliding2",
+             _door_set("sliding", "solid", 2), "Two leaves parting in the middle",
+             {"w": 1.60, "h": 2.10, "handle": "pull"}),
+        Type("barn", "Barn", "door_barn", _door_set("sliding", "planks"),
+             "A plank leaf on a rail in sight",
+             {"w": 1.00, "h": 2.10, "handle": "pull"}),
         Type("glass", "Glass sliding", "door_glass",
-             {"op": "sliding", "leaf": "glass"},
+             {"op": "sliding", "leaf": "glass", "top_h": 0.0},
              "Glazed leaves in a slim dark frame, in two tracks — the "
              "curtain wall's look", dict(DOOR_INIT, handle="pull")),
         Type("shop", "Shopfront", "door_shop", {"op": "shop", "leaf": "glass"},
@@ -590,10 +716,16 @@ CATALOG = {
              "like. Selected: «Fill the bay» makes it pier to pier",
              {"w": 4.00, "h": 2.70, "sill": 0.0}),
         Type("garage", "Garage door", "door_garage",
-             {"op": "garage", "leaf": "solid"},
-             "A garage's door in steel: sectional (panels), roll-up (slats, "
-             "with its box and guides inside) or up-and-over. «Open» lifts "
-             "it", GARAGE_INIT),
+             {"op": "garage", "leaf": "solid", "garage": "sectional"},
+             "A sectional garage door: horizontal panels. «Open» lifts it",
+             GARAGE_INIT),
+        Type("rollup", "Roll-up garage", "door_rollup",
+             {"op": "garage", "leaf": "solid", "garage": "rollup"},
+             "Slats, with its box and guides inside. «Open» lifts it",
+             GARAGE_INIT),
+        Type("tilt", "Up-and-over", "door_tilt",
+             {"op": "garage", "leaf": "solid", "garage": "tilt"},
+             "One panel with ribs, turning up. «Open» lifts it", GARAGE_INIT),
         # (0.15.0, B6: its leaf up to the arch's spring, a half-round glass
         # light over it)
         Type("arched", "Arched", "door_arched",
@@ -615,29 +747,108 @@ CATALOG = {
          Part("open", "Open", (), None, "slider"), DOOR_GLASS_PART)
         + SHOP_PARTS + GARAGE_PARTS + DOOR_SIZES + TRIM_PARTS),
     "window": Shelf("Windows", (
-        Type("fixed", "Fixed", "win_fixed", {"op": "fixed"},
+        Type("fixed", "Fixed", "win_fixed", _win_set("fixed"),
              "A frame and its glass", WINDOW_INIT),
+        Type("fixed_bars", "Fixed with bars", "win_fixed_bars",
+             _win_set("fixed", bars_x=1, bars_z=1), "Glazing bars in a cross",
+             WINDOW_INIT),
+        Type("industrial", "Industrial", "win_industrial",
+             _win_set("fixed", bars_x=3, bars_z=3, frame_c="black"),
+             "A black frame and small panes",
+             {"w": 2.00, "h": 1.60, "sill": 0.90}),
         Type("shop", "Shop window", "win_shop", {"op": "shop"},
              "A shop's display window: fixed panes from the floor, in a "
              "slim dark frame — a bar across with glass over it, a base, a "
              "roll-up shutter and a sign band if you like. As high as the "
              "shopfront, so the lines meet round the corner",
              {"w": 3.00, "h": 2.70, "sill": 0.0}),
-        Type("sliding", "Sliding", "win_sliding", {"op": "sliding"},
-             "Glazed leaves in two tracks, sliding over each other — 2, 3 "
-             "or 4 leaves", dict(WINDOW_INIT, w=1.50, leaves=2)),
-        Type("casement", "Casement", "win_casement", {"op": "casement"},
-             "Glazed leaves hinged on the jambs, opening in or out — 1 or "
-             "2 leaves", dict(WINDOW_INIT, leaves=2)),
-        Type("awning", "Awning", "win_awning", {"op": "awning"},
+        Type("sliding", "Sliding", "win_sliding", _win_set("sliding", 2),
+             "Two glazed leaves in two tracks, sliding over each other",
+             dict(WINDOW_INIT, w=1.50)),
+        Type("sliding3", "Sliding 3", "win_sliding3", _win_set("sliding", 3),
+             "Three glazed leaves", dict(WINDOW_INIT, w=2.00)),
+        Type("sliding4", "Sliding 4", "win_sliding4", _win_set("sliding", 4),
+             "Four glazed leaves: the middle two open", dict(WINDOW_INIT, w=2.40)),
+        Type("slide_top", "Sliding + top light", "win_slide_top",
+             _win_set("sliding", 3, top_h=0.40),
+             "Three sliding leaves under a fixed pane",
+             {"w": 2.00, "h": 1.60, "sill": 0.90}),
+        Type("louvred3", "Louvred 3", "win_louvred3",
+             _win_set("sliding", 3, louvred=True),
+             "Veneziana: 2 louvred leaves outside, 1 of glass inside",
+             dict(WINDOW_INIT, w=1.50)),
+        Type("louvred6", "Louvred 6", "win_louvred6",
+             _win_set("sliding", 6, louvred=True),
+             "Veneziana: 4 louvred leaves outside, 2 of glass inside",
+             dict(WINDOW_INIT, w=2.00)),
+        Type("casement", "Casement", "win_casement", _win_set("casement", 2),
+             "Two leaves hinged on the jambs, opening in or out", WINDOW_INIT),
+        Type("casement1", "Casement 1", "win_casement1",
+             _win_set("casement", 1), "One hinged leaf",
+             dict(WINDOW_INIT, w=0.70)),
+        Type("casement3", "Casement 3", "win_casement3",
+             _win_set("casement", 3), "Two hinged leaves, a fixed one between",
+             dict(WINDOW_INIT, w=1.80)),
+        Type("casement4", "Casement 4", "win_casement4",
+             _win_set("casement", 4), "Four hinged leaves, in two pairs",
+             dict(WINDOW_INIT, w=2.40)),
+        Type("fixed_hinged", "Fixed + hinged", "win_fixed_hinged",
+             _win_set("casement", 2, role1="F", role2="L", lw1=65.0),
+             "A wide fixed leaf and a narrower hinged one",
+             dict(WINDOW_INIT, w=1.80)),
+        Type("wide_centre", "Wide fixed centre", "win_wide_centre",
+             _win_set("casement", 3, role1="L", role2="F", role3="R",
+                      lw2=50.0),
+             "A wide fixed pane between two hinged leaves",
+             dict(WINDOW_INIT, w=2.40)),
+        Type("casement_top", "Casement + top light", "win_casement_top",
+             _win_set("casement", 2, top_h=0.40),
+             "Two hinged leaves under a fixed pane",
+             {"w": 1.20, "h": 1.60, "sill": 0.90}),
+        Type("french_bars", "Casement with bars", "win_french_bars",
+             _win_set("casement", 2, bars_x=1, bars_z=2),
+             "Small panes on each leaf", {"w": 1.20, "h": 1.50, "sill": 0.90}),
+        Type("sash", "Sash", "win_sash", _win_set("hung"),
+             "Guilhotina: two leaves, the lower one lifts",
+             {"w": 0.90, "h": 1.50, "sill": 0.90}),
+        Type("sash_bars", "Sash with bars", "win_sash_bars",
+             _win_set("hung", bars_x=1, bars_z=1),
+             "Guilhotina with small panes",
+             {"w": 0.90, "h": 1.50, "sill": 0.90}),
+        Type("awning", "Awning", "win_awning", _win_set("awning"),
              "One leaf hinged at its top, its bottom pushed out (maxim-ar) "
              "— bathrooms, kitchens",
              {"w": 0.60, "h": 0.60, "sill": 1.50}),
         # (2026-10-27) the basculante
-        Type("pivot", "Pivot", "win_pivot", {"op": "pivot"},
+        Type("pivot", "Pivot", "win_pivot", _win_set("pivot"),
              "Horizontal panes, each turning on its middle (basculante) — "
              "bathrooms, service areas",
-             {"w": 0.60, "h": 0.80, "sill": 1.40, "pv_panes": 0})),
+             {"w": 0.60, "h": 0.80, "sill": 1.40, "pv_panes": 0}),
+        # its shapes, each a card (the arches keep the leaves in their
+        # rectangle; the others are fixed glass)
+        Type("round_arch", "Round arch", "win_round_arch",
+             _shape_set("round_arch"), "A half-round top",
+             {"w": 1.00, "h": 1.50, "sill": 0.90}),
+        Type("seg_arch", "Segmental arch", "win_seg_arch",
+             _shape_set("seg_arch"), "A shallow curved top",
+             {"w": 1.20, "h": 1.40, "sill": 0.90}),
+        Type("gothic", "Gothic", "win_gothic", _shape_set("pointed"),
+             "A pointed arch", {"w": 0.80, "h": 1.80, "sill": 0.90}),
+        Type("gable", "Gable top", "win_gable", _shape_set("pentagon"),
+             "A top in two slopes", {"w": 1.00, "h": 1.40, "sill": 0.90}),
+        Type("bulls_eye", "Bull's eye", "win_bulls_eye", _shape_set("circle"),
+             "A round window", {"w": 0.80, "h": 0.80, "sill": 1.20}),
+        Type("oval", "Oval", "win_oval", _shape_set("oval"), "An oval window",
+             {"w": 0.60, "h": 0.90, "sill": 1.20}),
+        Type("triangle", "Triangle", "win_triangle", _shape_set("triangle"),
+             "For under a gable", {"w": 1.20, "h": 0.80, "sill": 1.20}),
+        Type("trapezoid", "Trapezoid", "win_trapezoid", _shape_set("trapezoid"),
+             "Its top narrower, or under a slope",
+             {"w": 1.20, "h": 1.00, "sill": 1.00}),
+        Type("arch_casement", "Casement under arch", "win_arch_casement",
+             _win_set("casement", 2, oshape="round_arch"),
+             "Two hinged leaves, a fixed light in the arch",
+             {"w": 1.20, "h": 1.90, "sill": 0.80})),
         SHAPE_PARTS + WINDOW_LEAF_PARTS + (GLASS_PART,) + SHOP_WINDOW_PARTS
         + WINDOW_SIZES + TRIM_PARTS + SILL_PARTS),
     "wall": Shelf("Walls", (
@@ -675,8 +886,28 @@ CATALOG = {
          _size("cw_s", "Mullions every", 0.50, 3.00, 0.05, 1.25,
                (1.00, 1.25, 1.50, 2.00), lambda o: bool(o.get("cw"))))),
     "column": Shelf("Columns", (
-        Type("rect", "Rectangular", "col_rect", {"section": "rect"}),
-        Type("round", "Round", "col_round", {"section": "round"}))),
+        Type("rect", "Rectangular", "col_rect",
+             {"section": "rect", "cbase": "none", "ccap": "none"}),
+        Type("round", "Round", "col_round",
+             {"section": "round", "cbase": "none", "ccap": "none"})) + (
+        # neoclassical (column_orders.py, Pro — his ask, 06/11/2026)
+        () if edition.lite() else tuple(
+            Type(k, label, f"col_{k}",
+                 {"section": sec, "cbase": b, "ccap": c}, tip)
+            for k, label, sec, b, c, tip in COLUMN_ORDERS)),
+        () if edition.lite() else (
+            Part("cbase", "Base", (("none", "None"), ("plinth", "Plinth"),
+                                   ("tuscan", "Tuscan"), ("doric", "Doric"),
+                                   ("attic", "Attic"), ("stepped", "Stepped"),
+                                   ("pedestal", "Pedestal")),
+                 tip="The column's foot, sized by its width — within its "
+                     "height"),
+            Part("ccap", "Capital", (("none", "None"), ("slab", "Abacus"),
+                                     ("tuscan", "Tuscan"), ("doric", "Doric"),
+                                     ("empire", "Empire"),
+                                     ("stepped", "Stepped")),
+                 tip="The column's head, sized by its width — within its "
+                     "height"))),
     "beam": Shelf("Beams", (
         Type("b1540", "15 × 40", "beam_s", {"w": 0.15, "h": 0.40}),
         Type("b2045", "20 × 45", "beam_m", {"w": 0.20, "h": 0.45}),
@@ -958,20 +1189,41 @@ CATALOG = {
                  else {}))
         for k in PF.NATIVE),
         (Part("how", "How", PF.HOWS,
-              tip="By room: click inside a room — the profile runs round its "
-                  "walls, stopping at the doors, and follows them when they "
-                  "move. Point by point: along a line you draw on a wall's "
-                  "face (Tab: the other side). By wall face: click a wall's "
-                  "face — all of it (Shift + click: the next face joins). "
-                  "By element: click a column or a beam — round it (Floor: "
-                  "its base, Ceiling: its top)"),
-         Part("anchor", "On", PF.ANCHORS,
+              tip="Point by point: click where it runs, at any height, in 3D "
+                  "(Tab: the other side). On a line: click a line and the "
+                  "profile runs along it, level, sloped or curved. Circle: "
+                  "click the centre on a face, then the radius (a medallion). "
+                  "Rectangle: click two opposite corners on a face (a raised "
+                  "panel). By room: "
+                  "click inside a room — round its walls, stopping at the "
+                  "doors, and it follows them when they move. By wall face: "
+                  "click a wall's face — all of it (Shift + click: the next "
+                  "face joins). By element: click a column or a beam — round "
+                  "it (Floor: its base, Ceiling: its top)"),
+         # (his screen, 07/11: «Width / Height» read swapped on an upright
+         # strip — names that hold whichever way the profile runs)
+         _size("pw", "Depth", 0.005, 2.0, 0.005, 0.10,
+               (0.02, 0.05, 0.10, 0.20, 0.40),
+               tip="How far it stands out"),
+         _size("ph", "Face size", 0.005, 2.0, 0.005, 0.10,
+               (0.05, 0.10, 0.20, 0.40, 0.80),
+               tip="The size of its visible face, across the line it runs on"),
+         Part("halign", "Align", PF.HALIGNS, lambda o: not _fixed_path(o),
+              tip="Where its line runs on it. Outside: its back on the line, "
+                  "all of it out. Centre: the line through its middle. "
+                  "Inside: its front on the line, all of it in"),
+         Part("valign", "Vertical align", PF.VALIGNS,
+              lambda o: not _fixed_path(o),
+              tip="Top: its top on the line, hanging under it. Middle: the "
+                  "line through its middle. Bottom: its foot on the line"),
+         Part("anchor", "On", PF.ANCHORS, _fixed_path,
               tip="Floor: a baseboard. Ceiling: a crown, its top under the "
                   "slab above. Height: its foot this high over the floor. "
                   "Wall top: its top at the top of the wall it runs along "
                   "(a cornice)"),
-         _size("z", "Height", 0.0, 6.0, 0.05, 0.90,
-               (0.90, 1.00, 2.80), lambda o: o.get("anchor") == "height",
+         _size("z", "Foot height", 0.0, 6.0, 0.05, 0.90,
+               (0.90, 1.00, 2.80),
+               lambda o: _fixed_path(o) and o.get("anchor") == "height",
                tip="Its foot over the level's floor"),
          Part("cut", "Doors & windows", ((True, "Stops at them"),
                                         (False, "Runs on")),
@@ -986,18 +1238,20 @@ CATALOG = {
          _size("gap", "Gap", 0.0, 5.0, 0.01, 0.30,
                (0.05, 0.10, 0.30, 0.50), lambda o: o.get("run") == "repeat"))),
     # Tools ▸ Along a path ▸ COPIES (copies.py — Pro, part 4): a card = the
-    # object copied; «Selected object» takes the one selected in the model
+    # object copied; «From the model» takes one that is in the model
     "copy": Shelf("Copies", tuple(
         Type(k, PF.COPY_OBJECTS[k][0], f"copy_{k}", {"obj": k},
              PF.COPY_OBJECTS[k][1])
         for k in PF.COPY_OBJECTS) + (
-        Type(PF.COPY_MINE, "Selected object", "copy_mine",
+        Type(PF.COPY_MINE, "From the model", "copy_mine",
              {"obj": PF.COPY_MINE},
-             "Select a group in the model, then this card: it is copied "
-             "along the path (its foot on the floor)"),),
+             "This card, then click the object in the model (or select it "
+             "first), then its path. Columns and footings become real ones, "
+             "each editable; anything else, copies of its faces"),),
         (Part("how", "How", PF.COPY_HOWS,
-              tip="By room: click inside a room — the copies run round its "
-                  "walls. Point by point: along a line you draw. By wall "
+              tip="Point by point: along a line you draw, at any height. On "
+                  "a line: click one that is in the model. By room: click "
+                  "inside a room — the copies run round its walls. By wall "
                   "face: along a wall's face (Shift + click: the next face "
                   "joins)"),
          Part("mode", "Where", PF.COPY_MODES,
@@ -1273,7 +1527,10 @@ def _same(a, b) -> bool:
 
 #: an option a record may lack, and what it then is (a door before the
 #: arch: square)
-UNSET = {"top": "square", "oshape": "rect"}
+UNSET = {"cbase": "none", "ccap": "none",
+         "top": "square", "oshape": "rect", "louvred": False, "bars_x": 0,
+         "bars_z": 0, "top_h": 0.0, "lw1": 0.0, "lw2": 0.0, "lw3": 0.0,
+         "garage": "sectional", "leaf": "solid", "leaves": 1}
 #: a card's value that its variants still fit: a «solid» leaf is also a
 #: panelled or a half-glass one (the Swing card stays lit, 2026-10-27)
 ALIKE = {("leaf", "solid"): ("solid", "panels", "half")}
@@ -1283,17 +1540,23 @@ def current_type(shelf: Shelf, opts: dict) -> str | None:
     """The type the options are (the first that fits); None = sizes of
     one's own. Two that fit: the one that says MORE wins (the roofs' «L
     plan» = Hip + L, 2026-10-16); equal: the first."""
-    best = None
+    best, best_score = None, (0, 0)
     for t in shelf.types:
         if t.key == "rsolid" or t.key.startswith("r_"):
             continue      # (a roof's «By market» card: never its type —
             # «Gable» stays lit, and its name in the quantities)
         if t.set is not None and all(
                 _same(opts.get(k, UNSET.get(k)), v)
-                or opts.get(k) in ALIKE.get((k, v), ())
+                or (not isinstance(v, (dict, list))  # (a dict can't be a key)
+                    and opts.get(k) in ALIKE.get((k, v), ()))
                 for k, v in t.set.items()):
-            if best is None or len(t.set) > len(best.set):
-                best = t
+            # (equal: the one that fits EXACTLY — a panelled door is the
+            # Panelled card, not Swing that only «alike» fits, 04/11/2026)
+            score = (len(t.set), sum(
+                1 for k, v in t.set.items()
+                if _same(opts.get(k, UNSET.get(k)), v)))
+            if best is None or score > best_score:
+                best, best_score = t, score
     return best.key if best is not None else None
 
 
@@ -1454,6 +1717,12 @@ def _win_pivot(p) -> None:
     p.setPen(_pen(DIM, 4))
     for zc in (35, 45, 55, 65):
         p.drawLine(QPointF(43, zc - 4), QPointF(53, zc + 4))
+
+
+def _win_hung(p) -> None:
+    """A sash window, from the front (the opening window's type chip)."""
+    from . import cardpics as CP
+    CP.window(p, "hung")
 
 
 def _wall(p, t) -> None:
@@ -1739,8 +2008,13 @@ def _profile(p, key) -> None:
     y0 = 20 + h * k if a == "ceiling" else 80
     p.setPen(Qt.NoPen)
     p.setBrush(QColor("#4a4f56"))
-    p.drawRect(QRectF(x0 - 14, 8, 14, 80))               # the wall
-    if a == "floor":
+    if PF.free_standing(key):                            # (no wall: centred)
+        x0, y0 = 48 - d * k / 2, 48 + h * k / 2
+    else:
+        p.drawRect(QRectF(x0 - 14, 8, 14, 80))           # the wall
+    if PF.free_standing(key):
+        pass
+    elif a == "floor":
         p.drawRect(QRectF(x0 - 14, 80, 74, 8))
     elif a == "ceiling":
         p.drawRect(QRectF(x0 - 14, 8, 74, 12))
@@ -1751,6 +2025,36 @@ def _profile(p, key) -> None:
     p.setBrush(QColor("#2f7df6"))
     p.setPen(_pen(INK, 2))
     p.drawPath(path)
+
+
+def _column_order(p, sec, cbase, ccap) -> None:
+    """A column from the front, as it comes: its base and capital in the
+    accent; its section in the corner."""
+    from . import column_orders as CO
+    half = CO.elevation(cbase, ccap, 2.2)        # (a short shaft: its ends show)
+    top = max(z for _u, z in half)
+    k = 84 / top
+    wd = max(1.0 / 2 + max(u for u, _z in half), 0.5)
+    k = min(k, 42 / wd)
+    r = k / 2                                    # half the shaft's width
+
+    def at(u, z, s):
+        return QPointF(48 + s * (r + u * k), 90 - z * k)
+    path = QPainterPath(at(half[0][0], 0.0, 1))
+    for u, z in half[1:]:
+        path.lineTo(at(u, z, 1))
+    for u, z in reversed(half):
+        path.lineTo(at(u, z, -1))
+    path.closeSubpath()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#2f7df6"))
+    p.drawPath(path)
+    p.setBrush(QColor("#4a4f56") if sec == "rect" else INK)
+    if sec == "round":
+        p.drawEllipse(QRectF(2, 2, 15, 15))
+    else:
+        p.setBrush(INK)
+        p.drawRect(QRectF(3, 3, 13, 13))
 
 
 def _copy(p, key) -> None:
@@ -1915,6 +2219,9 @@ PICS = {
     "guard_boundary": lambda p: _guard(p, "boundary"),
     "street": _street,
     **{f"profile_{k}": (lambda p, k=k: _profile(p, k)) for k in PF.NATIVE},
+    **({} if edition.lite() else {
+        f"col_{k}": (lambda p, s=s, b=b, c=c: _column_order(p, s, b, c))
+        for k, _l, s, b, c, _t in COLUMN_ORDERS}),
     **{f"copy_{k}": (lambda p, k=k: _copy(p, k))
        for k in (*PF.COPY_OBJECTS, PF.COPY_MINE)},
     "roof_gable": lambda p: _roof(p, "gable"),
@@ -1950,6 +2257,72 @@ PICS = {
     "ramp_straight": lambda p: _ramp(p, "straight"),
     "ramp_l": lambda p: _ramp(p, "L"), "ramp_u": lambda p: _ramp(p, "U"),
 }
+
+
+def _opening_pics() -> dict:
+    """Every door's and window's card, from the front (cardpics.py) — what
+    tells one from another at a glance (04/11/2026)."""
+    from . import cardpics as CP
+    W, D = CP.window, CP.door
+    out = {
+        "win_fixed": lambda p: W(p),
+        "win_fixed_bars": lambda p: W(p, bars=(1, 1)),
+        "win_industrial": lambda p: W(p, bars=(3, 3), dark=True),
+        "win_sliding": lambda p: W(p, "sliding", 2),
+        "win_sliding3": lambda p: W(p, "sliding", 3),
+        "win_sliding4": lambda p: W(p, "sliding", 4),
+        "win_slide_top": lambda p: W(p, "sliding", 3, top=True),
+        "win_louvred3": lambda p: W(p, "sliding", 3, louvred=2),
+        "win_louvred6": lambda p: W(p, "sliding", 6, louvred=4),
+        "win_casement": lambda p: W(p, "casement", roles="LR"),
+        "win_casement1": lambda p: W(p, "casement", roles="L",
+                                     box=(26, 12, 70, 84)),
+        "win_casement3": lambda p: W(p, "casement", roles="LFR"),
+        "win_casement4": lambda p: W(p, "casement", roles="LRLR"),
+        "win_fixed_hinged": lambda p: W(p, "casement", roles="FL",
+                                        widths=(65, 35)),
+        "win_wide_centre": lambda p: W(p, "casement", roles="LFR",
+                                       widths=(25, 50, 25)),
+        "win_casement_top": lambda p: W(p, "casement", roles="LR", top=True),
+        "win_french_bars": lambda p: W(p, "casement", roles="LR", bars=(1, 2)),
+        "win_sash": lambda p: W(p, "hung", box=(26, 8, 70, 88)),
+        "win_sash_bars": lambda p: W(p, "hung", bars=(1, 1),
+                                     box=(26, 8, 70, 88)),
+        "win_awning": lambda p: W(p, "awning"),
+        "win_pivot": lambda p: W(p, "pivot"),
+        "win_round_arch": lambda p: CP.shaped(p, "round_arch"),
+        "win_seg_arch": lambda p: CP.shaped(p, "seg_arch"),
+        "win_gothic": lambda p: CP.shaped(p, "pointed"),
+        "win_gable": lambda p: CP.shaped(p, "pentagon"),
+        "win_bulls_eye": lambda p: CP.shaped(p, "circle"),
+        "win_oval": lambda p: CP.shaped(p, "oval"),
+        "win_triangle": lambda p: CP.shaped(p, "triangle"),
+        "win_trapezoid": lambda p: CP.shaped(p, "trapezoid"),
+        "win_arch_casement": lambda p: CP.shaped(p, "round_arch", "casement"),
+        "door_swing": lambda p: D(p),
+        "door_panelled": lambda p: D(p, "panels"),
+        "door_six": lambda p: D(p, "six"),
+        "door_half": lambda p: D(p, "half"),
+        "door_french": lambda p: D(p, "glass"),
+        "door_plank": lambda p: D(p, "planks"),
+        "door_dutch": lambda p: D(p, "dutch"),
+        "door_transom": lambda p: D(p, top=True),
+        "door_double": lambda p: D(p, n=2),
+        "door_double_panelled": lambda p: D(p, "panels", 2),
+        "door_french2": lambda p: D(p, "glass", 2),
+        "door_barn2": lambda p: D(p, "planks", 2),
+        "door_sliding": lambda p: D(p, op="sliding"),
+        "door_sliding2": lambda p: D(p, n=2, op="sliding"),
+        "door_barn": lambda p: D(p, "planks", op="sliding"),
+        "door_arched": lambda p: CP.door_arched(p),
+        "door_garage": lambda p: CP.garage(p, "sectional"),
+        "door_rollup": lambda p: CP.garage(p, "rollup"),
+        "door_tilt": lambda p: CP.garage(p, "tilt"),
+    }
+    return out
+
+
+PICS.update(_opening_pics())
 _cache: dict = {}
 
 
@@ -1983,6 +2356,10 @@ PIN_CSS = ("QToolButton { border: none; border-radius: 9px; padding: 0; "
            "background: #2b2f34; color: #d6d9dd; font-size: 12px; }"
            "QToolButton:hover { background: #4a5058; color: #ffffff; }")
 STAR_ON, STAR_OFF = "\u2605", "\u2606"         # ★ ☆
+#: a row of chips wraps past this, so the panel keeps its width
+CHIPS_WIDTH = 300
+#: rows of cards before the strip scrolls on its own (with favourites.STRIP_MAX)
+STRIP_ROWS = 5
 #: the «More» card closing the strip (every type, in a window)
 MORE_CSS = ("QToolButton { border: 1px dashed #6b7178; border-radius: 6px; "
             "padding: 4px; color: #d6d9dd; }"
@@ -2067,13 +2444,19 @@ def _market_pic(p: QPainter, m) -> None:
 
 
 # the market cards' pictures: their layers (markets.py)
+def _market_card(p: QPainter, m, what: str) -> None:
+    """(its frame, its market and size seals, its layers: cardpics.py,
+    04/11/2026 — the cards looked alike)"""
+    from . import cardpics as CP
+    CP.market(p, m, what)
+
+
 for _m in MK.TYPES:
-    PICS["mk_" + _m[0]] = (lambda p, m=_m: _market_pic(p, m))
+    PICS["mk_" + _m[0]] = (lambda p, m=_m: _market_card(p, m, "wall"))
 for _m in MK.ROOFS:                       # the roofs' (2c)
-    PICS["rk_" + _m[0]] = (lambda p, m=_m: _market_pic(p, m))
+    PICS["rk_" + _m[0]] = (lambda p, m=_m: _market_card(p, m, "roof"))
 for _m in MK.FLOORS:                      # the floors' (4b): top on top
-    PICS["fk_" + _m[0]] = (lambda p, m=_m: _layers_pic(
-        p, tuple(reversed(m[3])), None, m[4]))
+    PICS["fk_" + _m[0]] = (lambda p, m=_m: _market_card(p, m, "floor"))
 PICS["rk_solid"] = (lambda p: _layers_pic(
     p, ({"name": "", "t": 0.20, "role": "core"},), None, None))
 
@@ -2122,6 +2505,11 @@ def card_tip(t: Type) -> str:
     return tip
 
 
+#: the cards that always left the next one's sizes as they were
+_KEEP_SIZES = frozenset({"swing", "sliding", "glass", "arched", "fixed",
+                         "casement"})
+
+
 def type_changes(t: Type, opts: dict, picked: int) -> dict:
     """What a ready-made card sets when clicked."""
     ch = dict(t.set)
@@ -2130,6 +2518,10 @@ def type_changes(t: Type, opts: dict, picked: int) -> dict:
     if t.init and not picked and (t.key == "shop"
                                   or opts.get("op") == "shop"):
         ch.update(t.init)
+    # (a card is a whole model, 04/11/2026: nothing selected, the next one
+    # comes with its usual sizes — a double door 1,60 m wide, a sash tall)
+    elif t.init and not picked and t.key not in _KEEP_SIZES:
+        ch.update(t.init)
     return ch
 
 
@@ -2137,7 +2529,7 @@ def new_type_tip(key: str) -> str:
     from .i18n import tr
     if key == "profile":
         return tr("A profile of your own: draw its cut as a flat face with "
-                  "IngeTrazo's tools, select the face, click here")
+                  "IngeTrazo's tools, click here, then click the face")
     return (tr("A type of your own, from the wall selected (or the next "
                "one's thickness) — then its layers in the wall's window, "
                "«Layers»") if key == "wall" else
@@ -2653,6 +3045,8 @@ class LibraryPanel(QWidget):
         self._saved = FV.load(self.key)
         # (YOUR types are never favourites — always shown, 2026-10-28)
         self._favs, self._new = FV.resolve(self._saved, self._ready, [])
+        if self._saved is None:          # (windows, doors: the main 8)
+            self._favs = FV.first_strip(self.key, self._favs)
 
     def _keep(self, favs, seen: bool = False) -> None:
         d = FV.kept(favs, self._ready, [], self._saved, seen)
@@ -2780,13 +3174,21 @@ class LibraryPanel(QWidget):
         by = {t.key: t for t in shelf.types if t.set is not None}
         cards = [by[k] for k in favs if k in by] + (
             [by[use]] if use in by else [])
-        for i, t in enumerate(cards):
+        # a long strip scrolls on its own, so the shape, the colours and the
+        # sizes stay in sight; «More» then comes first, never down below
+        rolled = len(cards) + 1 > STRIP_ROWS * 3
+        first = 1 if rolled else 0
+        for i, t in enumerate(cards, first):
             in_use = t.key == use
             b = self._card(QSize(84, 86), IN_USE_CSS if in_use else CARD_CSS)
             b.setIcon(picture(t.pic))
-            # (smaller in use: its two lines fit under it)
-            b.setIconSize(QSize(42, 42) if in_use else QSize(56, 56))
-            b.setText(t.label + ("\n" + tr("in use") if in_use else ""))
+            # (smaller with two lines: they fit under it; a long name is
+            # broken at a space, never cut in the middle — 04/11/2026)
+            text = (t.label + "\n" + tr("in use") if in_use
+                    else _two_lines(tr(t.label), 11))
+            # (36: a «g» on the second line is not cut at the card's foot)
+            b.setIconSize(QSize(36, 36) if "\n" in text else QSize(56, 56))
+            b.setText(text)
             b.setCheckable(True)
             b.setChecked(t.key == cur)
             b.setToolTip(card_tip(t)
@@ -2808,9 +3210,23 @@ class LibraryPanel(QWidget):
                                 if self._new else ""))
         m.setCursor(Qt.PointingHandCursor)
         m.clicked.connect(lambda _c=False: self.open_all())
-        grid.addWidget(m, len(cards) // 3, len(cards) % 3)
+        at = 0 if rolled else len(cards)
+        grid.addWidget(m, at // 3, at % 3)
         self.more_card = m
-        self.body_lay.addLayout(grid)
+        if rolled:
+            holder = QWidget()
+            holder.setLayout(grid)
+            grid.setContentsMargins(0, 0, 0, 0)
+            box = QScrollArea()
+            box.setWidgetResizable(True)
+            box.setFrameShape(QFrame.NoFrame)
+            box.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            box.setWidget(holder)
+            # (a row cut in half says there is more)
+            box.setFixedHeight(int((STRIP_ROWS - 0.5) * 92))
+            self.body_lay.addWidget(box)
+        else:
+            self.body_lay.addLayout(grid)
         if key in TYPE_OPT and self.your_types is not None:
             self._your_types(opts, pro_locked)
         more = ()
@@ -2836,6 +3252,7 @@ class LibraryPanel(QWidget):
                 continue
             row = QHBoxLayout()
             row.setSpacing(4)
+            used = 0                    # a long row wraps (7 leaf styles)
             group = QButtonGroup(self)
             group.setExclusive(True)
             value = opts.get(part.key)
@@ -2859,6 +3276,15 @@ class LibraryPanel(QWidget):
                     c.clicked.connect(lambda _c=False, k=part.key, v=v:
                                       self.on_pick(self.key, {k: v}))
                 group.addButton(c)
+                c.ensurePolished()
+                cw = c.sizeHint().width() + 4
+                if used and used + cw > CHIPS_WIDTH:
+                    row.addStretch(1)
+                    self.body_lay.addLayout(row)
+                    row = QHBoxLayout()
+                    row.setSpacing(4)
+                    used = 0
+                used += cw
                 row.addWidget(c)
             row.addStretch(1)
             self.body_lay.addLayout(row)
@@ -2893,7 +3319,10 @@ class AllTypesDialog(QDialog):
         self.cat = None
         self.setWindowTitle(tr("Library") + " · " + tr(self.shelf.title))
         self.setModal(True)
-        self.resize(560, 560)
+        # (a big library: wider, and more cards to a row)
+        self.columns = 6 if len(self.shelf.types) > 30 else 4
+        self.resize(780 if self.columns > 4 else 560,
+                    680 if self.columns > 4 else 560)
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
         self.count = QLabel()
@@ -2906,7 +3335,7 @@ class AllTypesDialog(QDialog):
         self.search.textChanged.connect(lambda _t: self.fill())
         top.addWidget(self.search)
         lay.addLayout(top)
-        self.chips = QHBoxLayout()
+        self.chips = QVBoxLayout()
         self.chips.setSpacing(4)
         lay.addLayout(self.chips)
         scroll = QScrollArea()
@@ -2942,7 +3371,14 @@ class AllTypesDialog(QDialog):
         if len(cats) < 2:
             return
         group = QButtonGroup(self)
-        for name in [None] + [n for n, _k in cats]:
+        row = None
+        for i, name in enumerate([None] + [n for n, _k in cats]):
+            if i % 8 == 0:                   # (many categories: two rows)
+                if row is not None:
+                    row.addStretch(1)
+                row = QHBoxLayout()
+                row.setSpacing(4)
+                self.chips.addLayout(row)
             # («&» shown as itself, not a shortcut: «Shop & garage»)
             c = QPushButton((tr(name) if name else tr("All"))
                             .replace("&", "&&"))
@@ -2951,8 +3387,8 @@ class AllTypesDialog(QDialog):
             c.setChecked(name is None)
             c.clicked.connect(lambda _c=False, n=name: self._pick_cat(n))
             group.addButton(c)
-            self.chips.addWidget(c)
-        self.chips.addStretch(1)
+            row.addWidget(c)
+        row.addStretch(1)
 
     def _pick_cat(self, name) -> None:
         self.cat = name
@@ -3001,8 +3437,8 @@ class AllTypesDialog(QDialog):
             if new_card:
                 cards.append(self._new_card())
             for i, b in enumerate(cards):
-                grid.addWidget(b, i // 4, i % 4)
-            grid.setColumnStretch(4, 1)
+                grid.addWidget(b, i // self.columns, i % self.columns)
+            grid.setColumnStretch(self.columns, 1)
             lay.addLayout(grid)
         lay.addStretch(1)
 
@@ -3016,9 +3452,11 @@ class AllTypesDialog(QDialog):
             ch = {TYPE_OPT[self.key]: mine["id"]}
         else:
             b.setIcon(picture(t.pic))
-            b.setIconSize(QSize(64, 64))
             soon = t.set is None
-            b.setText(t.label + ("\nsoon" if soon else ""))
+            text = (t.label + "\nsoon" if soon
+                    else _two_lines(tr(t.label), 14))
+            b.setIconSize(QSize(52, 52) if "\n" in text else QSize(64, 64))
+            b.setText(text)
             if soon:
                 b.setEnabled(False)
                 b.setToolTip(tr("Coming soon — the library keeps growing"))

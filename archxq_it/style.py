@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ look: one stylesheet for every piece (hub, submenu, left strip,
 view bar), plus the band used when a piece sits in a host toolbar.
 
@@ -60,6 +62,10 @@ QToolButton#axq_swap:checked {{
     background: rgba(240,125,20,150); }}
 QToolButton#axq_swap:hover, QToolButton#axq_gear:hover {{
     color: white; background: rgba(255,255,255,30); }}
+QToolButton#axq_ai {{
+    background: transparent; border-radius: 4px;
+    padding: 1px 6px; margin-left: 8px; }}
+QToolButton#axq_ai:hover {{ background: rgba(255,255,255,30); }}
 QPushButton[axq="phase"] {{
     color: #e8eaed; background: transparent;
     border-radius: 5px; padding: 5px 11px; }}

@@ -46,3 +46,6 @@ files stay as they are.
 ## Licence
 
 GPL-3.0-or-later — see `LICENSE`. © Orlando Souza · XQ (www.xq.com.br)
+
+The licence covers the code. It gives no rights to the ArchXQ and XQ names and
+logos.

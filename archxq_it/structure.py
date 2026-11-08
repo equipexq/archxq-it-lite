@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ structure — the ENGINE. Pure: no IngeTrazo, no Qt.
 
 Columns, beams, slabs and footings, and how they sit with the walls,
@@ -165,12 +167,17 @@ def deepest_below(doc: dict, elevations) -> float | None:
             top = li["z0"] - li["slab"]
             g = ground_under(doc, info, lid, p)
             top = top if g is None else min(top, g)
+            if e.get("zt") is not None:     # under a row's grade beam
+                top = li["z0"] + float(e["zt"])
             z = top - float(e["d"])
         elif e["type"] == "column":
             z = li["z0"] + float(e.get("base", 0.0))
             if float(e.get("base", 0.0)) <= 0:
                 g = ground_under(doc, info, lid, column_centre(e))
                 z = z if g is None else min(z, g)
+        elif e["type"] == "beam" and beam_own(e):
+            # (a grade beam under the floor: the ground goes under it too)
+            z = li["z0"] + float(e.get("zt", 2.5)) - float(e["h"])
         if z is not None:
             low = z if low is None else min(low, z)
     return low
@@ -687,9 +694,13 @@ def push_inside(outline, pits, along=None) -> tuple:
             ss = [(o[0] - p[0]) * u[0] + (o[1] - p[1]) * u[1] for o in outline]
             if max(ss) <= 0 or min(ss) >= L:      # beside this side, not on it
                 continue
-            over = max((o[0] - p[0]) * nout[0] + (o[1] - p[1]) * nout[1]
-                       for o in outline)
-            if over > 1e-4:
+            ds = [(o[0] - p[0]) * nout[0] + (o[1] - p[1]) * nout[1]
+                  for o in outline]
+            over = max(ds)
+            # (only a side it really CROSSES — part of it on each side of
+            # the line: an L's re-entrant side, far off along its line, is
+            # not «crossed» by a footing 8 m beyond it — 07/11/2026)
+            if over > 1e-4 and min(ds) < 0:
                 dx -= nout[0] * over
                 dy -= nout[1] * over
         break
@@ -1390,16 +1401,31 @@ def _opening_parts(o: dict, seg, z0: float, wall: dict | None = None,
     parts = [_box(p0, u, n, s0, s0 + f, -hd, hd, zs, zt, fc),
              _box(p0, u, n, s1 - f, s1, -hd, hd, zs, zt, fc),
              _box(p0, u, n, s0 + f, s1 - f, -hd, hd, zt - f, zt, fc)]
+    # a TOP LIGHT (bandeira, 04/11/2026): a transom and a fixed pane over the
+    # leaves; they keep what is under it
+    from . import openfinish as OF
+    th = OF.top_light(o)
+    head, under = zt - f, zt
+    if th:
+        zl = zt - f - th
+        parts.append(_box(p0, u, n, s0 + f, s1 - f, -hd, hd, zl - f, zl, fc))
+        parts.append(_box(p0, u, n, s0 + f, s1 - f, -0.005, 0.005, zl, zt - f,
+                          GLASS_COLOR))
+        head, under = zl - f, zl
     if o["kind"] == "window":
         parts.append(_box(p0, u, n, s0 + f, s1 - f, -hd, hd, zs, zs + f, fc))
         if o.get("op") in WIN_KINDS:      # sliding / casement / awning / pivot
             return [face for p in parts for face in p] + _window_leaves(
-                o, p0, u, n, s0 + f, s1 - f, zs + f, zt - f, wall)
+                o, p0, u, n, s0 + f, s1 - f, zs + f, head, wall)
         parts.append(_box(p0, u, n, s0 + f, s1 - f, -0.005, 0.005,
-                          zs + f, zt - f, GLASS_COLOR))
+                          zs + f, head, GLASS_COLOR))
+        bx, bz = OF.bars_of(o)
+        if bx or bz:                      # a fixed one's glazing bars
+            parts += OF.bars(p0, u, n, s0 + f, s1 - f, zs + f, head, 0.0, bx,
+                             bz, fc)
     else:                                            # a door: its leaves
         parts += _door_leaves(o, p0, u, n, s0 + f, s1 - f, zs + 0.01,
-                              zt - f, zt, wall)
+                              head, under, wall)
     return [face for p in parts for face in p]
 
 
@@ -1456,7 +1482,7 @@ def _leaf(p0, u, n, a, b, c0, c1, za, zb, glass: bool,
 # ---- WINDOWS with leaves (his customers' ask, 2026-10-12 — PLANO_JANELAS.md)
 WIN_LEAF = 0.025        # m, a window leaf's depth
 WIN_COLOR = (0.93, 0.93, 0.91, 1.0)   # white aluminium (Brazil's usual)
-WIN_KINDS = ("sliding", "casement", "awning", "pivot")
+WIN_KINDS = ("sliding", "casement", "awning", "pivot", "hung")
 #: a sliding window's leaves, back (B) or front (F) track, left to right —
 #: neighbours always in different tracks
 WIN_TRACKS = {2: "BF", 3: "FBF", 4: "BFBF"}
@@ -1505,9 +1531,11 @@ def casement_roles(o: dict) -> str:
 
 
 def casement_layout(roles: str, a: float, b: float, mullion: float = FRAME,
-                    gap: float = LEAF_GAP) -> tuple:
+                    gap: float = LEAF_GAP, shares=None) -> tuple:
     """Where the leaves go within ``a``..``b`` — ([(s0, s1, role)…],
-    [(m0, m1) mullion…]): equal widths; a MULLION between two neighbours,
+    [(m0, m1) mullion…]): equal widths, or each leaf's share of the width
+    (``shares``, 0…1; 0: it shares what the others leave — Hugo #83, a hinged
+    leaf and a wider fixed one, 04/11/2026); a MULLION between two neighbours,
     except a pair L|R, which meets in the middle with no post (as the two
     leaves did before). No mullion either when the leaves would come out
     under 5 cm (a narrow window with many leaves)."""
@@ -1516,9 +1544,22 @@ def casement_layout(roles: str, a: float, b: float, mullion: float = FRAME,
     posts = pair.count(False)
     if (b - a - (k - 1) * gap - posts * mullion) / k < 0.05:
         mullion = 0.0
-    lw = (b - a - (k - 1) * gap - posts * mullion) / k
+    room = b - a - (k - 1) * gap - posts * mullion
+    widths = [room / k] * k
+    asked = list(shares or ())[:k] + [0.0] * (k - len(shares or ()))
+    if any(v > 0.0 for v in asked):
+        free = sum(1 for v in asked if v <= 0.0)
+        told = sum(v * (b - a) for v in asked)
+        if free:
+            rest = (room - told) / free
+            got = [v * (b - a) if v > 0.0 else rest for v in asked]
+        else:                            # every leaf told: in proportion
+            got = [v * (b - a) * room / told for v in asked]
+        if min(got) >= 0.05:             # (else: equal, as it can be built)
+            widths = got
     leaves, mulls, s = [], [], a
     for i, r in enumerate(roles):
+        lw = widths[i]
         leaves.append((s, s + lw, r))
         s += lw
         if i < k - 1:
@@ -1576,6 +1617,26 @@ def _window_boxes(o, p0, u, n, a, b, za, zb, wall) -> list:
     if op == "pivot":                                       # a basculante
         return OF.pivot_panes(o, p0, u, n, a, b, za, zb, so, opn, wc,
                               GLASS_COLOR)
+    bx, bz = OF.bars_of(o)
+
+    def glazing(fp0, fu, fn, sa, sb, zz0, zz1, cm=0.0):
+        # the bars on a leaf's pane (where ``_leaf`` leaves it)
+        if not (bx or bz):
+            return []
+        fr = min(ALU, (sb - sa) / 4, (zz1 - zz0) / 4)
+        return OF.bars(fp0, fu, fn, sa + fr, sb - fr, zz0 + fr * 2, zz1 - fr,
+                       cm, bx, bz, wc)
+    if op == "hung":
+        # a SASH window (guilhotina, 04/11/2026): the upper leaf in the back
+        # track, the lower one in the front track, lifted by «Open»
+        mid, lap = (za + zb) / 2, 0.02
+        run = opn * max(mid - za - lap, 0.0)
+        cb, cf = -g - d / 2, g + d / 2
+        return (_leaf(p0, u, n, a, b, -g - d, -g, mid - lap, zb, True, wc)
+                + _leaf(p0, u, n, a, b, g, g + d, za + run, mid + lap + run,
+                        True, wc)
+                + glazing(p0, u, n, a, b, mid - lap, zb, cb)
+                + glazing(p0, u, n, a, b, za + run, mid + lap + run, cf))
     if op == "sliding":
         lap = 0.05
         lw = (b - a + (k - 1) * lap) / k
@@ -1594,6 +1655,8 @@ def _window_boxes(o, p0, u, n, a, b, za, zb, wall) -> list:
             c0, c1 = (g, g + d) if tracks[i] == "F" else (-g - d, -g)
             out += _leaf(p0, u, n, s0 + s, s0 + lw + s, c0, c1, za, zb, True,
                          wc)
+            out += glazing(p0, u, n, s0 + s, s0 + lw + s, za, zb,
+                           (c0 + c1) / 2)
         return out
     if op == "casement":
         side = door_side(o, wall)
@@ -1611,17 +1674,20 @@ def _window_boxes(o, p0, u, n, a, b, za, zb, wall) -> list:
         # no lever; a MULLION in the frame's colour between two that are
         # not a pair (1 and 2 leaves come out as they always did)
         roles = casement_roles(o)
-        leaves, mulls = casement_layout(roles, a, b)
+        leaves, mulls = casement_layout(roles, a, b,
+                                        shares=OF.leaf_shares(o, len(roles)))
         fc, hd = OF.frame_rgb(o, FRAME_COLOR), FRAME_DEPTH / 2
         out = [_box(p0, u, n, m0, m1, -hd, hd, za, zb, fc) for m0, m1 in mulls]
         for i, (s0, s1, r) in enumerate(leaves):
             if r == "F":
                 out += _leaf(p0, u, n, s0, s1, -d / 2, d / 2, za, zb, True, wc)
+                out += glazing(p0, u, n, s0, s1, za, zb)
                 continue
             back = r == "R"
             fr = F.turned(s1 if back else s0, back, side, th)
             out += _leaf(fr.p0, fr.u, fr.n, 0.0, s1 - s0, -d / 2, d / 2, za,
                          zb, True, wc)
+            out += glazing(fr.p0, fr.u, fr.n, 0.0, s1 - s0, za, zb)
             if not (back and i and roles[i - 1] == "L"):   # a pair: one lever
                 out += lever(fr, back, s1 - s0)
         return out
@@ -4889,7 +4955,7 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                     bot = min(bot, g + SHRINK)  # down to the pit's floor
             if top - bot < 0.05:
                 continue
-            out.append(dict(_el(c, lid, W.solid(piece, bot, top)),
+            out.append(dict(_el(c, lid, _column_faces(c, piece, bot, top)),
                             inwall=in_one_wall(c, mine)))
         # beams: joined among themselves like walls
         beams = [e for e in els if e["type"] == "beam"]
@@ -4934,7 +5000,9 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                      "holes": [list(reversed(_ccw([tuple(p) for p in h])))
                                for h in s.get("holes") or []]}
             parts = [piece]
-            if ramp_cuts.get(lid):
+            # (a ceiling is no floor: a stair arriving on this level opens its
+            # floor, not the ceiling high above it — the ep 23 house, 06/11)
+            if ramp_cuts.get(lid) and not s.get("ceiling"):
                 from . import ramps as R
                 cut = R.cut_slab(piece["outer"], piece["holes"],
                                  ramp_cuts[lid])
@@ -4992,16 +5060,19 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
         ftop = z0 - li["slab"]
         pads = [e for e in els if e["type"] == "footing"
                 and e.get("kind") == "pad" and not skip(e)]
-        def foot_top(p):
+        def foot_top(p, f=None):
             """In a pit deeper than the floor: its top on the pit's floor
             (which is DRAWN 1 cm lower — terrain.PIT_DRAW_DROP — so the two
-            never share a plane)."""
+            never share a plane). A row's footing under its grade beam
+            (colrows, PLANO D): its own top, ``zt`` over the floor."""
+            if f is not None and f.get("zt") is not None:
+                return z0 + float(f["zt"])
             g = ground_under(doc, info, lid, p)
             return ftop if g is None else min(ftop, g)
 
         for f in pads:
             piece = {"outer": _ccw(pad_outline(f)), "holes": []}
-            t = foot_top((float(f["x"]), float(f["y"])))
+            t = foot_top((float(f["x"]), float(f["y"])), f)
             out.append(_el(f, lid, W.solid(piece, t - float(f["d"]), t)))
         strips = [e for e in els if e["type"] == "footing"
                   and e.get("kind") == "strip"]
@@ -5012,7 +5083,7 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
             # 1 mm under the pads' top: where a strip runs into a pad the
             # two tops would share one plane (and flicker)
             a, b = f["a"], f["b"]
-            t = foot_top(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+            t = foot_top(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), f)
             out.append(_el(f, lid, [pc_f for pc in splans.get(f["id"], ())
                                     for pc_f in W.solid(
                                         pc, t - float(f["d"]),
@@ -5367,6 +5438,19 @@ def in_one_wall(e: dict, walls: list[dict]) -> bool:
                for f, off in (s.project(e["a"]), s.project(e["b"]))):
             return True
     return False
+
+
+def _column_faces(c: dict, piece: dict, bot: float, top: float) -> list:
+    """A column's faces: its shaft, with its base and capital (Pro)."""
+    def shaft(z0, z1):
+        return W.solid(piece, z0, z1)
+    if c.get("cbase", "none") == "none" and c.get("ccap", "none") == "none":
+        return shaft(bot, top)
+    try:
+        from . import column_orders as CO    # (the Lite has none)
+    except ImportError:
+        return shaft(bot, top)
+    return CO.faces(c, shaft, bot, top)
 
 
 def _el(e: dict, lid: str, faces) -> dict:

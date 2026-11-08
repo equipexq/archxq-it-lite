@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The «Structure» of a wall's core, under its layers (PLANO_PAREDE_ESTRUTURA_
 LEVE, his OK 2026-11-02): Solid — or a Wood / Steel frame, its studs' width
 and spacing, the plates over and under, insulation between. The same box

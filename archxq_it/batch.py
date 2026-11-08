@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Many changed at once from ONE element's window (PLANO_EDICAO_LOTE.md,
 L1 — 2026-10-31, Kamen #68: «the batch edit exists, but nobody finds it»).
 

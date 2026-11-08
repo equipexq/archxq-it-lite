@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The SET of sheets — which sheets the project has, in the order a set is
 read (the drawings' book: from the lowest floor up, A-101 the lowest), with
 their numbers, titles and state.
@@ -103,8 +105,15 @@ def state_signature(doc: dict, level_ids: list[str]) -> str:
                    if r.get("level") in level_ids)
     levels = [_r({k: v for k, v in lv.items() if k in ("name", "height")})
               for lv in doc.get("levels") or []]
-    raw = json.dumps([parts, rooms, _r(doc.get("project") or {}), levels],
-                     sort_keys=True)
+    payload = [parts, rooms, _r(doc.get("project") or {}), levels]
+    # (a separator changes the rooms' names and areas on the sheet; no
+    # separator: the signature of the sheets made before stays the same)
+    seps = sorted(json.dumps(_r(x.get("pts")))
+                  for x in doc.get("separators") or []
+                  if x.get("level") in level_ids)
+    if seps:
+        payload.append(seps)
+    raw = json.dumps(payload, sort_keys=True)
     return hashlib.blake2b(raw.encode(), digest_size=10).hexdigest()
 
 
@@ -240,6 +249,32 @@ def schedules(doc: dict, style: dict) -> list[dict]:
              "title": W["area_schedule"], "group": "schedules"}]
 
 
+def boards(doc: dict, style: dict) -> list[dict]:
+    """The views sheets (A-4xx): several views on one paper, in
+    ``doc["docs"]["boards"]``: {"id", "title", "members": [sheet ids]}."""
+    Wd = DS.words(style)
+    names = style["names"]
+    g = int(names.get("board_group", 4))
+    ids = [lv["id"] for lv in doc.get("levels") or []]
+    return [{"id": "board:" + b["id"], "kind": "board", "levels": ids,
+             "members": list(b.get("members") or []),
+             "number": f"{names['prefix']}{g}{i + 1:02d}",
+             "title": b.get("title") or Wd["board"], "group": "boards"}
+            for i, b in enumerate((doc.get("docs") or {}).get("boards") or [])
+            if isinstance(b, dict) and b.get("id")]
+
+
+def views_of(doc: dict, style: dict) -> list[dict]:
+    """The sheets a views sheet can show — the plans, sections and
+    elevations — with their stored choices laid on."""
+    recs = records(doc)
+    out = []
+    for s in plans(doc, style) + sections(doc, style) \
+            + elevations(doc, style):
+        out.append(_laid(s, recs.get(s["id"]) or {}))
+    return out
+
+
 def line_of(sheet: dict) -> dict | None:
     """A section sheet's line with the studio's «flip» laid on."""
     ln = sheet.get("line")
@@ -250,7 +285,13 @@ def line_of(sheet: dict) -> dict | None:
 
 def sheet_signature(doc: dict, sheet: dict) -> str:
     """What a sheet shows of the model — a plan its floors; a section or
-    an elevation the whole building, its roofs and its line."""
+    an elevation the whole building, its roofs and its line; a views sheet
+    each of its views."""
+    if sheet.get("kind") == "board":
+        known = {v["id"]: v for v in views_of(doc, DS.resolve())}
+        raw = json.dumps([[i, sheet_signature(doc, known[i])]
+                          for i in sheet.get("members") or [] if i in known])
+        return hashlib.blake2b(raw.encode(), digest_size=10).hexdigest()
     if sheet.get("kind", "plan") == "plan":
         return state_signature(doc, sheet["levels"])
     roofs = sorted(json.dumps(_shape(s), sort_keys=True)
@@ -277,25 +318,44 @@ def state(doc: dict, sheet: dict) -> str:
     return "ok" if rec["sig"] == sheet_signature(doc, sheet) else "changed"
 
 
+def style_sig(style: dict) -> str:
+    """The look a sheet was drawn with (kept on its record)."""
+    raw = DS.looks_sig(style)
+    return hashlib.blake2b(raw.encode(), digest_size=8).hexdigest()
+
+
 #: what the studio stores on a sheet's record (its choices)
 CHOICES = ("paper", "scale", "cut", "style", "terrain", "others", "flip",
-           "fill")
+           "fill", "members")
+
+
+def _laid(s: dict, rec: dict) -> dict:
+    """A sheet with its stored choices laid on."""
+    s = dict(s, **{k: rec[k] for k in CHOICES if k in rec})
+    if s["kind"] in ("section", "elevation"):
+        # a section / elevation shows the ground line by default
+        s.setdefault("terrain", True)
+        if s["kind"] == "section":
+            s["line"] = line_of(s)
+    return s
 
 
 def the_set(doc: dict, style: dict) -> list[dict]:
     """Every sheet of the set in the book's order — the area schedule
-    (A-001), plans (A-1xx), sections (A-2xx), elevations (A-3xx) — with
-    its stored choices laid on and its state."""
+    (A-001), plans (A-1xx), sections (A-2xx), elevations (A-3xx), views
+    sheets (A-4xx) — with its stored choices laid on and its state."""
     recs = records(doc)
     out = []
     for s in schedules(doc, style) + plans(doc, style) \
-            + sections(doc, style) + elevations(doc, style):
+            + sections(doc, style) + elevations(doc, style) \
+            + boards(doc, style):
         rec = recs.get(s["id"]) or {}
-        s = dict(s, **{k: rec[k] for k in CHOICES if k in rec})
-        if s["kind"] in ("section", "elevation"):
-            # a section / elevation shows the ground line by default
-            s.setdefault("terrain", True)
-            if s["kind"] == "section":
-                s["line"] = line_of(s)
-        out.append(dict(s, state=state(doc, s)))
+        s = _laid(s, rec)
+        st = state(doc, s)
+        # the style changed since it was made: out of date too (a record
+        # from before this one has no mark: it stays as it was)
+        if st == "ok" and rec.get("style_sig") and \
+                rec["style_sig"] != style_sig(DS.merge(style, s.get("style"))):
+            st = "changed"
+        out.append(dict(s, state=st))
     return out

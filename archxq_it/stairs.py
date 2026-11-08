@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """STAIRS — the second «Building element» (plan PLANO_RAMPA_ESCADA.md,
 steps 3–4): from a level (or the ground) to another, straight, L or U —
 its steps worked out by Blondel's rule.

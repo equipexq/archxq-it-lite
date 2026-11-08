@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The RADIAL MENU at the mouse — his «very important» ask (2026-10-09,
 built 2026-10-10): a ring of round buttons round the element just clicked,
 as ArchiCAD's Pet Palette. Its actions DRIVE THE HOST'S OWN GESTURES, the

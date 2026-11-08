@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The GUIDE — a small manual per tool, in a large window (his idea,
 2026-10-04: «a help icon as the last item of each tool menu, opening a
 big, complete help about that tool — for when you forget how it works»).
@@ -336,10 +338,16 @@ GUIDES.update({
              "<b>Esc</b> when done."),
             ("Draw", "Two opposite corners: its size and its place (the "
              "size is kept for the next)."),
-            ("Row", "Click the first and the last: <b>By count</b> or <b>By "
-             "spacing</b>; <b>Ends</b> says if the clicked points get a "
-             "column (First + last, First only, Last only, Between only). "
-             "The last row follows the bar until you draw the next."),
+            ("Row", "Point by point, like a wall: each stretch gets its "
+             "columns at once — <b>By count</b> (so many on each stretch) "
+             "or <b>By spacing</b> (equal bays, none longer than it); every "
+             "corner has one column. Click the <b>first point</b> again to close "
+             "it; double-click, <b>Enter</b> or <b>Esc</b> to end it open; "
+             "<b>Backspace</b> takes the last point back. <b>Ends</b> says "
+             "if the path's two ends get a column. The row stays a "
+             "<b>group</b> («Column row 1» in the outliner): double-click "
+             "a column of it and its window changes them all. The last "
+             "row follows the bar until you draw the next."),
             ("Grid", "Two opposite corners, «Columns» × «Rows»."),
             ("At the wall corners", "One click: a column wherever this "
              "level's walls meet."),
@@ -356,6 +364,8 @@ GUIDES.update({
             "its own sizes, to show.",
             "<b>Base</b>: 0 = on the floor; negative = down into the ground "
             "(to a footing).",
+            "A row drawn along a <b>footing row</b> stands centred on it, "
+            "one column on each pad.",
         ],
         "mistakes": [
             "A column «that did not appear» on a wall: it was fitted and is "
@@ -378,6 +388,9 @@ GUIDES.update({
         ],
         "tips": [
             "In the 3D view too: the beam is pointed at its own height — click from column top to column top.",
+            "On footings: the cursor is pulled onto their line; a beam "
+            "from footing to footing (no column at its ends) sits right on "
+            "their top — the base for a wall.",
             "<b>In walls · Fit inside</b>: a beam along a wall takes its "
             "thickness and hides in it; a wider one shows.",
             "Width and Height are in the options bar.",
@@ -408,9 +421,10 @@ GUIDES.update({
         ],
         "tips": ["<b>Top</b>: 0 = the floor itself; a small negative value "
                  "sinks it (a bathroom, a terrace).",
-                 "<b>Automatic slabs</b>: an excavation makes the slabs of "
-                 "the basements it holds and of the ground floor over them, "
-                 "following its outline (its window says «Automatic»). "
+                 "<b>Automatic slabs</b> (older projects): an excavation no "
+                 "longer makes slabs by itself, but those it made before "
+                 "stay and follow its outline (their window says "
+                 "«Automatic»). "
                  "Delete one you do not want: it stays away — Ctrl+Z brings "
                  "it back. A slab you draw over it on that level takes its "
                  "place.",
@@ -442,6 +456,15 @@ GUIDES.update({
             ("Strip (drawn)", "Point by point, like a run of walls; a "
              "double-click ends the run. The strips meet in clean L, T and "
              "X corners."),
+            ("Along a path", "Point by point, like a row of columns, with "
+             "no column over them (a timber house's footings): <b>Pads</b> "
+             "by count or spacing, a <b>Strip</b>, or <b>Pads + strip</b>, "
+             "all centred on the line you click; the first point again "
+             "closes it. It stays a group («Footing row 1»): double-click a "
+             "footing and its window changes them all. The whole row sits "
+             "on one level — drawn on an excavation's edge, it goes down to "
+             "the pit's floor. Inside / Outside count only along an "
+             "excavation's side."),
         ],
         "tips": ["Made in the 3D view they are under the ground: hide the Terrain to see them.",
                  "Nothing under a one-click shape yet (a new file): a note "

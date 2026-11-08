@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Plot geometry — pure 2D math on [x, y] corners (metres), no Qt.
 
 The user's mistakes are fixed here, not reported back: repeated clicks

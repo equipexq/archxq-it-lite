@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ for IngeTrazo — architecture workflow by phases (PROTOTYPE).
 
 ``setup(app)`` is the IngeTrazo entry point. ``reload(window)`` tears the
@@ -9,7 +11,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-__version__ = "0.11.2-lite"
+__version__ = "0.12.0-lite"
 
 _instance = None
 

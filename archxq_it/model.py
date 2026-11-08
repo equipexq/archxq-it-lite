@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ document model — pure data, no Qt.
 
 Everything ArchXQ keeps in the .igz lives in ONE JSON-safe dict (the
@@ -21,6 +23,12 @@ import uuid
 MIN_HEIGHT = 2.0          # m — below this a storey is not a storey
 MAX_HEIGHT = 12.0
 DEFAULT_HEIGHT = 3.0
+#: a level's own SLAB thickness («slab_t», support #93, 07/11/2026): the
+#: floor slab its automatic slabs are born with, and what its clear height
+#: is reckoned from. None set: 0.20, as before. Its finished floor is still
+#: the level («height» floor to floor) — nothing else reads it
+SLAB_T = 0.20
+MIN_SLAB_T, MAX_SLAB_T = 0.02, 1.0
 CONTOUR_STEP = 0.5          # m between the ground's contour lines
 
 PAPERS = ("A1", "A2", "A3", "A4", "Letter", "Tabloid")
@@ -83,6 +91,9 @@ DEFAULT_DOC = {
     "profile_types": [],
     # columns, beams, slabs, footings (see structure.py for the fields)
     "structure": [],
+    # the ROWS OF COLUMNS drawn as a path (colrows.py, 07/11/2026): a group
+    # each — its columns are in «structure», with «row» + «st»
+    "colrows": [],
     # doors, windows, voids — each in a wall (structure.py)
     "openings": [],
     # section lines drawn for the documentation: {"id", "symbol", "a",
@@ -222,6 +233,9 @@ def load(raw) -> dict:
                                   {r["id"] for r in doc["levels"]},
                                   {t["id"]: t for t in doc["slab_types"]},
                                   {t["id"] for t in doc["profile_types"]})
+    from . import colrows
+    doc["colrows"] = colrows.clean(raw.get("colrows"), doc["structure"],
+                                   {r["id"] for r in doc["levels"]})
     doc["openings"] = _openings(raw.get("openings"),
                                 {w["id"] for w in doc["walls"]})
     doc["sections"] = _sections(raw.get("sections"))
@@ -618,6 +632,32 @@ def _pt(p) -> list[float]:
     return [float(p[0]), float(p[1])]
 
 
+def _path3(raw) -> list:
+    """A profile's own path: [[x, y, z over its level]…]."""
+    out = []
+    for p in raw if isinstance(raw, list) else []:
+        try:
+            out.append([round(float(p[0]), 4), round(float(p[1]), 4),
+                        round(float(p[2]), 4)])
+        except (IndexError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _frame3(raw):
+    """Its [u, v], two unit vectors at right angles — or None."""
+    try:
+        u, v = [[float(c) for c in a[:3]] for a in raw[:2]]
+        if len(u) != 3 or len(v) != 3:
+            return None
+        nu, nv = [sum(c * c for c in a) ** 0.5 for a in (u, v)]
+        if nu < 1e-6 or nv < 1e-6:
+            return None
+        return [[round(c / nu, 6) for c in u], [round(c / nv, 6) for c in v]]
+    except (TypeError, ValueError):
+        return None
+
+
 def _wall_faces(raw) -> list:
     """A profile / copies along walls' faces: [[wall id, side ±1]…], none
     twice."""
@@ -742,7 +782,20 @@ def _docs(raw) -> dict:
                 and r["id"] not in seen:
             seen.add(r["id"])
             sheets.append(copy.deepcopy(r))
-    return {"style": copy.deepcopy(style), "sheets": sheets}
+    out = {"style": copy.deepcopy(style), "sheets": sheets}
+    # the views sheets (sheetset.boards): only when there is one, so a file
+    # without them stays exactly as it was
+    boards, seen = [], set()
+    for b in raw.get("boards") or []:
+        if isinstance(b, dict) and isinstance(b.get("id"), str) \
+                and b["id"] not in seen:
+            seen.add(b["id"])
+            boards.append({"id": b["id"], "title": str(b.get("title") or ""),
+                           "members": [str(m) for m in b.get("members") or []
+                                       if isinstance(m, str)]})
+    if boards:
+        out["boards"] = boards
+    return out
 
 
 def _sections(raw) -> list[dict]:
@@ -917,6 +970,15 @@ def _structure(raw, level_ids: set,
                 h = e.get("height", "level")
                 rec["height"] = "level" if h == "level" else \
                     min(max(float(h), 0.2), 50.0)
+                # its base and capital (column_orders.py): none, no key
+                from . import profiles as PF
+                if e.get("cbase") in PF.COLUMN_BASES[1:]:
+                    rec["cbase"] = e["cbase"]
+                if e.get("ccap") in PF.COLUMN_CAPS[1:]:
+                    rec["ccap"] = e["ccap"]
+                # one of a «Column row» (colrows.py): the row, its station
+                if e.get("row") and isinstance(e.get("st"), int):
+                    rec["row"], rec["st"] = str(e["row"]), int(e["st"])
             elif t == "beam":
                 rec.update(a=_pt(e["a"]), b=_pt(e["b"]),
                            w=min(max(float(e["w"]), 0.05), 3.0),
@@ -927,6 +989,12 @@ def _structure(raw, level_ids: set,
                 if e.get("zmode") == "own":
                     rec.update(zmode="own", zt=min(max(float(
                         e.get("zt", 2.5)), -20.0), 50.0))
+                # one of a «Column row»'s beams (colrows.py): the row, which
+                # beam (top / foot / mid), its stretch
+                if e.get("row") and e.get("part") in ("top", "foot", "mid") \
+                        and isinstance(e.get("seg"), int):
+                    rec.update(row=str(e["row"]), part=e["part"],
+                               seg=int(e["seg"]))
             elif t == "slab":
                 cs = clean_loop([_pt(p) for p in e["corners"]])
                 if len(cs) < 3:
@@ -1201,7 +1269,7 @@ def _structure(raw, level_ids: set,
             elif t == "profile":            # Tools ▸ Along a path (along.py)
                 from . import profiles as PF
                 how = e.get("how") if e.get("how") in (
-                    "room", "face", "element") else "points"
+                    "room", "face", "element", "line") else "points"
                 rec.update(how=how,
                            profile=e.get("profile") if e.get("profile")
                            in PF.NATIVE or e.get("profile") in profile_ids
@@ -1217,6 +1285,11 @@ def _structure(raw, level_ids: set,
                                      50.0),
                            gap=min(max(float(e.get("gap", 0.30)), 0.0),
                                    50.0))
+                # its own size (none: as the profile comes)
+                for k in ("pw", "ph"):
+                    if e.get(k):
+                        rec[k] = min(max(float(e[k]), 0.002), 10.0)
+                path = _path3(e.get("path"))
                 if how == "element":
                     els = []
                     for k in e.get("els") or []:
@@ -1225,6 +1298,19 @@ def _structure(raw, level_ids: set,
                     if not els:
                         continue
                     rec["els"] = els[:200]
+                elif how in ("points", "line") and len(path) >= 2:
+                    # a path of its own, in 3D: heights over the level
+                    rec.update(path=path, closed=bool(e.get("closed"))
+                               and len(path) > 2,
+                               halign=e.get("halign") if e.get("halign") in (
+                                   "centre", "inside") else "outside",
+                               valign=e.get("valign") if e.get("valign") in (
+                                   "top", "middle") else "bottom")
+                    fr = _frame3(e.get("frame"))
+                    if fr:
+                        rec["frame"] = fr
+                elif how == "line":
+                    continue
                 elif how == "face":
                     faces = _wall_faces(e.get("faces"))
                     if not faces:
@@ -1248,7 +1334,7 @@ def _structure(raw, level_ids: set,
                                else 1)
             elif t == "copy":               # Tools ▸ Along a path (copies.py)
                 from . import profiles as PF
-                how = e.get("how") if e.get("how") in ("room", "face") \
+                how = e.get("how") if e.get("how") in ("room", "face", "line") \
                     else "points"
 
                 def pick(key, items):
@@ -1292,6 +1378,17 @@ def _structure(raw, level_ids: set,
                     rec["rings"] = [[_pt(p) for p in r]
                                     for r in e.get("rings") or []
                                     if isinstance(r, list) and len(r) > 2]
+                elif _path3(e.get("path")):
+                    # (3D, its heights over the level)
+                    path = _path3(e.get("path"))
+                    if len(path) < 2:
+                        continue
+                    rec.update(path=path, closed=bool(e.get("closed"))
+                               and len(path) > 2,
+                               side=-1 if int(e.get("side", 1) or 1) < 0
+                               else 1)
+                elif how == "line":
+                    continue
                 else:
                     pts = [_pt(p) for p in e.get("pts") or []]
                     if not pts:
@@ -1333,6 +1430,18 @@ def _structure(raw, level_ids: set,
                     rec.update(a=_pt(e["a"]), b=_pt(e["b"]))
                     if e.get("m"):
                         rec["m"] = _pt(e["m"])
+                # one of a row's footings (colrows.py, PLANO D 07/11/2026):
+                # the row, its part, its station / piece — and its top when
+                # it sits under the row's grade beam
+                if e.get("row") and e.get("part") in ("pad", "strip") \
+                        and isinstance(e.get("seg"), int):
+                    rec.update(row=str(e["row"]), part=e["part"],
+                               seg=int(e["seg"]))
+                try:
+                    if e.get("zt") is not None:
+                        rec["zt"] = min(max(float(e["zt"]), -50.0), 50.0)
+                except (TypeError, ValueError):
+                    pass                     # (as under the slab)
         except (TypeError, ValueError, KeyError, IndexError):
             continue
         if t in ("column", "beam"):
@@ -1423,7 +1532,7 @@ def _openings(raw, wall_ids: set) -> list[dict]:
                 if o.get("top") == "arched" and rec["op"] == "swing":
                     rec["top"] = "arched"
             elif o["kind"] == "window" and o.get("op") in (
-                    "sliding", "casement", "awning", "pivot"):
+                    "sliding", "casement", "awning", "pivot", "hung"):
                 # a window with leaves (2026-10-12, PLANO_JANELAS.md)
                 from .structure import window_leaves, casement_roles
                 rec["op"] = o["op"]
@@ -1594,9 +1703,13 @@ def fix_levels(levels) -> list[dict]:
         name = str(lv.get("name") or "").strip()
         if _OLD_DEFAULT.fullmatch(name):
             name = ""               # an old default name takes the new one
-        rows.append({"name": name, "kind": kind,
-                     "height": round(min(max(h, MIN_HEIGHT), MAX_HEIGHT), 3),
-                     "id": str(lv.get("id") or "")})
+        row = {"name": name, "kind": kind,
+               "height": round(min(max(h, MIN_HEIGHT), MAX_HEIGHT), 3),
+               "id": str(lv.get("id") or "")}
+        st = _slab_t_of(lv)                  # kept only when it was set
+        if st is not None:
+            row["slab_t"] = st
+        rows.append(row)
     grounds = [i for i, r in enumerate(rows) if r["kind"] == "ground"]
     if not grounds:
         # promote the lowest non-basement, or add one
@@ -1615,6 +1728,51 @@ def fix_levels(levels) -> list[dict]:
     above = [dict(r, kind="floor") for r in rows[g + 1:]]
     rows = below + [rows[g]] + above
     return _name_levels(rows)
+
+
+def _slab_t_of(lv) -> float | None:
+    """A level's own «slab_t», clamped — None when it has none."""
+    try:
+        v = lv.get("slab_t")
+        if v is None:
+            return None
+        return round(min(max(float(v), MIN_SLAB_T), MAX_SLAB_T), 3)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def slab_t(lv: dict) -> float:
+    """The slab a level's floor is born with (``SLAB_T`` without one)."""
+    v = _slab_t_of(lv)
+    return SLAB_T if v is None else v
+
+
+def with_level_slab(doc: dict, levels: list[dict], lid: str,
+                    t: float) -> dict:
+    """A level's floor slab set to ``t`` (its window — support #93): the
+    level keeps it («slab_t», ``levels`` changed in place) and its floor
+    slabs take it — not a block, not a ceiling, not one of a slab type (the
+    type sets its thickness). ``doc`` back with its structure changed."""
+    t = round(min(max(float(t), MIN_SLAB_T), MAX_SLAB_T), 3)
+    for r in levels:
+        if r["id"] == lid:
+            r["slab_t"] = t
+    st = []
+    for e in doc.get("structure") or []:
+        if e.get("type") == "slab" and e.get("level") == lid \
+                and not e.get("block") and not e.get("ceiling") \
+                and not e.get("stype") \
+                and abs(float(e.get("offset", 0.0) or 0.0)) < 1e-6:
+            # (a slab set higher / lower — a step, a sunken bath — keeps its)
+            e = dict(e, t=t)
+        st.append(e)
+    return dict(doc, structure=st) if doc.get("structure") else doc
+
+
+def _like(lv: dict | None) -> dict:
+    """What a new level takes from the one it is made next to."""
+    v = _slab_t_of(lv) if lv else None
+    return {} if v is None else {"slab_t": v}
 
 
 #: default names (the prototype's and today's): they are renumbered by
@@ -1671,13 +1829,16 @@ def elevations(levels: list[dict], ground_level: float = 0.0) -> list[float]:
 
 def add_floor(levels: list[dict], height: float | None = None) -> list[dict]:
     top = levels[-1]["height"] if levels else DEFAULT_HEIGHT
-    return fix_levels(levels + [{"name": "", "kind": "floor",
-                                 "height": height or top}])
+    return fix_levels(levels + [dict({"name": "", "kind": "floor",
+                                      "height": height or top},
+                                     **_like(levels[-1] if levels else None))])
 
 
 def add_basement(levels: list[dict], height: float | None = None) -> list[dict]:
-    return fix_levels([{"name": "", "kind": "basement",
-                        "height": height or DEFAULT_HEIGHT}] + levels)
+    return fix_levels([dict({"name": "", "kind": "basement",
+                             "height": height or DEFAULT_HEIGHT},
+                            **_like(levels[0] if levels else None))]
+                      + levels)
 
 
 def insert_level(levels: list[dict], index: int, above: bool,
@@ -1688,8 +1849,9 @@ def insert_level(levels: list[dict], index: int, above: bool,
     at = index + 1 if above else index
     kind = "floor" if (above and index >= g) or (not above and index > g) \
         else "basement"
-    new = {"name": "", "kind": kind,
-           "height": height or levels[index]["height"], "id": ""}
+    new = dict({"name": "", "kind": kind,
+                "height": height or levels[index]["height"], "id": ""},
+               **_like(levels[index]))
     return fix_levels(levels[:at] + [new] + levels[at:])
 
 

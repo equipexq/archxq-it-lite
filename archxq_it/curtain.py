@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The CURTAIN WALL — a wall type (his corporate building, 2026-10-12: half
 of it is glass, floor to floor, a dark band at every slab).
 

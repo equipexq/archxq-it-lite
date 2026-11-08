@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """MATERIALS — what each element (and each PART of it) is made of.
 
 His plan (``PLANO_MATERIAIS.md``, approved 2026-10-06): a «Material» tab
@@ -35,7 +37,7 @@ SLOTS = {
     "plot": (("top", "Top (the ground)"), ("side", "Sides")),
     "dig": (("floor", "Floor"), ("wall", "Walls and slopes")),
     "fill": (("top", "Top"), ("wall", "Slopes")),
-    "column": (("all", "Column"),),
+    "column": (("all", "Column"), ("orn", "Base and capital")),
     "beam": (("all", "Beam"),),
     "slab": (("top", "Top"), ("under", "Underside and edges")),
     # a room's floor on a layered slab (2026-10-23): its finishes on the
@@ -230,6 +232,12 @@ def slots(kind: str, el_id: str | None, doc: dict) -> list:
     """An element's parts — a wall with LAYERS (0.15.0): each layer, outside
     → inside; its core is the wall's own part («all»: «Use for all walls»
     still reaches it), each finish «L:<its id>»."""
+    if kind == "column" and el_id:
+        # (its base and capital are a part only when it has them)
+        c = next((e for e in doc.get("structure") or []
+                  if e.get("id") == el_id), None)
+        if not (c and (c.get("cbase") or c.get("ccap"))):
+            return SLOTS["column"][:1]
     if kind == "wall" and el_id:
         w = _wall(doc, el_id)
         ls = (w or {}).get("layers") or []
@@ -605,6 +613,12 @@ def part_of(kind: str, nz: float) -> str:
     return "all"
 
 
+def _is_ornament(color) -> bool:
+    """A face of a column's base or capital (column_orders.ORN_COLOR)."""
+    return tuple(round(v, 3) for v in (color or ())[:3]) \
+        == (0.701, 0.711, 0.721)
+
+
 def roof_part(color) -> str:
     """A roof face's part, by the colour ArchXQ built it with (the roof's
     faces are made fresh at every rebuild, before they are painted)."""
@@ -855,6 +869,15 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
                 if a is not None:
                     f.attrs.update(a[1])
                 continue
+        if kind == "column":
+            # its base and capital, told by their colour: as the shaft until
+            # they get a material of their own
+            a = made.get("all")
+            if _is_ornament(f.attrs.get("color")):
+                a = made.get("orn") or a
+            if a is not None:
+                f.attrs.update(a[1])
+            continue
         if kind == "opening":
             # each part by the colour it is built with (trim.py): a part
             # with a material takes it, the others (the glass) keep theirs

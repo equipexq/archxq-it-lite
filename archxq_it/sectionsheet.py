@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A SECTION or an ELEVATION sheet, worked out on paper — the same finish
 as the plans (PLANO_DOCUMENTACAO_CORTES.md, 2026-10-23): NBR 6492 / 8402.
 
@@ -170,6 +172,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     vw = 2 * min(fcx - ax0, ax1 - fcx)
     view = {"x": fcx - vw / 2, "y": ay0, "w": vw, "h": ay1 - ay0,
             "scale": n, "target": [tx, ty, tz], "look": [lx, ly],
+            "right": [rx, ry],
             "plane": G["plane"], "kind": sheet.get("kind", "section"),
             "fill": cut_fill(doc, sheet)}
 
@@ -270,6 +273,13 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             for j, (a, c) in enumerate(got["lines"]):
                 pc.line(f"sframe:{e['id']}:l{j}", PG(a), PG(c), "symbol")
 
+    # --- a layered wall's layers where the cut crosses it, with their hatches
+    from . import wallsheet as WS
+    if G["plane"] and WS.drawn_at(style, n):
+        WS.paint(pc, WS.section_parts(doc, elevations, info, (qx, qy),
+                                      G["plane"]["normal"][:2], X, Y,
+                                      (rx, ry), n <= FR.SYMBOL_SCALE))
+
     # --- level marks, both sides (or the left) --------------------------------------
     marks = show.get("sec_marks", "both")
     sts = stops(doc, elevations)
@@ -316,7 +326,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             off = DIM_ROWS[row - 1]
             for j, (za, zb) in enumerate(spans):
                 pa, pb = (xl, Y(za)), (xl, Y(zb))
-                label = DS.num(zb - za, style)
+                label = DS.length(zb - za, style)
                 pc.items.append({
                     "kind": "dim", "key": f"dim:h:{row}:{j}",
                     "a": [tx, ty, za], "b": [tx, ty, zb], "pa": pa, "pb": pb,
@@ -341,7 +351,8 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                     follow=True)
 
     # --- the title, the side column ---------------------------------------------------------
-    PS.title_strip(pc, L, sheet, index, n, f"{W_['scale']} 1:{n}")
+    PS.title_strip(pc, L, sheet, index, n,
+                   f"{W_['scale']} {DS.scale_text(n)}")
     sx0, sy0, sx1, sy1 = L["side"]
     pc.rect("side:frame", sx0, sy0, sx1, sy1, 0.5)
     y = sy0 + 6.0
@@ -349,6 +360,9 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
         y = key_plan(pc, doc, G, sheet, sx0 + 6.0, y, sx1 - sx0 - 12.0)
     if show.get("levels_key", True):
         y = PS.levels_key(pc, doc, info, ground, [], sx0 + 6.0, y) + 4.0
+    if sheet.get("kind") == "section":
+        y = WS.legend(pc, doc, sheet["levels"], sx0 + 6.0, y,
+                      sx1 - sx0 - 12.0)
     cy0 = sy1 - PS.TITLE_BLOCK_MM
     if show.get("notes", True):
         PS.notes(pc, sx0, sx1, y + 2.0, cy0,
@@ -356,7 +370,8 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     PS.title_block(pc, doc, L, sheet, n, index, total, today)
     return {"paper": paper, "scale": n, "fits": ok, "page": L["page"],
             "layout": L, "view": view, "items": pc.items, "tags": {},
-            "types": [], "rooms": [], "cut_rooms": rooms, "boxes": pc.boxes}
+            "types": [], "rooms": [], "cut_rooms": rooms, "boxes": pc.boxes,
+            "extent": (xl, Y(G["zhi"]), xr, Y(G["zlo"]))}
 
 
 def cut_rooms(doc: dict, elevations, G: dict) -> list[dict]:

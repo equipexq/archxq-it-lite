@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The host's own Move / Rotate / Copy on ArchXQ's elements — adopted.
 
 IngeTrazo's Move (M), Ctrl+Move (copy), its arrays (x3, /3) and Rotate (Q)
@@ -136,6 +138,12 @@ def moved(rec: dict, m) -> dict:
         r["holes"] = [[pt(p) for p in h] for h in r["holes"]]
     if "pts" in r:                       # a low wall's / guard's line
         r["pts"] = [pt(p) for p in r["pts"]]
+    if r.get("path"):                    # a profile's own path, in 3D
+        r["path"] = [pt(p) + [p[2]] for p in r["path"]]
+    if r.get("frame"):                   # … and how its outline stands on it
+        r["frame"] = [[round(c * a[0] - s * a[1], 6),
+                       round(s * a[0] + c * a[1], 6), a[2]]
+                      for a in r["frame"]]
     if "angle" in r:
         r["angle"] = _angle(float(r["angle"]) + th)
     return r
@@ -352,20 +360,47 @@ def adopt(doc: dict, groups) -> tuple[dict | None, list[str]]:
     bad += wbad
     auto =[i for i in list(moves) + [i for i, _ in copies]
             if by_id.get(i, {}).get("auto")]
+    # a «Column row» (colrows.py): ALL its columns moved alike — the row
+    # goes with them (its path); only some — those leave the row, where
+    # they are (its next edit keeps them out)
+    rows_moved, left = _rows_moved(doc, st, moves)
     new_st = []
     for e in st:
         if e["id"] in resized:
             e = resized[e["id"]]
         elif e["id"] in moves and not e.get("auto"):
             e = moved(e, moves[e["id"]])
+            if e["id"] in left:
+                e = {k: v for k, v in e.items()
+                     if k not in ("row", "st", "part", "seg")}
+            # a row's beam / footing moved on its own (its row stays): one
+            # of its own now, where it is
+            elif e.get("type") in ("beam", "footing") and e.get("row") \
+                    and e["row"] not in rows_moved:
+                e = {k: v for k, v in e.items()
+                     if k not in ("row", "part", "seg")}
+        elif e.get("type") in ("beam", "footing") \
+                and e.get("row") in rows_moved:
+            e = moved(e, rows_moved[e["row"]])   # its row moved: it goes too
         new_st.append(e)
+    if rows_moved:
+        doc = dict(doc, colrows=[
+            dict(r, path=moved({"pts": r["path"]}, rows_moved[r["id"]])["pts"])
+            if r["id"] in rows_moved else r
+            for r in doc.get("colrows") or []])
+    if left:
+        n = len(left)
+        notes.append(f"{n} column{'s' if n > 1 else ''} moved out of "
+                     f"{'their' if n > 1 else 'its'} row — on {'their' if n > 1 else 'its'} own now")
     fresh, mats = [], (doc.get("materials") or {}).get("el") or {}
     for eid, key in copies:
         e = by_id.get(eid)
         if e is None or e.get("auto"):
             continue
         m = (key[2], (key[0], key[1]), 0.0)
-        r = {k: v for k, v in moved(e, m).items() if k not in ("id", "name")}
+        # (a copy of a row's column is a column of its own)
+        r = {k: v for k, v in moved(e, m).items()
+             if k not in ("id", "name", "row", "st", "part", "seg")}
         fresh.append((eid, r))
     made = model.new_elements(new_st, [r for _i, r in fresh])
     doc = dict(doc, structure=new_st + made)
@@ -393,6 +428,32 @@ def adopt(doc: dict, groups) -> tuple[dict | None, list[str]]:
         notes.insert(0 if not n_mv else 1,
                      f"{n_cp} cop{'ies' if n_cp > 1 else 'y'} made")
     return doc, notes
+
+
+def _rows_moved(doc: dict, st: list, moves: dict) -> tuple[dict, set]:
+    """({row id: motion} — rows whose every column moved alike, the ids of
+    a row's columns moved on their own)."""
+    rows = {r["id"]: r for r in doc.get("colrows") or []}
+    if not rows or not moves:
+        return {}, set()
+    of: dict = {}
+    for e in st:
+        r = rows.get(e.get("row"))
+        # (a row's own: its columns — a row of footings', its footings)
+        prim = "footing" if (r or {}).get("what") == "footings" else "column"
+        if r is not None and e.get("type") == prim \
+                and e.get("level") == r["level"]:
+            of.setdefault(e["row"], []).append(e["id"])
+    whole, left = {}, set()
+    for rid, ids in of.items():
+        ms = [moves.get(i) for i in ids]
+        if not any(ms):
+            continue
+        if all(ms) and all(_same(ms[0], m) for m in ms[1:]):
+            whole[rid] = ms[0]
+        else:
+            left |= {i for i, m in zip(ids, ms) if m}
+    return whole, left
 
 
 def _adopt_walls(doc: dict, moves: dict, copies: list) -> tuple[dict, list]:

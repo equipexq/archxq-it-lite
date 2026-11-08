@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The DOCUMENTATION STYLE — how a sheet looks, as data (his idea,
 2026-10-22: «a deeper level, in the background, a saved preset»).
 
@@ -66,7 +68,11 @@ EXECUTIVE_BW = {
              "auto_sections": True,    # A-A and B-B through the middle
              "schedule_sheet": True,   # the area schedule (A-001)
              "sched_rooms": True,      # …with each level's rooms
-             "elevations": True},      # the four elevations in the set
+             "elevations": True,       # the four elevations in the set
+             # a layered wall's layers where it is cut (``wallsheet``):
+             # auto = 1:50 or closer · on · off
+             "wall_layers": "auto",
+             "wall_legend": True},     # the wall types in the side column
     "sheet": {"paper": "auto", "scale": "auto", "prefer_scale": 100,
               "papers": ["A3", "A2", "A1", "A0"],
               "scales": [50, 75, 100, 125, 200, 250, 500],
@@ -79,13 +85,48 @@ EXECUTIVE_BW = {
               "plan_title": "{plan} — {level}",
               "typical_title": "{typical} ({first} – {last})",
               "section_group": 2, "elevation_group": 3, "schedule_group": 0,
+              "board_group": 4,
               "section_title": "{section} {s}-{s}",
               "elevation_title": "{elevation} {side}"},
     "office": {"name": "", "line2": "", "line3": "", "logo": ""},
     "notes": None,                      # None = the language's own
 }
 
+#: the other built-in styles: only what each changes on the Executive
+_VARIANTS = {
+    # what a city hall reads: the cut heavy, few dimensions, no colour
+    "municipal": {
+        "name": "Municipal approval",
+        "pens": {"cut": 0.60, "profile": 0.35, "edge": 0.13, "dim": 0.13,
+                 "symbol": 0.13, "border": 0.70},
+        "show": {"dims_out": 2, "dims_in": "none", "wall_layers": "off"}},
+    # for the client: colour by use, the cut soft, little text
+    "presentation": {
+        "name": "Presentation",
+        "pens": {"cut": 0.35, "profile": 0.25, "edge": 0.13, "dim": 0.10,
+                 "symbol": 0.13, "border": 0.35},
+        "colors": {"ink": "#2a2e33", "dim": "#5a6068", "cut_fill": "#4a4f57",
+                   "mute": "#7a8088"},
+        "room_fill": {"on": True, "opacity": 0.70},
+        "show": {"dims_out": 1, "dims_in": "none", "tags": False,
+                 "schedule": False, "notes": False, "wall_layers": "off",
+                 "wall_legend": False}},
+    # for the site: every dimension, thin lines, the layers always drawn
+    "construction": {
+        "name": "Construction",
+        "pens": {"cut": 0.40, "profile": 0.25, "edge": 0.13, "dim": 0.10,
+                 "symbol": 0.13, "border": 0.50},
+        "colors": {"cut_fill": "#55595f"},
+        "sheet": {"prefer_scale": 50},
+        "show": {"dims_out": 3, "wall_layers": "on"}},
+}
+
 BUILTIN = {"executive_bw": EXECUTIVE_BW}
+
+#: the line sets of the style window: every pen times this
+PEN_SETS = {"fine": 0.75, "standard": 1.0, "heavy": 1.35}
+#: the pens the style window offers (the view's three, then the sheet's)
+PEN_KEYS = ("cut", "profile", "edge", "dim", "symbol", "border")
 
 #: the words written ON the sheet, per language of the sheets
 WORDS = {
@@ -105,6 +146,7 @@ WORDS = {
            "ops": {"shop": "vitrine / caixilho", "swing": "de abrir",
                    "sliding": "de correr", "casement": "de abrir",
                    "garage": "de garagem", "pivot": "pivotante",
+                   "hung": "guilhotina",
                    "folding": "camarão", "awning": "maxim-ar",
                    "fixed": "fixa"},
            "uses": {"room": "Ambientes", "hall": "Halls e circulação",
@@ -129,7 +171,7 @@ WORDS = {
            "roof": "ROOF",
            "ops": {"shop": "shopfront", "swing": "hinged",
                    "sliding": "sliding", "casement": "casement",
-                   "garage": "garage", "pivot": "pivot",
+                   "garage": "garage", "pivot": "pivot", "hung": "sash",
                    "folding": "folding", "awning": "awning",
                    "fixed": "fixed"},
            "uses": {"room": "Rooms", "hall": "Halls & circulation",
@@ -155,6 +197,7 @@ WORDS = {
            "ops": {"shop": "Schaufenster", "swing": "Drehflügel",
                    "sliding": "Schiebe", "casement": "Drehflügel",
                    "garage": "Garagentor", "pivot": "Schwing",
+                   "hung": "Hebe",
                    "folding": "Falt", "awning": "Klapp",
                    "fixed": "Festverglasung"},
            "uses": {"room": "Räume", "hall": "Flure", "wet": "Sanitär",
@@ -220,10 +263,52 @@ _SECTION_WORDS = {
 for _lang, _w in _SECTION_WORDS.items():
     WORDS[_lang].update(_w)
 
+#: the wall types' legend, the views sheet (PLANO_DOCUMENTACAO_ESTILOS_VISTAS)
+_BOARD_WORDS = {
+    "pt": {"wall_types": "TIPOS DE PAREDE", "simple_wall": "Parede simples",
+           "board": "FOLHA DE VISTAS"},
+    "en": {"wall_types": "WALL TYPES", "simple_wall": "Plain wall",
+           "board": "VIEWS SHEET"},
+    "de": {"wall_types": "WANDTYPEN", "simple_wall": "Einfache Wand",
+           "board": "PLANÜBERSICHT"},
+}
+for _lang, _w in _BOARD_WORDS.items():
+    WORDS[_lang].update(_w)
+
+
+#: the notes that name the unit, in a feet / inches document
+_IMPERIAL_NOTES = {
+    "pt": (("Cotas verticais em metros", "Cotas verticais em pés e polegadas"),
+           ("Cotas em metros", "Cotas em pés e polegadas")),
+    "en": (("Vertical dimensions in metres",
+            "Vertical dimensions in feet and inches"),
+           ("Dimensions in metres", "Dimensions in feet and inches")),
+    "de": (("Vertikale Maße in Metern", "Vertikale Maße in Fuß und Zoll"),
+           ("Maße in Metern", "Maße in Fuß und Zoll")),
+}
+#: the ground floor's level in a feet / inches document
+ZERO_IN = "±0'-0\""
+
+
+def _imperial_note(line: str, lang: str) -> str:
+    for old, new in _IMPERIAL_NOTES.get(lang, ()):
+        line = line.replace(old, new)
+    return line.replace("±0,00", ZERO_IN).replace("±0.00", ZERO_IN)
+
 
 def words(style: dict) -> dict:
-    """The sheet's words in the style's language (English if unknown)."""
-    return WORDS.get(style.get("lang", "pt"), WORDS["en"])
+    """The sheet's words in the style's language (English if unknown). A
+    feet / inches document: no metres in them (each area says its unit)."""
+    lang = style.get("lang", "pt")
+    base = WORDS.get(lang, WORDS["en"])
+    if not imperial():
+        return base
+    out = dict(base)
+    for key in ("size", "col_net", "col_gross"):
+        out[key] = base[key].replace(" (m²)", "").replace(" (m)", "")
+    for key in ("notes_default", "notes_schedule", "notes_section"):
+        out[key] = [_imperial_note(ln, lang) for ln in base[key]]
+    return out
 
 
 def comma(style: dict) -> bool:
@@ -234,6 +319,72 @@ def comma(style: dict) -> bool:
 def num(v: float, style: dict, dec: int = 2) -> str:
     s = f"{v:.{dec}f}"
     return s.replace(".", ",") if comma(style) else s
+
+
+# ---- the document's unit (Arnon Moscona's ticket #90, 2026-11-06) --------------------
+# A metres document reads exactly as before. Imported here, not at the top:
+# the style stays pure, and without a host it is a metres document.
+def imperial() -> bool:
+    """The open document is in feet / inches."""
+    try:
+        from . import compat
+        return bool(compat.imperial())
+    except Exception:  # noqa: BLE001 — no host (the pure tests): metres
+        return False
+
+
+def length(v: float, style: dict) -> str:
+    """A length on a sheet: «3,20» in metres, «10'6"» in feet / inches."""
+    if imperial():
+        from . import compat
+        return compat.fmt_num(v)
+    return num(v, style)
+
+
+def small(v: float) -> str:
+    """A small length in feet / inches, in inches: «6 7/8"»."""
+    from . import compat
+    return compat.fmt_cm(v)
+
+
+def area(v: float, style: dict) -> str:
+    """An area with its unit: «12,50 m²», «134.55 ft²»."""
+    if imperial():
+        from . import compat
+        return compat.fmt_area(v)
+    return f"{num(v, style)} m²"
+
+
+def area_cell(v: float, style: dict) -> str:
+    """An area in a table: its column says m²; in feet / inches, it says
+    its own unit (the document may keep areas in another one)."""
+    return area(v, style) if imperial() else num(v, style)
+
+
+def scales(style: dict) -> list:
+    """The scales a sheet picks from: the style's, or the architect's and
+    the engineer's in a feet / inches document."""
+    if imperial():
+        from . import docs
+        return sorted(docs.SCALES_IN)
+    return sorted(int(s) for s in style["sheet"]["scales"])
+
+
+def prefer_scale(style: dict) -> int:
+    """The scale a sheet starts from: the style's, or the nearest one of
+    the architect's (1:100 → 1/8", 1:96; 1:50 → 1/4", 1:48)."""
+    want = int(style["sheet"].get("prefer_scale", 100))
+    if imperial():
+        return min(scales(style), key=lambda n: abs(n - want))
+    return want
+
+
+def scale_text(n) -> str:
+    """«1:100», or «1/4" = 1'-0"» in a feet / inches document."""
+    if imperial():
+        from . import docs
+        return docs.scale_label(n)
+    return f"1:{n}"
 
 
 def merge(base: dict, over: dict | None) -> dict:
@@ -251,11 +402,30 @@ def merge(base: dict, over: dict | None) -> dict:
 def resolve(office: dict | None = None, project: dict | None = None,
             sheet: dict | None = None, base: str = "executive_bw") -> dict:
     """The style a sheet is drawn with: the built-in, the office's, the
-    project's changes, the sheet's changes — the lower one wins."""
+    project's changes, the sheet's changes — the lower one wins. A layer's
+    «base» names the built-in underneath (the lowest layer's)."""
+    for layer in (office, project, sheet):
+        if (layer or {}).get("base") in BUILTIN:
+            base = layer["base"]
     s = copy.deepcopy(BUILTIN.get(base, EXECUTIVE_BW))
     for layer in (office, project, sheet):
         s = merge(s, layer)
+    s["base"] = base if base in BUILTIN else "executive_bw"
     return s
+
+
+def with_pens(pens: dict, line_set: str) -> dict:
+    """The Executive's pens times a line set («fine», «standard», «heavy»)
+    — the ones a city hall or a plotter tells apart: 2 decimals, ≥ 0.05."""
+    k = PEN_SETS.get(line_set, 1.0)
+    return {p: max(round(float(v) * k, 2), 0.05) for p, v in pens.items()}
+
+
+def looks_sig(style: dict) -> str:
+    """What makes a drawn sheet look as it does (not what it carries: those
+    are its own choices) — to tell a sheet made with another style."""
+    return json.dumps([style.get(k) for k in ("pens", "colors", "text",
+                                              "room_fill")], sort_keys=True)
 
 
 def diff(base: dict, mine: dict) -> dict:
@@ -270,6 +440,10 @@ def diff(base: dict, mine: dict) -> dict:
         elif v != b:
             out[k] = copy.deepcopy(v)
     return out
+
+
+for _key, _over in _VARIANTS.items():
+    BUILTIN[_key] = merge(EXECUTIVE_BW, _over)
 
 
 def too_small(style: dict) -> list[str]:
@@ -298,4 +472,5 @@ def loads(raw: str) -> dict:
     if not isinstance(data, dict) or FILE_KEY not in data \
             or not isinstance(data.get("style"), dict):
         raise ValueError("not an ArchXQ documentation style")
-    return merge(EXECUTIVE_BW, data["style"])
+    return merge(BUILTIN.get(data["style"].get("base"), EXECUTIVE_BW),
+                 data["style"])

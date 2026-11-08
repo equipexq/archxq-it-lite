@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """LOOK — the edit windows' shared kit (plan PLANO_JANELAS_EDICAO.md, 0.10.0).
 
 His approval of the mockup (MAQUETAS/janela_escada_v1.html, 2026-10-13):

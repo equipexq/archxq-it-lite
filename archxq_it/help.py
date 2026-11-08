@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Help popups: a small «?» button next to a title opens a short, plain
 explanation. The popup closes on any click outside it or on Esc; it never
 blocks the work behind it."""
@@ -48,7 +50,10 @@ HELP: dict[str, tuple[str, str]] = {
         "a height of its own.<br><br>Its <b>section</b> is a rectangle "
         "(width × depth, turned by its angle) or round (Ø). Drawn one by "
         "one, in a row, in a grid — or <b>at the wall corners</b> in one "
-        "click."),
+        "click.<br><br>A <b>row</b> goes point by point, like a wall, and "
+        "can close on its first point; it stays a group («Column row»): "
+        "its window changes every column of it. A column of a row deleted "
+        "stays out of it; one moved on its own leaves the row."),
     "beam": (
         "Beam",
         "A beam's <b>height includes the slab above</b>: its top is flush "
@@ -514,9 +519,9 @@ HELP: dict[str, tuple[str, str]] = {
     "plot_dims": (
         "Plot dimensions",
         "The length of each side of the plot, written on the model.<br><br>"
-        "<b>In the Terrain phase</b>: only while you work on the terrain "
-        "(temporary). <b>Always</b>: whenever ArchXQ is on. <b>Off</b>: "
-        "never."),
+        "<b>Always</b> (the default): whenever ArchXQ is on — in a "
+        "basement's plan, its excavations' figures too. <b>In the Terrain "
+        "phase</b>: only while you work on the terrain. <b>Off</b>: never."),
     "ground_thickness": (
         "Ground thickness",
         "How deep the ground block under the plot goes, from the plot "

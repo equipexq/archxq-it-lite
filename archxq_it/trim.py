@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TRIM and SILL round doors and windows (his ask, 2026-10-17 / 2026-10-19:
 «janela e porta com contorno» — the façades' finish, much seen in renders).
 

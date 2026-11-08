@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Walls traced over a DXF (0.15.0, PLANO_0150.md B8 — his note,
 2026-10-05: tracing over a DWG, which side of an open run is the inside
 looked random). A plan draws a wall as TWO parallel lines; the band

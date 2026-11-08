@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Ready wall types BY MARKET (PLANO_PAREDE_ESTRUTURA_LEVE.md, D5 — phase 2,
 2026-11-02): the way a house is built in the US, in Europe, in the UK — its
 layers outside → inside and, for a light-framed one, its studs (framing.py).

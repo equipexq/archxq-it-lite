@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A CORNER OF TWO HEIGHTS (2026-11-01, his question: «on site, doesn't the
 higher wall go on and the other come in lower?»). Where two walls meet in
 an L at different heights the corner is bonded up to the LOWER one's top;

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A HIP ROOF in its LAYERS, with RAFTERS (PLANO_ESTRUTURA_LEVE_FASE4 4d,
 his «faz tudo», 2026-11-03) — a rectangular hip, as the gable's
 ``_layered_sweep`` does it for a gable.

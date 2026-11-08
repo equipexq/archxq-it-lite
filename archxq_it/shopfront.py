@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The SHOPFRONT — a door type that makes a whole shop's front (his ask,
 2026-10-10, for the corporate building's ground-floor shops): it fills the
 bay between piers with fixed glass panes in a slim dark frame and a glazed

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """On-screen GRIPS (PLANO_PEGAS.md — his OK 2026-10-13, «maravilhoso»).
 
 With the host's Select tool and ONE ArchXQ element selected, small square

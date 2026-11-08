@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Placing OPENINGS — doors, windows, voids — in the walls.
 
 OpeningTool: the cursor near a straight wall of the level takes the
@@ -120,7 +122,10 @@ def _window_lines(o, wall, P, s0, s1, t, u, n) -> list:
         # one's glass along the wall — the same widths as in 3D, the plan's
         # leaves meeting with no gap (1 and 2 leaves as they always were)
         inside = S.door_side(o, wall)
-        leaves, _m = S.casement_layout(S.casement_roles(o), s0, s1, gap=0.0)
+        from .openfinish import leaf_shares
+        roles = S.casement_roles(o)
+        leaves, _m = S.casement_layout(roles, s0, s1, gap=0.0,
+                                       shares=leaf_shares(o, len(roles)))
         out = []
         for a, b, r in leaves:
             if r == "F":
@@ -130,6 +135,8 @@ def _window_lines(o, wall, P, s0, s1, t, u, n) -> list:
             else:
                 out += _swing_lines(P, b, -1.0, inside, t, b - a, u, n)
         return out
+    if op == "hung":                   # a sash: its two leaves, one behind
+        return [(P(s0, -0.015), P(s1, -0.015)), (P(s0, 0.015), P(s1, 0.015))]
     # awning: three short dashes outward, the way it opens; PIVOT: its
     # panes turn on their middle — dashes to both sides
     so = -S.door_side(dict(o, out=False), wall)

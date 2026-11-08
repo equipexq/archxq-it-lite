@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """QUANTITIES — the building's take-off, to a CSV a spreadsheet opens (0.15.0,
 D1 — PLANO_0150.md: «the natural pair of your own wall types»).
 
@@ -421,7 +423,13 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                                   "level": names.get(lid, ""), "n": n,
                                   "length": L, "area": a, "volume": v}))
     out = []
-    for key in sorted(groups, key=lambda k: (rank.get(k[0], 99), k[1])):
+    # (a build-up reads as it is built: top to bottom, outside to inside —
+    # the layers keep the order they were added in, never the alphabet's;
+    # sorted() is stable, so each element's stay together in order)
+    layered = {"Wall layers", "Slab layers", "Roof layers"}
+    for key in sorted(groups, key=lambda k: (
+            rank.get(k[0], 99),
+            k[1].split(" · ")[0] if k[0] in layered else k[1])):
         rows = [r for _k, r in sorted(groups[key], key=lambda x: x[0])]
         out += rows
         if len(rows) > 1:            # on more than one level: its total

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The ONE place that touches IngeTrazo internals.
 
 IngeTrazo's extension API is 0.x: when an update moves something, only
@@ -531,9 +533,25 @@ def fmt_area(m2: float, decimals: int = 2, group: bool = False) -> str:
         if UNIT_OVERRIDE:
             return str(units.format_area(float(m2), units.area_unit_for(u),
                                          2))
-        return str(units.fmt_area(float(m2)))
+        return str(area_text(m2, decimals, units.model_units()))
     except Exception:  # noqa: BLE001
         return f"{m2:{g}.{decimals}f} m²"
+
+
+def area_text(m2: float, decimals: int, settings: dict) -> str:
+    """An area in the document's unit. Its precision is meant for lengths:
+    walls in whole centimetres must not round a room's 6.24 m² to «6 m²»
+    (a customer, 2026-11-05), so a large area unit keeps ``decimals``; small
+    units (cm², mm², in²), and anything unknown, as the host writes them."""
+    from core import units
+    unit = settings.get("area") or units.area_unit_for(settings.get("length"))
+    if unit not in ("m2", "ft2"):
+        return str(units.fmt_area_with(float(m2), settings))
+    try:
+        keep = int(settings.get("precision", 0))
+    except (TypeError, ValueError):
+        keep = 0
+    return str(units.format_area(float(m2), unit, max(decimals, keep)))
 
 
 def parse_host_length(text: str):
@@ -969,14 +987,16 @@ def dig_volumes(doc: dict, z0: float = 0.0) -> dict:
     return terrain.build(doc, z0, earcut, arrangement)["volumes"]
 
 
-def _soften_flat_seams(mesh, smooth=()) -> None:
+def _soften_flat_seams(mesh, smooth=(), curved=()) -> None:
     """An edge between two faces of ONE plane is no fold — a seam the
     regions left (a pit's floor around a ramp's footprint, a wall cut in
     panels where a ramp meets it): drawn smooth, so it doesn't show. So
     is the joint of two upright panels less than 25° apart (a round
     pit's wall reads as one curve, as SketchUp softens it), and the
     facets of a round tube (``smooth``: their face ids — a handrail's
-    eight sides drew eight lines, his screen 2026-10-10)."""
+    eight sides drew eight lines, his screen 2026-10-10). ``curved``: face
+    ids of a sweep in any direction: under 25° it reads as one curve there
+    too, sloped or not (a corner, a chamfer stay drawn)."""
     curve = math.cos(math.radians(25))
     tube = math.cos(math.radians(50))
     for e in mesh.edges:
@@ -989,6 +1009,10 @@ def _soften_flat_seams(mesh, smooth=()) -> None:
         dot = n1.dotProduct(n1, n2)
         if smooth and id(fs[0]) in smooth and id(fs[1]) in smooth \
                 and dot >= tube:
+            e.soft = True
+            continue
+        if curved and id(fs[0]) in curved and id(fs[1]) in curved \
+                and dot >= curve:
             e.soft = True
             continue
         if abs(n1.z()) < 0.05 and abs(n2.z()) < 0.05 and dot >= curve \
@@ -1481,6 +1505,7 @@ def mesh_of(faces, hide=()):
     from PySide6.QtGui import QVector3D
     mesh = Mesh()
     smooth = set()                     # a round tube's facets (railings)
+    curved = set()                     # a sweep's sides, in any direction
     for f in faces:
         if isinstance(f, dict):
             face = mesh.add_face([QVector3D(*q) for q in f["loop"]],
@@ -1488,6 +1513,8 @@ def mesh_of(faces, hide=()):
                                   for h in f["holes"]])
             if f.get("soft") and face is not None:
                 smooth.add(id(face))
+            if f.get("curve") and face is not None:
+                curved.add(id(face))
             if f.get("color") is not None and face is not None:
                 # glass, leaf… — the host wants RGB in "color" and the
                 # alpha apart in "opacity" (the glTF/Blender export
@@ -1498,7 +1525,7 @@ def mesh_of(faces, hide=()):
                     face.attrs["opacity"] = c[3]
         else:
             mesh.add_face([QVector3D(*q) for q in f])
-    _soften_flat_seams(mesh, smooth)
+    _soften_flat_seams(mesh, smooth, curved)
     if hide:
         from .seams import edge_key
         for e in mesh.edges:
@@ -1722,7 +1749,10 @@ def plan_camera(viewport) -> None:
     viewport.update()
 
 
-_STYLE_BEFORE = {}
+#: what the 3D view showed before the plan — kept ON that view: each project
+#: tab has its own (one note for all: a tab's plan left with the other's note
+#: gone stayed in hidden line, without the axes — his test, 06/11)
+_STYLE_WAS = "_axq_style_was"
 
 
 def plan_style(viewport, on: bool, mode: str = "hidden_line") -> None:
@@ -1733,16 +1763,18 @@ def plan_style(viewport, on: bool, mode: str = "hidden_line") -> None:
     the undo and «unsaved» are not touched. Off: what was there before."""
     import dataclasses
     if on:
-        if "was" not in _STYLE_BEFORE:
-            _STYLE_BEFORE["was"] = getattr(viewport, "style_override", None)
+        if not hasattr(viewport, _STYLE_WAS):
+            setattr(viewport, _STYLE_WAS,
+                    getattr(viewport, "style_override", None))
         base = getattr(viewport.scene, "display_style", None)
         if base is not None:
             # «hidden_line» (the plan) or «xray» (see-through: the X-ray
             # button of the plan / elevations, 2026-10-10)
             viewport.style_override = dataclasses.replace(base,
                                                           face_mode=mode)
-    elif "was" in _STYLE_BEFORE:
-        viewport.style_override = _STYLE_BEFORE.pop("was")
+    elif hasattr(viewport, _STYLE_WAS):
+        viewport.style_override = getattr(viewport, _STYLE_WAS)
+        delattr(viewport, _STYLE_WAS)
     viewport.update()
 
 
@@ -1844,7 +1876,20 @@ def frames_for_textures(viewport, left: int = 6, ms: int = 60) -> None:
     QTimer.singleShot(ms, again)
 
 
+#: the last message on the status bar: [how many so far, when it runs out]
+#: — a tool's step hint, wiped by another one (plottools._show_hint), comes
+#: back when that one has run out (the host falls back to «… Esc cancels»)
+_FLASH = [0, 0.0]
+
+
+def flash_state() -> tuple:
+    return _FLASH[0], _FLASH[1]
+
+
 def flash(viewport, text: str, ms: int = 4000) -> None:
+    import time
+    _FLASH[0] += 1
+    _FLASH[1] = time.monotonic() + ms / 1000.0
     try:
         from .i18n import tr_parts      # (the host's status bar: not ours)
         text = tr_parts(text)

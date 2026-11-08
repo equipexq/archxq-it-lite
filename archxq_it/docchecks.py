@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The CHECKS before a sheet goes out — the algorithm reminds, so the
 architect does not have to (his rule, 2026-10-22). Each check says what
 it saw and which action puts it right.
@@ -29,8 +31,11 @@ def checks(built: dict, style: dict, state: str = "ok") -> list[dict]:
     """[{"code", "level" ok|warn, "n", "action" or None}] in the order
     the studio shows them."""
     out = []
-    out.append({"code": "fits", "level": OK if built["fits"] else WARN,
-                "n": built["scale"], "action": None if built["fits"]
+    crowded = built.get("crowded", False)       # (a views sheet: on several)
+    out.append({"code": "fits",
+                "level": OK if built["fits"] and not crowded else WARN,
+                "n": built["scale"],
+                "action": "split" if crowded else None if built["fits"]
                 else "paper"})
     small = DS.too_small(style)
     out.append({"code": "text_size", "level": WARN if small else OK,

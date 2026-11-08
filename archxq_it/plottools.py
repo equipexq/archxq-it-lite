@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Drawing the plot in the 3D view — IngeTrazo tools (tools.base.Tool).
 
 Both read the cursor on the ground plane (z = 0), preview live, take typed
@@ -393,10 +395,19 @@ class _PlotTool(Tool):
 
     # -- status bar: the step we are in (the host ignores plugin clauses) -------
     def _show_hint(self) -> None:
+        import time
         text = self.status_clause()
-        if text != self._hint_shown and self.viewport is not None:
+        if self.viewport is None:
+            return
+        # (another message since ours, run out by now: the hint comes back —
+        # the bar had fallen back to the host's «ArchXQ copy: Esc cancels»)
+        n, until = compat.flash_state()
+        wiped = n != getattr(self, "_hint_flash", n) \
+            and time.monotonic() >= until
+        if text != self._hint_shown or wiped:
             self._hint_shown = text
             compat.flash(self.viewport, text, 600000)
+            self._hint_flash = compat.flash_state()[0]
 
     # -- drawn over the 3D view by ArchXQ's overlay --------------------------------
     def draw_overlay(self, viewport, painter) -> None:

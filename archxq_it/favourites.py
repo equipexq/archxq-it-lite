@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The library's FAVOURITES (0.17.0 — PLANO_BIBLIOTECA_FAVORITOS.md): the
 right strip shows only the types he keeps there; «★ All N…» opens every
 type (library.AllTypesDialog), where a star pins one.
@@ -18,6 +20,17 @@ import json
 
 #: up to this many fit the strip without scrolling (3 × 3)
 STRIP_MAX = 9
+#: the strip of whom has kept nothing yet (windows and doors)
+DEFAULTS = {"window": ("sliding", "casement", "fixed", "fixed_hinged", "sash",
+                       "louvred3", "awning", "round_arch"),
+            "door": ("swing", "panelled", "french", "double", "sliding",
+                     "glass", "shop", "garage"),
+            # (the big library of mouldings lives in «More», 06/11/2026)
+            "profile": ("base_flat", "base_mould", "crown_cove", "crown_ogee",
+                        "chair_rail", "cornice", "band", "casing_colonial"),
+            "column": ("rect", "round", "round_tuscan", "round_doric",
+                       "round_attic", "round_pedestal", "sq_tuscan",
+                       "sq_doric")}
 
 
 def N_(text: str) -> str:
@@ -30,11 +43,23 @@ YOURS = N_("Your types")
 #: the window's categories, per element: (name, (type keys…)) — an element
 #: not here has one (no chips)
 CATS = {
-    "door": ((N_("Hinged"), ("swing", "arched")),
-             (N_("Sliding"), ("sliding", "glass")),
-             (N_("Shop & garage"), ("shop", "garage"))),
-    "window": ((N_("Operable"), ("sliding", "casement", "awning", "pivot")),
-               (N_("Fixed"), ("fixed", "shop"))),
+    "door": ((N_("Hinged"), ("swing", "panelled", "six", "half", "french",
+                             "plank", "dutch", "transom", "arched")),
+             (N_("Double"), ("double", "double_panelled", "french2",
+                             "barn2")),
+             (N_("Sliding"), ("sliding", "sliding2", "barn", "glass")),
+             (N_("Shop & garage"), ("shop", "garage", "rollup", "tilt"))),
+    "window": ((N_("Sliding"), ("sliding", "sliding3", "sliding4", "slide_top",
+                                "louvred3", "louvred6")),
+               (N_("Hinged"), ("casement", "casement1", "casement3",
+                               "casement4", "fixed_hinged", "wide_centre",
+                               "casement_top", "french_bars")),
+               (N_("Others that open"), ("sash", "sash_bars", "awning",
+                                         "pivot")),
+               (N_("Fixed"), ("fixed", "fixed_bars", "industrial", "shop")),
+               (N_("Shapes"), ("round_arch", "seg_arch", "gothic", "gable",
+                               "bulls_eye", "oval", "triangle", "trapezoid",
+                               "arch_casement"))),
     "wall": ((N_("Masonry"), ("w15", "w20")),
              (N_("Partitions"), ("w10",)),
              (N_("Glass"), ("curtain",)),
@@ -63,6 +88,12 @@ CATS = {
                 (N_("Open (cobogó)"), ("square", "diamond", "lattice",
                                        "vslats", "hslats")),
                 (N_("Security"), ("bars",))),
+    "column": ((N_("Plain"), ("rect", "round")),
+               (N_("Round orders"), ("round_tuscan", "round_doric",
+                                     "round_attic", "round_empire",
+                                     "round_pedestal")),
+               (N_("Square orders"), ("sq_tuscan", "sq_doric", "sq_attic",
+                                      "sq_deco", "sq_pedestal"))),
     "profile": ((N_("Baseboards"), ("base_flat", "base_mould")),
                 (N_("Crowns"), ("crown_cove", "crown_ogee")),
                 (N_("Wall & façade"), ("chair_rail", "cornice", "band"))),
@@ -71,6 +102,11 @@ CATS = {
              (N_("Fences"), ("post",)),
              (N_("From the model"), ("mine",))),
 }
+try:                          # the big library's families (the Lite has none)
+    from . import mouldings as _MOULD
+    CATS["profile"] = _MOULD.categories(CATS["profile"])
+except ImportError:
+    pass
 
 
 def ukey(tid: str) -> str:
@@ -120,6 +156,14 @@ def resolve(saved: dict | None, ready, yours) -> tuple[list, list]:
     if not favs and allk:
         favs = allk[:1]                 # never an empty strip
     return favs, new
+
+
+def first_strip(element: str, favs) -> list:
+    """The strip before anything is kept: windows and doors have too many
+    models for it — the main 8, «More» the ninth (his call, 04/11/2026);
+    the rest are a click away, in the window."""
+    main = DEFAULTS.get(element)
+    return [k for k in favs if k in main] if main else list(favs)
 
 
 def kept(favs, ready, yours, saved: dict | None = None,

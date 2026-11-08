@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ROOM SEPARATORS — a line that splits two rooms with no wall between
 them (an open living room and kitchen), as Revit's / ArchiCAD's (his go
 to ``PLANO_CAMADAS_LAJE.md``, D5, 2026-10-23).

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Structure › Edit slabs — a drawn slab's outline with the mouse (his ask,
 2026-10-12, before recording: the floors' corners and SIDES, as the plot's
 and the walls' are edited).

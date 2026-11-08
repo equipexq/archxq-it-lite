@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The other ArchXQ pieces, each built ONCE and placed by compat.place:
 
 - SideStrip (left): how to draw the picked element (its methods).

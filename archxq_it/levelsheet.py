@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The LEVEL'S GUIDE SHEET (PLANO_PAREDE_3D.md part 2B — his idea 31/10,
 from ArchXQ for Blender): a see-through plate at a level's floor with a
 1 m grid (every 5th line stronger), switched per level by the grid icon of

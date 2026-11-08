@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """«About ArchXQ IT» — what opens from the hub's globe (his idea,
 2026-10-04; before, the globe went straight to the site). A small popup
 under the button: the edition and the version (the build writes it —

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A PLAN SHEET, worked out on paper — the target is the reference sheet
 approved on 2026-10-22 (MAQUETAS\\documentacao_planta_referencia_v2.html):
 NBR 6492 / 8402 / 10068.
@@ -201,12 +203,16 @@ def _leaves_key(o: dict) -> str:
     fixed middle one, are not the same window (2026-10-31) — one leaf
     hinged left or right is (the same window, turned)."""
     from . import structure as S
+    # (a top light, bars, a leaf's width: another window, 04/11/2026)
+    extra = "".join(f"|{k}{o[k]}" for k in ("top_h", "bars_x", "bars_z",
+                                            "lw1", "lw2", "lw3", "lw4",
+                                            "lw5", "lw6") if o.get(k))
     if o["kind"] != "window" or o.get("op") not in S.WIN_KINDS:
-        return ""
+        return extra
     k = S.window_leaves(o)
     if o.get("op") == "casement" and k > 1:
-        return S.casement_roles(o)
-    return str(k)
+        return S.casement_roles(o) + extra
+    return str(k) + extra
 
 
 def _shape_key(o: dict) -> str:
@@ -308,9 +314,15 @@ def framing_plan(doc: dict, lid: str) -> list:
                 h = min(span, 3.0) / 2 * 0.8
                 out.append(("arrow", (c.x - v[0] * h, c.y - v[1] * h),
                             (c.x + v[0] * h, c.y + v[1] * h)))
-                out.append(("text", (c.x, c.y), _s(
-                    "Joists {w}×{d} @ {s}", w=f"{fr['w'] * 100:.0f}",
-                    d=f"{depth * 100:.0f}", s=f"{fr['s'] * 100:g}")))
+                if DS.imperial():
+                    sizes = {"w": DS.small(fr["w"]), "d": DS.small(depth),
+                             "s": DS.small(fr["s"])}
+                else:
+                    sizes = {"w": f"{fr['w'] * 100:.0f}",
+                             "d": f"{depth * 100:.0f}",
+                             "s": f"{fr['s'] * 100:g}"}
+                out.append(("text", (c.x, c.y),
+                            _s("Joists {w}×{d} @ {s}", **sizes)))
     return out
 
 
@@ -352,7 +364,7 @@ def choose(ext_w: float, ext_h: float, style: dict, paper="auto",
     section's room round it is not a plan's)."""
     sh = style["sheet"]
     papers = [p for p in sh["papers"] if p in PAPERS_MM]
-    scales = sorted(int(s) for s in sh["scales"])
+    scales = DS.scales(style)
     if paper != "auto" and scale != "auto":
         return paper, int(scale), fits(ext_w, ext_h, paper, int(scale), style)
     if paper != "auto":
@@ -360,7 +372,7 @@ def choose(ext_w: float, ext_h: float, style: dict, paper="auto",
             if fits(ext_w, ext_h, paper, n, style):
                 return paper, n, True
         return paper, scales[-1], False
-    want = int(scale) if scale != "auto" else int(sh["prefer_scale"])
+    want = int(scale) if scale != "auto" else DS.prefer_scale(style)
     for p in papers:
         if fits(ext_w, ext_h, p, want, style):
             return p, want, True
@@ -423,7 +435,11 @@ class Pieces:
 
 
 def level_text(z: float, style: dict) -> str:
-    """«±0,00», «+3,20», «−3,00» — a level from the ground floor."""
+    """«±0,00», «+3,20», «−3,00» — a level from the ground floor (feet /
+    inches: «±0'-0"», «+10'6"», «−9'10"»)."""
+    if DS.imperial():
+        return DS.ZERO_IN if abs(z) < 0.005 else \
+            ("+" if z > 0 else "−") + DS.length(abs(z), style)
     return "±" + DS.num(0.0, style) if abs(z) < 0.005 else \
         ("+" if z > 0 else "−") + DS.num(abs(z), style)
 
@@ -537,7 +553,7 @@ def title_block(pc: Pieces, doc: dict, L: dict, sheet: dict, n: int,
         yy += 9.0
     pc.line("tb:rule:cells", (sx0, yy), (sx1, yy), 0.18)
     cw = (sx1 - sx0) / 4
-    cells = [("SCALE", f"1:{n}" if n else "—"), ("DATE", date),
+    cells = [("SCALE", DS.scale_text(n) if n else "—"), ("DATE", date),
              ("REVISION", "R00"),
              ("SHEET", f"{sheet['number']} · {index:02d}/{total:02d}")]
     for i, (key, val) in enumerate(cells):
@@ -624,6 +640,13 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             for j, (a, c) in enumerate(got["lines"]):
                 line(f"frame:{w['id']}:l{j}", P(a), P(c), "symbol")
 
+    # --- a layered wall's layers where it is cut, with their hatches
+    from . import wallsheet as WS
+    if WS.drawn_at(style, n):
+        WS.paint(pc, WS.plan_parts(doc, lid, walls, openings, P, z0,
+                                   info[lid]["under"], z0 + cut,
+                                   n <= FR.SYMBOL_SCALE))
+
     # --- rooms: fill, name, area, level ------------------------------------------
     rooms = spaces.of_level(doc, lid) if show.get("rooms", True) else []
     lvl_txt = level_text(z0 - ground, style)
@@ -643,7 +666,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
         text(f"room:{rid}:name", px, py - tr["mm"] * 1.25, r["name"], "room",
              "center", follow=True)
         text(f"room:{rid}:area", px, py + 0.4,
-             f"A = {DS.num(r['area'], style)} m²", "area", "center",
+             f"A = {DS.area(r['area'], style)}", "area", "center",
              follow=True)
         if show.get("room_level", True) and r["area"] >= 4.0:
             mx = px - _tw(r["name"], tr["mm"]) / 2 - 3.0
@@ -791,7 +814,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
         i = counter[(s, row)] = counter.get((s, row), -1) + 1
         pa, pb = P(dd["a"]), P(dd["b"])
         L_ = math.dist(pa, pb)
-        label = DS.num(math.dist(dd["a"], dd["b"]), style)
+        label = DS.length(math.dist(dd["a"], dd["b"]), style)
         items.append({"kind": "dim", "key": f"dim:{s}:{row}:{i}",
                       "a": [dd["a"][0], dd["a"][1], z0 + cut],
                       "b": [dd["b"][0], dd["b"][1], z0 + cut],
@@ -802,7 +825,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     if show.get("dims_in", "across") != "none":
         for i, dd in enumerate(inside_dims(U, rooms)):
             pa, pb = P(dd["a"]), P(dd["b"])
-            label = DS.num(math.dist(dd["a"], dd["b"]), style)
+            label = DS.length(math.dist(dd["a"], dd["b"]), style)
             items.append({"kind": "dim", "key": f"dim:in:{dd['axis']}:{i}",
                           "a": [dd["a"][0], dd["a"][1], z0 + cut],
                           "b": [dd["b"][0], dd["b"][1], z0 + cut],
@@ -815,9 +838,9 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     # --- the drawing's title and the scale bar ------------------------------------
     W_ = DS.words(style)
     net = sum(r["area"] for r in rooms)
-    sub = f"{W_['scale']} 1:{n}   ·   {W_['level']} {lvl_txt}"
+    sub = f"{W_['scale']} {DS.scale_text(n)}   ·   {W_['level']} {lvl_txt}"
     if rooms:
-        sub += f"   ·   {W_['net']} {DS.num(net, style)} m²"
+        sub += f"   ·   {W_['net']} {DS.area(net, style)}"
     title_strip(pc, L, sheet, index, n, sub)
 
     # --- the side column ----------------------------------------------------------
@@ -846,6 +869,8 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                      W_["uses"].get(use, use), "table")
                 y += 6.0
         y += 3.0
+        y = WS.legend(pc, doc, sheet["levels"], sx0 + 6.0, y,
+                      sx1 - sx0 - 12.0)
     cy0 = sy1 - TITLE_BLOCK_MM
     if show.get("schedule", True) and types:
         text("sched:head", sx0 + 6.0, y, W_["schedule"], "heading")
@@ -860,9 +885,9 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             desc = (W_["door"] if t["kind"] == "door" else W_["window"]) + \
                 (" " + W_.get("ops", {}).get(t["op"], t["op"])
                  if t["op"] else "")
-            vals = (t["tag"], f"{DS.num(t['w'], style)} × "
-                    f"{DS.num(t['h'], style)}",
-                    DS.num(t["sill"], style) if t["sill"] > 0.005 else "—",
+            vals = (t["tag"], f"{DS.length(t['w'], style)} × "
+                    f"{DS.length(t['h'], style)}",
+                    DS.length(t["sill"], style) if t["sill"] > 0.005 else "—",
                     str(t["n"]), desc)
             for c, v, h in zip(cols, vals, ("type", "size", "sill", "qty",
                                             "desc")):
@@ -880,7 +905,8 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     return {"paper": paper, "scale": n, "fits": ok, "page": L["page"],
             "layout": L, "view": view, "items": items, "tags": tags,
             "types": types, "rooms": rooms, "boxes": boxes,
-            "level_text": lvl_txt}
+            "level_text": lvl_txt,
+            "extent": (*P((X0, Y1)), *P((X1, Y0)))}
 
 
 def _hit(a, b) -> bool:

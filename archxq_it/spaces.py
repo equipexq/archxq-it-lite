@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ ROOMS — found from the walls, named by the architect.
 
 A room is a space ENCLOSED by walls: a hole in the union of a level's

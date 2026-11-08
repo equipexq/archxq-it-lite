@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """L-SHAPED pitched roofs — hip and gable (his go 2026-10-16: Badis needs
 one for his building permit; PLANO_TELHADO_L.md).
 

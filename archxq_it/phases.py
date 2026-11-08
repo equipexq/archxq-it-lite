@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ phase model — pure data, no Qt.
 
 The workflow is a path of phases shown all at once on top — a guide, not
@@ -56,7 +58,10 @@ MATERIALS = ("Concrete", "Brick", "Block", "Wood", "Steel")
 ELEMENTS: dict[str, Element] = {e.key: e for e in (
     # -- Project
     # (edited in the Project dialog — the panel shows a summary)
-    _e("project_settings", "Project settings", ("Edit project…",)),
+    _e("project_settings", "Edit project", ("Edit project…",)),
+    # (the Project button's menu only — his call, 07/11/2026: a first-time
+    # user looks for it there; with a project already, a new tab)
+    _e("new_project", "New project", ("New project…",)),
     _e("levels", "Levels", ("Add floor above", "Add basement",
                             "Edit levels…")),
     # -- Terrain: the submenu says what, the left strip how
@@ -165,6 +170,13 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
 #: ``order()``, no ✔, picking one keeps the phase you are on.
 TOOLS = Phase("tools", "Tools", "Procedures that make things along a path.",
               ("along",))
+
+#: what a phase button's hover menu lists, when not its elements (his call,
+#: 07/11/2026): Project offers New / Edit project — the levels live in the
+#: levels strip (N) and each level's window («levels» stays an element: its
+#: help and its manual page)
+MENU: dict[str, tuple[str, ...]] = {"project": ("new_project",
+                                                "project_settings")}
 
 PHASES: dict[str, Phase] = {p.key: p for p in (
     Phase("project", "Project",

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The terrain's geometry, worked out from the data — pure, no Qt.
 
 The ground is the PLOT (its outline, corner heights, fold lines) with the
@@ -202,6 +204,123 @@ def reshape(dig: dict, doc: dict, corners) -> dict:
     return new
 
 
+ABOVE_GROUND = ("Its floor is not below the ground, so no earth is taken "
+                "out. Choose a lower level or a depth in its window.")
+
+
+def above_ground(dig: dict, doc: dict) -> bool:
+    """A cut that digs nothing: «Under Level 1» with the ground floor raised
+    above the ground (support #93: 0 m³, and nothing said)."""
+    plot = doc.get("plot")
+    return bool(plot) and not is_fill(dig) and all(
+        z >= ground_at(plot, q) - 1e-3
+        for q, z in zip(dig["corners"], dig_bottoms(dig, doc)))
+
+
+INSIDE_NO_DEEPER = ("It lies inside «{other}» and goes no deeper, so it "
+                    "changes nothing. Double-click it and choose a lower "
+                    "bottom (e.g. «Under» a deeper basement).")
+
+
+def dig_levels(dig: dict, doc: dict) -> set:
+    """The levels an excavation belongs to — the level is sovereign (his
+    rule, 07/11/2026, PLANO_ESCAVACAO_NIVEL.md): the basements it holds
+    (their floor at or above its bottom; «Under Basement 2» → Basements 1
+    and 2), or the ground floor when it holds none («Under Level 1», a
+    house's trenches). Read from the bottom it has: nothing new is stored.
+    A fill is the Terrain's: no level."""
+    if is_fill(dig):
+        return set()
+    levels = doc.get("levels") or []
+    if not levels:
+        return set()
+    from . import model
+    ground = (doc.get("project") or {}).get("ground_level", 0.0)
+    try:
+        elev = model.elevations(levels, ground)
+        bottom = min(dig_bottoms(dig, doc))
+    except Exception:  # noqa: BLE001 — no bottom: the ground floor's
+        elev, bottom = None, None
+    b = dig.get("bottom") or {}
+    named = b.get("level") if b.get("mode") == "level" else None
+    out = set()
+    if elev is not None:
+        out = {lv["id"] for i, lv in enumerate(levels)
+               if lv.get("kind") == "basement"
+               and elev[i] >= bottom - 0.01}
+    if named and any(lv["id"] == named for lv in levels):
+        out.add(named)
+    if not out:
+        gid = next((lv["id"] for lv in levels if lv.get("kind") == "ground"),
+                   None)
+        if gid:
+            out.add(gid)
+    return out
+
+
+def inside_no_deeper(dig: dict, doc: dict) -> str | None:
+    """The name of an excavation this cut lies inside and goes no deeper
+    than — it digs nothing new (his test, 07/11/2026: a second pit drawn
+    the same size for «Basement 2» kept the first one's bottom). None when
+    it adds something."""
+    d = container(dig, doc)
+    return (d.get("name") or "another excavation") if d else None
+
+
+#: a pit drawn inside an excavation goes this much deeper (an elevator
+#: pit, a sump — his call, 07/11/2026: never an excavation of 0 m³)
+PIT_DEEPER = 1.0
+
+
+def deeper_bottom(dig: dict, doc: dict, by: float = PIT_DEEPER):
+    """``dig``'s bottom moved to ``by`` under the excavation it lies in,
+    in its own mode (a level's offset follows the level) — None when it
+    lies in none."""
+    d = container(dig, doc)
+    if d is None:
+        return None
+    target = min(dig_bottoms(d, doc)) - by
+    now = min(dig_bottoms(dig, doc))
+    b = dict(dig.get("bottom") or {})
+    mode = b.get("mode", "elev")
+    if mode == "level":
+        b["offset"] = round(float(b.get("offset", BELOW_FLOOR))
+                            + (target - now), 4)
+    elif mode == "depth":
+        b["d"] = round(float(b.get("d", DEFAULT_DEPTH)) + (now - target), 4)
+    else:
+        b = {"mode": "elev", "z": round(target, 4)}
+    return b
+
+
+def container(dig: dict, doc: dict) -> dict | None:
+    """The excavation this cut lies inside and goes no deeper than, or
+    None."""
+    if is_fill(dig):
+        return None
+    try:
+        from shapely.geometry import Polygon
+        mine = Polygon(dig["corners"]).buffer(-0.01, join_style=2)
+        low = min(dig_bottoms(dig, doc))
+    except Exception:  # noqa: BLE001 — no geometry: say nothing
+        return None
+    if mine.is_empty:
+        return None
+    for d in opened(doc):
+        if d["id"] == dig["id"] or is_fill(d):
+            continue
+        try:
+            other = Polygon(d["corners"])
+            if not other.is_valid:
+                other = other.buffer(0)
+            if mine.within(other) and \
+                    low >= max(dig_bottoms(d, doc)) - 1e-3:
+                return d
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def default_bottom(doc: dict) -> dict:
     """A new pit's bottom: 3 m under the ground (his default)."""
     return {"mode": "depth", "d": DEFAULT_DEPTH}
@@ -216,23 +335,40 @@ def why_not_dig(doc: dict, corners, ignore: str | None = None) -> str | None:
     plot = doc.get("plot")
     if not plot:
         return "Draw the plot first"
-    if not plotgeo.within(corners, plot["corners"]):
+    if not plotgeo.within(snug(doc, corners), plot["corners"]):
         return "The excavation has to stay inside the plot"
     return None
 
 
 def snug(doc: dict, corners, gap: float = 0.02, reach: float = 0.05):
-    """An outline drawn onto the plot's sides (snapped to its corner, its
-    side, a guide on it — a basement dug to the boundary, his case
-    2026-10-05) has its corners nudged ``gap`` inside, the rim the ground
-    keeps (``plotgeo.within``). Corners more than ``reach`` outside are
-    left: that one is a real mistake, and is said."""
+    """The outline the GROUND is cut by. An excavation on the plot's sides
+    (a basement dug to the boundary, his case 2026-10-05) keeps the
+    measures it was given in the data; only its geometry has its corners
+    nudged ``gap`` inside, the rim the ground keeps (``plotgeo.within``).
+    Corners more than ``reach`` outside are left: that one is a real
+    mistake, and is said."""
     plot = doc.get("plot")
     if not plot or len(corners) < 3:
         return corners
-    outer = plot["corners"]
-    if plotgeo.within(corners, outer):
+    if plotgeo.within(corners, plot["corners"]):
         return corners
+    out = _nudged(plot["corners"], corners, gap, reach)
+    return out if plotgeo.within(out, plot["corners"]) else corners
+
+
+def on_boundary(doc: dict, corners, reach: float = 0.05):
+    """A freshly drawn outline to keep: a corner a hair past the plot's
+    side comes back ONTO it, every other stays exactly as drawn or typed
+    (support #93: 8.11 m typed from the boundary came out 8.09 m)."""
+    plot = doc.get("plot")
+    if not plot or len(corners) < 3:
+        return corners
+    return _nudged(plot["corners"], corners, 0.0, reach)
+
+
+def _nudged(outer, corners, gap: float, reach: float) -> list:
+    """The corners at least ``gap`` inside ``outer``'s sides; those more
+    than ``reach`` past a side stay where they are."""
     n = len(outer)
     area2 = sum(outer[i][0] * outer[(i + 1) % n][1]
                 - outer[(i + 1) % n][0] * outer[i][1] for i in range(n))
@@ -259,7 +395,7 @@ def snug(doc: dict, corners, gap: float = 0.02, reach: float = 0.05):
             if not moved:
                 break
         out.append([round(q[0], 4), round(q[1], 4)])
-    return out if plotgeo.within(out, outer) else corners
+    return out
 
 
 def top_of(dig: dict, doc: dict):
@@ -276,7 +412,13 @@ def opened(doc: dict) -> list[dict]:
     if not plot:
         return []
     return [d for d in doc.get("digs") or [] if len(d["corners"]) >= 3
-            and plotgeo.within(top_of(d, doc), plot["corners"])]
+            and plotgeo.within(top_of(_cut_by(d, doc), doc), plot["corners"])]
+
+
+def _cut_by(dig: dict, doc: dict) -> dict:
+    """The excavation as its geometry is made: see ``snug``."""
+    corners = snug(doc, dig["corners"])
+    return dig if corners is dig["corners"] else dict(dig, corners=corners)
 
 
 # ---- the ground at a point -----------------------------------------------------------
@@ -386,7 +528,7 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
     plot = doc["plot"]
     pts, hs = plot["corners"], plot["heights"]
     thick = float(plot.get("thickness", 0.0))
-    digs = opened(doc)
+    digs = [_cut_by(d, doc) for d in opened(doc)]
     faces, soft = [], set()
     tin = tin_of(plot)
     flat = tin["flat"]

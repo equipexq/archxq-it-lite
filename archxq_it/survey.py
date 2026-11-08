@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Survey points from a file — pure, no Qt.
 
 What surveyors hand over: a text file, one point per line, the columns

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A wall EXPLODED with the host's «Explode Group» — its geometry merged
 into the loose mesh, to be shaped by hand (a YouTube comment, 2026-10-27:
 «explode that element into simple regular geometry … please preserve that

@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PITCHED ROOFS ON ANY PLAN — hip and gable over a T, a U, an oblique or
 irregular outline (lot 0.12.0, 2026-10-18; the L stays roof_l.py's).
 

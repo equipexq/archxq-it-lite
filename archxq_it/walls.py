@@ -1,3 +1,5 @@
+# ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ArchXQ walls — the ENGINE. Pure: no IngeTrazo, no Qt.
 
 It takes the walls of one level and gives back each wall's PLAN, already
