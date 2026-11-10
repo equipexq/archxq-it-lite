@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
@@ -151,6 +151,7 @@ class RadialMenu(QWidget):
         q.clicked.connect(lambda: show_help("radial", q))
         self.help = q
         self.at = None
+        self.on = None           # the view it opened on
         self.hide()
 
     def paintEvent(self, _e) -> None:
@@ -160,14 +161,24 @@ class RadialMenu(QWidget):
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(self.centre, R, R)          # (its «?» marks the click)
 
-    def popup(self, x: float, y: float) -> None:
-        """Round the point clicked (kept inside the view)."""
+    def popup(self, x: float, y: float, view=None, grid=None) -> None:
+        """Round the point clicked (kept inside the view). On another of the
+        host's views it goes on their grid, which never leaves with a view."""
+        if view is None or grid is None:
+            view = self.viewport
+        host = self.viewport if view is self.viewport else grid
+        if self.parentWidget() is not host:
+            self.setParent(host)
         w, h = self.width(), self.height()
-        vw, vh = self.viewport.width(), self.viewport.height()
+        vw, vh = view.width(), view.height()
         left = int(min(max(x - w / 2, 0), max(vw - w, 0)))
         top = int(min(max(y - h / 2, 0), max(vh - h, 0)))
+        if host is not view:
+            corner = view.mapTo(host, QPoint(0, 0))
+            left, top = left + corner.x(), top + corner.y()
         self.move(left, top)
         self.at = (x, y)
+        self.on = view
         self.show()
         self.raise_()
 
@@ -176,10 +187,12 @@ class RadialMenu(QWidget):
             self.hide()
         self.at = None
 
-    def far(self, x: float, y: float) -> bool:
-        """The pointer well away from it (it goes)."""
+    def far(self, x: float, y: float, view=None) -> bool:
+        """The pointer well away from it (it goes), or on another view."""
         if self.at is None:
             return False
+        if view is not None and self.on is not None and view is not self.on:
+            return True
         return math.dist((x, y), self.at) > R + 110
 
     def _act(self, key: str) -> None:

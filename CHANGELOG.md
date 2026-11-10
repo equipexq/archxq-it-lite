@@ -1,5 +1,9 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.12.1
+
+**Compatibility with the multiple views of IngeTrazo 0.6.1.** With two to four views in a tab, the views now sit inside and ArchXQ around them.
+
 ## 0.12.0
 
 **A project starts again, and rows of columns are drawn point by point, like a wall.** Please update: in the last versions the Lite could not start a new project.

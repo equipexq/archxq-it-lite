@@ -569,6 +569,51 @@ def title_block(pc: Pieces, doc: dict, L: dict, sheet: dict, n: int,
             f"R00   {date}   {W_['rev_first']}", "table")
 
 
+def digs_here(doc: dict, lid: str) -> list[dict]:
+    """The excavations (dug, not fills) this level stands in — the same
+    levels whose plan on screen shows them (``terrain.dig_levels``)."""
+    from . import terrain as T
+    return [d for d in T.opened(doc)
+            if not T.is_fill(d) and lid in T.dig_levels(d, doc)]
+
+
+def dashes(a, b, on: float, off: float) -> list:
+    """The strokes of a dashed line from ``a`` to ``b``, in mm on paper (the
+    composer's lines are solid)."""
+    length = math.dist(a, b)
+    if length < 1e-6:
+        return []
+    ux, uy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+    out, t = [], 0.0
+    while t < length:
+        e = min(t + on, length)
+        out.append(((a[0] + ux * t, a[1] + uy * t),
+                    (a[0] + ux * e, a[1] + uy * e)))
+        t = e + off
+    return out
+
+
+def clipped(a, b, box) -> tuple | None:
+    """The part of the segment ``a``–``b`` inside ``box`` (x0, y0, x1, y1),
+    or None."""
+    t0, t1 = 0.0, 1.0
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    for p, q in ((-dx, a[0] - box[0]), (dx, box[2] - a[0]),
+                 (-dy, a[1] - box[1]), (dy, box[3] - a[1])):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return None
+    return ((a[0] + t0 * dx, a[1] + t0 * dy), (a[0] + t1 * dx, a[1] + t1 * dy))
+
+
 def make(doc: dict, elevations, sheet: dict, style: dict,
          today: datetime.date | None = None, total: int = 1,
          index: int = 1) -> dict:
@@ -577,6 +622,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     "rooms", "boxes"}."""
     from . import openingtools as OT
     from . import spaces
+    from . import terrain as T
     Wd = DS.words(style)
     show = style["show"]
     lid = sheet["levels"][0]
@@ -586,6 +632,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     openings = [o for o in doc.get("openings") or [] if o.get("wall") in wall_ids]
     U = _union(walls)
     X0, Y0, X1, Y1 = U.bounds
+    digs = digs_here(doc, lid)
     CX, CY = (X0 + X1) / 2, (Y0 + Y1) / 2
     paper, n, ok = choose(X1 - X0, Y1 - Y0, style,
                           sheet.get("paper", "auto") or "auto",
@@ -684,18 +731,20 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
         if sp.get("level") != lid:
             continue
         for j, (a, b) in enumerate(zip(sp["pts"], sp["pts"][1:])):
-            pa, pb = P(a), P(b)
-            L_ = math.dist(pa, pb)
-            if L_ < 1e-6:
-                continue
-            ux, uy = (pb[0] - pa[0]) / L_, (pb[1] - pa[1]) / L_
-            t, i = 0.0, 0
-            while t < L_:              # short strokes (the composer's lines
-                e = min(t + 2.0, L_)   # are solid): 2 mm, 1 mm apart
-                line(f"sep:{sp['id']}:{j}:{i}",
-                     (pa[0] + ux * t, pa[1] + uy * t),
-                     (pa[0] + ux * e, pa[1] + uy * e), "symbol", follow=True)
-                t, i = e + 1.0, i + 1
+            for i, (s0, s1) in enumerate(dashes(P(a), P(b), 2.0, 1.0)):
+                line(f"sep:{sp['id']}:{j}:{i}", s0, s1, "symbol", follow=True)
+
+    # --- the excavations this level stands in: their limit, dashed (below or
+    # beyond the cut). Not the terrain's faces: the sheet hides that layer.
+    # The walls keep setting the sheet's scale and place (a finished sheet,
+    # updated, stays where it was): what passes the drawing's area is cut
+    for d in digs:
+        ring = d["corners"] + d["corners"][:1]
+        for j, (a, b) in enumerate(zip(ring, ring[1:])):
+            for i, (s0, s1) in enumerate(dashes(P(a), P(b), 4.0, 1.5)):
+                kept = clipped(s0, s1, L["area"])
+                if kept:
+                    line(f"dig:{d['id']}:{j}:{i}", *kept, "symbol", follow=True)
 
     # --- the FLOOR FRAMING over it, at 1:50 or closer (PLANO_ESTRUTURA_LEVE_
     # FASE4 4c): the joists of the floor above, dashed (over the cut, as
@@ -868,6 +917,15 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                 text(f"legend:{use}:t", sx0 + 17.0, y + 0.4,
                      W_["uses"].get(use, use), "table")
                 y += 6.0
+        for i, z in enumerate(sorted({round(min(T.dig_bottoms(d, doc)), 3)
+                                      for d in digs})):
+            for j, (s0, s1) in enumerate(dashes((sx0 + 6.0, y + 2.0),
+                                                (sx0 + 14.0, y + 2.0),
+                                                2.4, 0.4)):
+                line(f"legend:dig:{i}:{j}", s0, s1, "symbol")
+            text(f"legend:dig:{i}:t", sx0 + 17.0, y + 0.4,
+                 f"{W_['excavation']} {level_text(z - ground, style)}", "table")
+            y += 6.0
         y += 3.0
         y = WS.legend(pc, doc, sheet["levels"], sx0 + 6.0, y,
                       sx1 - sx0 - 12.0)

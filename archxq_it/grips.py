@@ -2200,11 +2200,33 @@ class GripControl(QObject):
         self.drag = None             # dict while a grip moves
         self.eat_release = False
         self._typed = ""
+        self._v = None               # another view the mouse is in / drawn on
 
     # -- helpers ------------------------------------------------------------------------
+    def _on(self):
+        """The view at work: the main one, unless the host shows several
+        and the mouse (or the drawing) is on another."""
+        v = self._v
+        if v is None:
+            return self.owner.viewport
+        try:
+            import shiboken6
+            if shiboken6.isValid(v) and v.scene is self.owner.viewport.scene:
+                return v
+        except Exception:  # noqa: BLE001 — not a view any more: the main one
+            pass
+        self._v = None
+        return self.owner.viewport
+
+    def _refresh(self) -> None:
+        """Every view showing the grips is drawn again."""
+        each = getattr(self.owner, "each_view", None)
+        for v in (each() if each else (self.owner.viewport,)):
+            v.update()
+
     def _px(self, x, y, z):
         from . import compat
-        return compat.to_pixel(self.owner.viewport, x, y, z)
+        return compat.to_pixel(self._on(), x, y, z)
 
     def _targets(self):
         try:
@@ -2286,7 +2308,7 @@ class GripControl(QObject):
         ring = getattr(self.owner, "radial", None)
         if ring is not None and ring.isVisible():
             ring.dismiss()
-        self.owner.viewport.setFocus()
+        self._on().setFocus()
 
     def _follow_point(self, x, y, fine: bool) -> None:
         """A corner free on its plane: onto a point (another corner, a
@@ -2379,7 +2401,7 @@ class GripControl(QObject):
         else:
             d["why"], d["v"], d["doc"] = None, v, doc
             self.owner.grip_live(doc)
-        self.owner.viewport.update()
+        self._refresh()
 
     def _limit(self, v: float):
         """(value, doc) — the furthest good value from the last good one
@@ -2418,19 +2440,22 @@ class GripControl(QObject):
                                   label(g, d["v"]))
         else:
             self.owner.grip_back()
-        self.owner.viewport.update()
+        self._refresh()
 
     def cancel(self) -> None:
         if self.drag is not None:
             self.drag = None
             self._typed = ""
             self.owner.grip_back()
-            self.owner.viewport.update()
+            self._refresh()
 
     # -- events -----------------------------------------------------------------------
     def eventFilter(self, obj, event) -> bool:  # noqa: C901 — one switch
         t = event.type()
         try:
+            if t in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                     QEvent.MouseMove, QEvent.MouseButtonDblClick):
+                self._v = None if obj is self.owner.viewport else obj
             if t == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 p = event.position()
                 if self.drag is not None:          # carried: this click drops it
@@ -2478,7 +2503,7 @@ class GripControl(QObject):
                 k = g.key if g else None
                 if k != self.hot:
                     self.hot = k
-                    self.owner.viewport.update()
+                    self._refresh()
                 return False
             if t == QEvent.MouseButtonDblClick and self.drag is not None:
                 self.cancel()        # a double click on a grip: nothing
@@ -2493,7 +2518,7 @@ class GripControl(QObject):
                 # Delete with the pointer on a grip: that grip's own
                 # (a guard's side → a gap) — not the whole element
                 from PySide6.QtGui import QCursor
-                p = self.owner.viewport.mapFromGlobal(QCursor.pos())
+                p = self._on().mapFromGlobal(QCursor.pos())
                 tg, g = self._grip_at(p.x(), p.y())   # still on it
                 fn = getattr(self.owner, "grip_delete", None)
                 if tg and g is not None and g.key == self.hot \
@@ -2530,7 +2555,7 @@ class GripControl(QObject):
                 self._set((0.0, 0.0, 0.0))
             elif d.get("mouse"):
                 self._follow_point(*d["mouse"], d.get("fine", False))
-            self.owner.viewport.update()
+            self._refresh()
             return True
         if k in (Qt.Key_Return, Qt.Key_Enter):
             from .library import parse_measure
@@ -2578,14 +2603,14 @@ class GripControl(QObject):
             return True
         if k == Qt.Key_Backspace:
             self._typed = self._typed[:-1]
-            self.owner.viewport.update()
+            self._refresh()
             return True
         s = event.text()
         # digits, a unit (cm / mm / m), feet and inches (2'6 1/2")
         # (+: a move that way — «+0.10» — 2026-10-25)
         if s and (s.isdigit() or s in ".,+-/'\" " or s.lower() in "cmftin"):
             self._typed += s
-            self.owner.viewport.update()
+            self._refresh()
             return True
         return True                     # nothing else while a grip moves
 
@@ -2655,6 +2680,15 @@ class GripControl(QObject):
 
     # -- drawn over the view ------------------------------------------------------------
     def draw(self, viewport, painter) -> None:
+        """Over each view, by that view's own camera."""
+        was, self._v = self._v, (None if viewport is self.owner.viewport
+                                 else viewport)
+        try:
+            self._draw(viewport, painter)
+        finally:
+            self._v = was
+
+    def _draw(self, viewport, painter) -> None:
         from PySide6.QtCore import QRectF
         from PySide6.QtGui import QColor, QFont, QPen
         t = self._targets()

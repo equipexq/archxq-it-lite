@@ -345,7 +345,7 @@ class QuickHelp:
     def place(self) -> None:
         """Bottom-left of the 3D view, over the bottom bar."""
         from PySide6.QtCore import QPoint
-        vp = self.owner.viewport
+        vp = self.card.parentWidget() or self.owner.viewport
         bottom = vp.height() - 12
         for name in ("view_bar", "viewbar"):
             bar = getattr(self.owner, name, None)
@@ -357,7 +357,9 @@ class QuickHelp:
                         break
             except Exception:  # noqa: BLE001 — not a child of the view
                 continue
-        self.card.move(12, max(bottom - self.card.height(), 60))
+        # (several views: right of the column around them — viewframe.py)
+        self.card.move(12 + getattr(self.owner, "_frame_left", 0),
+                       max(bottom - self.card.height(), 60))
 
     def teardown(self) -> None:
         self.timer.stop()

@@ -303,6 +303,25 @@ def sheet_signature(doc: dict, sheet: dict) -> str:
     return hashlib.blake2b(raw.encode(), digest_size=10).hexdigest()
 
 
+def dig_signature(doc: dict, sheet: dict) -> str:
+    """The excavations a sheet draws — apart from ``sheet_signature``: a
+    finished sheet, made before they were drawn, stays up to date."""
+    if sheet.get("kind") == "board":
+        known = {v["id"]: v for v in views_of(doc, DS.resolve())}
+        parts = [dig_signature(doc, known[i])
+                 for i in sheet.get("members") or [] if i in known]
+    elif sheet.get("kind", "plan") == "plan":
+        from . import plansheet as PS
+        digs = {d["id"]: d for lid in sheet["levels"]
+                for d in PS.digs_here(doc, lid)}
+        parts = sorted(json.dumps(_r([d["corners"], d.get("bottom")]))
+                       for d in digs.values())
+    else:
+        parts = []
+    return hashlib.blake2b(json.dumps(parts).encode(),
+                           digest_size=10).hexdigest()
+
+
 def records(doc: dict) -> dict:
     """The sheets' stored records by id (``doc["docs"]["sheets"]``)."""
     return {r["id"]: r for r in (doc.get("docs") or {}).get("sheets") or []
@@ -315,7 +334,11 @@ def state(doc: dict, sheet: dict) -> str:
     rec = records(doc).get(sheet["id"])
     if not rec or not rec.get("sig"):
         return "none"
-    return "ok" if rec["sig"] == sheet_signature(doc, sheet) else "changed"
+    if rec["sig"] != sheet_signature(doc, sheet):
+        return "changed"
+    if "dig_sig" in rec and rec["dig_sig"] != dig_signature(doc, sheet):
+        return "changed"
+    return "ok"
 
 
 def style_sig(style: dict) -> str:

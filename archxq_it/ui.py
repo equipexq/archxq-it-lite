@@ -27,7 +27,7 @@ import math
 from PySide6.QtCore import QEvent, QObject, QRect, QSettings, Qt, QTimer
 from PySide6.QtWidgets import QDialog
 
-from . import compat, edition, foreignbars, model, paintlog
+from . import compat, edition, foreignbars, model, paintlog, viewframe
 from . import profiles as PF
 from .i18n import tr
 from .hub import Hub
@@ -303,20 +303,26 @@ class _SpacePan(QObject):
         self.viewport = viewport
         self.held = False
         self.last = None
+        self.on = None             # the view with the hand on it
 
     def _ours(self) -> bool:
         return compat.ours(getattr(self.viewport, "active_tool", None))
+
+    @staticmethod
+    def _hand_off(view) -> None:
+        try:
+            view.unsetCursor()
+            if hasattr(view, "_apply_nav_cursor"):
+                view._apply_nav_cursor()
+        except Exception:  # noqa: BLE001 — (a view gone with its layout)
+            pass
 
     def _stop(self) -> None:
         if self.held:
             self.held = False
             self.last = None
-            self.viewport.unsetCursor()
-            try:
-                if hasattr(self.viewport, "_apply_nav_cursor"):
-                    self.viewport._apply_nav_cursor()
-            except Exception:  # noqa: BLE001
-                pass
+            self._hand_off(self.on or self.viewport)
+            self.on = None
 
     def eventFilter(self, obj, event) -> bool:
         t = event.type()
@@ -335,6 +341,7 @@ class _SpacePan(QObject):
             if t == QEvent.KeyPress and not self.held:
                 self.held = True
                 self.last = None
+                self.on = self.viewport
                 self.viewport.setCursor(Qt.OpenHandCursor)
             return True
         if not self.held:
@@ -342,17 +349,21 @@ class _SpacePan(QObject):
         if t == QEvent.WindowDeactivate:   # (Alt+Tab with Space held)
             self._stop()
             return False
-        if obj is not self.viewport:
+        if not isinstance(obj, type(self.viewport)):   # (the window)
             return False
         if t == QEvent.MouseMove:
             p = event.position()
+            if obj is not self.on:         # the mouse went to another view
+                self._hand_off(self.on or self.viewport)
+                self.on = obj
+                self.last = None
+                obj.setCursor(Qt.OpenHandCursor)
             if self.last is not None:
                 dx, dy = p.x() - self.last.x(), p.y() - self.last.y()
                 if dx or dy:
                     try:
-                        self.viewport.camera.pan(dx, dy,
-                                                 self.viewport.height())
-                        self.viewport.update()
+                        obj.camera.pan(dx, dy, obj.height())
+                        obj.update()
                     except Exception:  # noqa: BLE001
                         pass
             self.last = p
@@ -635,10 +646,10 @@ class _RadialClick(QObject):
             if d and math.dist(d, (p.x(), p.y())) < 5 and o.active \
                     and compat.selecting(o.viewport):
                 x, y = p.x(), p.y()
-                QTimer.singleShot(80, lambda: o.radial_after_click(x, y))
+                QTimer.singleShot(80, lambda: o.radial_after_click(x, y, obj))
         elif t == QEvent.MouseMove and ring.isVisible():
             p = event.position()
-            if ring.far(p.x(), p.y()):
+            if ring.far(p.x(), p.y(), obj):
                 ring.dismiss()
         elif t == QEvent.KeyPress and event.key() == Qt.Key_Escape \
                 and ring.isVisible():
@@ -782,13 +793,14 @@ class _PlotDoubleClick(QObject):
                 and o.alive and o.active and compat.selecting(o.viewport)):
             doc = o.doc()
             p = event.position()
-            if o.picking_through():
+            if obj is o.viewport and o.picking_through():
                 # through: what the click picked (not the face in front)
                 sel = compat.selected_groups(o.viewport)
                 cands = [] if sel else o.pick_candidates(p.x(), p.y())
                 hit = sel[0] if sel else (cands[0] if cands else None)
             else:
-                hit = compat.group_at(o.viewport, p.x(), p.y())
+                # (the view double-clicked: several views, each its camera)
+                hit = compat.group_at(obj, p.x(), p.y())
             if hit is not None and compat.kind_of(hit) \
                     and compat.locked(o.viewport, hit):
                 o.locked_note()                     # IngeTrazo 0.6.0's lock
@@ -863,6 +875,15 @@ class ArchXQ:
         # follows the project tab in front (_follow_tab); each tab's own
         # session state (phase, level, plan view…) is kept apart
         self._home = app.viewport
+        # what ArchXQ's pieces are children of: that view, or — with several
+        # views — the host's grid, the views inside and ArchXQ around them
+        # (viewframe.py, 09/11/2026)
+        self._ui_parent = app.viewport
+        self._framed = False
+        self._framed_levels = False      # the levels strip open, framed
+        self._frame_left = 0             # the room at the left, framed
+        self._frame_busy = False
+        self._extras_of = None           # the grid whose extra views we watch
         self._tab_state: dict = {}
         _docs = _pro_module("docs")
         # the sheets' drawings from the WHOLE model (the host's fast path
@@ -1199,6 +1220,11 @@ class ArchXQ:
                                            placement, "right", BAR_CSS,
                                            new_line=False)
         self._show_piece(self.levels_tab, self.levels_tab_bar, False)
+        # a bar wider than the room: the wheel over it scrolls it
+        self._hub_scroll = viewframe.BarScroll(self.hub, self.viewport,
+                                               self.layout_floating)
+        self._viewbar_scroll = viewframe.BarScroll(self.viewbar, self.viewport,
+                                                   self.layout_floating)
         self._nkey = _LevelsKey(self)
         self.viewport.installEventFilter(self._nkey)
         # over ArchXQ's pieces the pointer is an arrow — not the drawing
@@ -1351,7 +1377,7 @@ class ArchXQ:
         if self.active:
             # (the Levels box: refresh never shows it — off and on again it
             # stayed away, found 2026-10-18)
-            self._show_piece(self.levels, self.levels_bar, self.levels_open)
+            self._show_piece(self.levels, self.levels_bar, self._levels_on())
             self.refresh()
         else:
             self._show_piece(self.plan_btn, self.plan_bar, False)
@@ -1363,6 +1389,7 @@ class ArchXQ:
             self._show_piece(self.present_btn, self.present_bar, False)
             self.hide_options()
             self._host_marks_sync()          # the host's marks back
+        self.layout_floating()               # (several views: the frame on/off)
         self.viewport.update()
 
     # ---- Present (his design, 2026-10-18) ------------------------------------------
@@ -1555,7 +1582,7 @@ class ArchXQ:
         self.present_btn.set_on(False)
         self._show_piece(self.hub, self.hub.bar, True)
         # (the Levels box is shown by its N switch only — refresh leaves it)
-        self._show_piece(self.levels, self.levels_bar, self.levels_open)
+        self._show_piece(self.levels, self.levels_bar, self._levels_on())
         if self._dock is not None:
             self._dock.setVisible(True)
             self._dock.raise_()
@@ -5505,7 +5532,7 @@ class ArchXQ:
         from . import prefs
         from . import structure as S
         vp = self.viewport
-        if not (self.alive and self.active and compat.selecting(vp)
+        if not (self.alive and self.active and self._selecting()
                 and prefs.get("grips")):
             return None
         if self._sec_picked and self._sec_on():   # a section line (plan)
@@ -12343,6 +12370,11 @@ class ArchXQ:
         if not self.active:
             self._menu_check("Levels strip\tN", self.levels_open)
             return                  # nothing of ArchXQ shows while it is off
+        if self._framed:            # several views: for now, not remembered
+            self._framed_levels = not self._framed_levels
+            self._show_piece(self.levels, self.levels_bar, self._framed_levels)
+            self.layout_floating()
+            return
         self.levels_open = not self.levels_open
         QSettings().setValue("archxq/levels_open",
                              "1" if self.levels_open else "0")
@@ -13638,9 +13670,9 @@ class ArchXQ:
         return True
 
     # ---- The radial menu (radial.py) -----------------------------------------------
-    def radial_after_click(self, x: float, y: float) -> None:
-        """After a plain click: the ring round it, when what is selected
-        is something the host's gestures move."""
+    def radial_after_click(self, x: float, y: float, view=None) -> None:
+        """After a plain click: the ring round it (on the view clicked),
+        when what is selected is something the host's gestures move."""
         from . import prefs
         from .radial import MOVABLE
         if not self.alive or not self.active \
@@ -13650,7 +13682,7 @@ class ArchXQ:
         sel = compat.selected_groups(self.viewport)
         kinds = {compat.kind_of(g) for g in sel}
         if sel and kinds <= MOVABLE:
-            self.radial.popup(x, y)
+            self.radial.popup(x, y, view, self._extras_of)
         else:
             self.radial.dismiss()
 
@@ -14039,7 +14071,87 @@ class ArchXQ:
         """Every ArchXQ widget that is a child of the 3D view."""
         return (self.hub, self.plan_btn, self.views, self.strip, self.elbox,
                 self.viewbar, self.present_btn, self.levels, self.levels_tab,
-                self.optbar, self.radial, self.quick.card)
+                self.optbar, self.radial, self.quick.card,
+                *self._hub_scroll.arrows(), *self._viewbar_scroll.arrows())
+
+    def _levels_on(self) -> bool:
+        """The levels strip open? With several views it starts folded in its
+        tab: a whole column for it would take the views' room."""
+        return self._framed_levels if self._framed else self.levels_open
+
+    def _move_pieces(self, host, framed: bool) -> None:
+        """ArchXQ's pieces onto ``host`` (the radial menu stays on the view:
+        it opens where the mouse is)."""
+        old = self._ui_parent
+        try:
+            if old is not None and old is not host and self._framed:
+                viewframe.set_margins(old, 0, 0, 0, 0)
+                old.removeEventFilter(self._watch)
+        except RuntimeError:     # (its project tab is gone)
+            pass
+        moving = [w for w in self._pieces() if w is not self.radial]
+        shown = {w: not w.isHidden() for w in moving}
+        self._frame_busy = True
+        try:
+            for w in moving:
+                w.setParent(host)
+                w.setVisible(shown[w])
+        finally:
+            self._frame_busy = False
+        self._ui_parent = host
+        self._framed = framed
+        self._frame_left = 0
+        if framed:
+            self._framed_levels = False
+            host.installEventFilter(self._watch)
+        if self.active:
+            self._show_piece(self.levels, self.levels_bar, self._levels_on())
+
+    def _sync_frame(self) -> None:
+        """On the view, or around the views: as the host shows them now."""
+        home = self._home
+        if home is None:
+            return
+        grid = viewframe.grid_of(home)
+        several = grid is not None and viewframe.several(grid)
+        if several and grid is not self._extras_of:
+            self._watch_extras(grid)
+        framed = several and self.active
+        host = grid if framed else home
+        if host is not self._ui_parent:
+            self._move_pieces(host, framed)
+
+    def _watch_extras(self, grid, on: bool = True) -> None:
+        """The other views get the keys, the double-click, Space's pan, the
+        radial menu and the grips too: the focus may be on any of them (Esc
+        did not end «Present» — found 09/11/2026). In the order of
+        ``_filters``: the grips last, so they see a press first."""
+        for v in viewframe.extras(grid, self._home):
+            for f in (self._present_esc, self._tool_esc, self._space_pan,
+                      self._nkey, self._keys, self._dbl, self._radial_watch,
+                      self._grips):
+                v.removeEventFilter(f)
+                if on:
+                    v.installEventFilter(f)
+        self._extras_of = grid if on else None
+
+    def _selecting(self) -> bool:
+        """The host's Select tool is out. With another view active the host
+        takes the tool off the main view while it paints it: then the views
+        that hold the tool say."""
+        if getattr(self.viewport, "active_tool", None) is not None:
+            return compat.selecting(self.viewport)
+        return any(compat.selecting(v) for v in self.each_view())
+
+    def each_view(self) -> list:
+        """The project's 3D views: the main one and the host's others."""
+        views = [self.viewport]
+        if self._extras_of is not None:
+            try:
+                views += viewframe.extras(self._extras_of, self._home)
+            except RuntimeError:     # (its project tab is gone)
+                pass
+        return views
 
     def _filters(self) -> tuple:
         """The key / mouse watchers on the 3D view, in the order installed
@@ -14070,6 +14182,8 @@ class ArchXQ:
         dragged, the previews; its session state is kept for its return."""
         if old is None:          # (parked as its tab closed: _shown kept)
             return
+        if self._ui_parent is not old:   # (several views: back on its view)
+            self._move_pieces(old, False)
         self._shown = {w: not w.isHidden() for w in self._pieces()}
         try:
             self._grips.cancel()
@@ -14095,6 +14209,8 @@ class ArchXQ:
             w.setVisible(shown.get(w, False))
             if shown.get(w):
                 w.raise_()
+        self._ui_parent = new
+        self._framed = False
         for f in self._filters():
             if old is not None:
                 old.removeEventFilter(f)
@@ -14160,6 +14276,8 @@ class ArchXQ:
                 for w in self._pieces():
                     w.hide()
                     w.setParent(self.window)
+                self._ui_parent = None
+                self._framed = False
                 self._home = None
                 QTimer.singleShot(0, self._on_doc_changed)
         except Exception:  # noqa: BLE001 — never in the host's way
@@ -14893,19 +15011,25 @@ class ArchXQ:
         if widget is getattr(self, "levels", None) and \
                 hasattr(self, "levels_tab"):
             self._show_piece(self.levels_tab, self.levels_tab_bar,
-                             self.active and not self.levels_open)
+                             self.active and (self._framed
+                                              or not self.levels_open))
 
     def layout_floating(self) -> None:
         """"viewport" placement: hub top-left, strip under it on the left,
         view bar centred at the bottom."""
-        if not self.alive or self.placement != "viewport":
+        if not self.alive or self.placement != "viewport" or self._frame_busy:
             return
-        vp = self.viewport
+        self._sync_frame()
+        # the view — or, with several views, the grid: the same placing on
+        # the whole area, and the views kept out of the bands (below)
+        vp = self._ui_parent or self.viewport
+        framed = self._framed
         # another extension's bar in this corner: under it, not over it
         hub_y = foreignbars.top_inset(
             vp, QRect(MARGIN, MARGIN, self.hub.width(), self.hub.row.height()),
             MARGIN, getattr(self, "_watch", None))
-        self.hub.move(MARGIN, hub_y)
+        self._hub_scroll.place(MARGIN, hub_y, vp.width() - 2 * MARGIN,
+                               self.hub.row.width(), self.hub.row.height())
         top_row = hub_y + self.hub.row.height() + MARGIN
         # the plan view switch on its own, then the drawing methods under it
         self.plan_btn.ensurePolished()
@@ -14929,14 +15053,17 @@ class ArchXQ:
             if self.strip.isVisible() else y - MARGIN
         self.elbox.move(MARGIN, below + 2 * MARGIN)
         self.viewbar.adjustSize()
-        self.viewbar.move(max(MARGIN, (vp.width() - self.viewbar.width()) // 2),
-                          vp.height() - self.viewbar.height() - MARGIN)
-        # «Present» on its own, left of the Show bar, its middle on the bar's
         self.present_btn.adjustSize()
+        lead = (self.present_btn.width() + 10
+                if not self.present_btn.isHidden() else 0)
+        bar_x = max(MARGIN + lead, (vp.width() - self.viewbar.width()) // 2)
+        bar_y = vp.height() - self.viewbar.height() - MARGIN
+        self._viewbar_scroll.place(bar_x, bar_y, vp.width() - bar_x - MARGIN,
+                                   self.viewbar.width(), self.viewbar.height())
+        # «Present» on its own, left of the Show bar, its middle on the bar's
         self.present_btn.move(
-            max(MARGIN, self.viewbar.x() - self.present_btn.width() - 10),
-            self.viewbar.y() + (self.viewbar.height()
-                                - self.present_btn.height()) // 2)
+            max(MARGIN, bar_x - self.present_btn.width() - 10),
+            bar_y + (self.viewbar.height() - self.present_btn.height()) // 2)
         self.present_btn.raise_()
         # options: under the phases row, beside the left column
         left = max(self.plan_btn.width() if self.plan_btn.isVisible() else 0,
@@ -14945,26 +15072,51 @@ class ArchXQ:
                    self.strip.width() if self.strip.isVisible() else 0,
                    self.elbox.width() if self.elbox.isVisible() else 0)
         x = MARGIN + (left + MARGIN if left else 0)
-        self.optbar.max_width = vp.width() - x - MARGIN   # rows past this
+        tab = getattr(self, "levels_tab", None)
+        if framed:
+            # around the views: the options in the row under the phases,
+            # right of the plan switch; the methods and elements under it
+            tab.adjustSize()
+            x = MARGIN + self.plan_btn.width() + MARGIN
+            if not self.views.isHidden():
+                x += self.views.width() + 4
+            self.optbar.max_width = vp.width() - x - tab.width() - 3 * MARGIN
+        else:
+            self.optbar.max_width = vp.width() - x - MARGIN   # rows past this
         self.optbar.fit()
         self.optbar.move(x, top_row)
+        band = 0                 # framed: where the views start
+        if framed:
+            band = top_row + max(
+                self.plan_btn.height(),
+                self.views.height() if not self.views.isHidden() else 0,
+                self.optbar.height() if not self.optbar.isHidden() else 0
+            ) + MARGIN
+            col = max(self.strip.width() if not self.strip.isHidden() else 0,
+                      self.elbox.width() if not self.elbox.isHidden() else 0)
+            self._frame_left = MARGIN + (col + MARGIN if col else 0)
+            viewframe.set_margins(vp, self._frame_left, band, MARGIN,
+                                  self.viewbar.height() + 2 * MARGIN)
         # levels: right edge, under the phases row, clear of the view bar —
         # and under the options bar when a long one reaches it (the
         # column's bar ran under the strip, «As drawn» hidden)
-        top = top_row
+        top = band or top_row
         self.levels.fit()
-        if self.optbar.isVisible() and x + self.optbar.width() > \
+        if not framed and self.optbar.isVisible() and \
+                x + self.optbar.width() > \
                 vp.width() - self.levels.width() - 2 * MARGIN:
             top = top_row + self.optbar.height() + MARGIN
         self.levels.max_height = max(
             120, vp.height() - top - self.viewbar.height() - 3 * MARGIN)
         self.levels.fit()
         self.levels.move(vp.width() - self.levels.width() - MARGIN, top)
-        tab = getattr(self, "levels_tab", None)
         if tab is not None:
             tab.adjustSize()
-            tab.move(vp.width() - tab.width() - MARGIN, top)
+            tab.move(vp.width() - tab.width() - MARGIN,
+                     top_row if framed else top)
             tab.raise_()
+        if framed:
+            self.levels.raise_()
         self.optbar.raise_()
         self.hub.raise_()             # the hover submenu stays on top
 
@@ -14978,6 +15130,13 @@ class ArchXQ:
         except Exception:  # noqa: BLE001 — never connected
             pass
         self._follow_tab()          # (its watchers come off the view in front)
+        if self._home is not None and self._ui_parent is not self._home:
+            self._move_pieces(self._home, False)   # the views' margins back
+        if self._extras_of is not None:
+            try:
+                self._watch_extras(self._extras_of, False)
+            except RuntimeError:     # (its project tab is gone)
+                pass
         self.alive = False
         compat.watch_commands(None)
         from .updater import Notice
