@@ -9,6 +9,10 @@ the shape's BOX — dimensions, types, grips and quantities read them as
 before. The shapes:
 
 - ``round_arch``  a rectangle under a half circle (rise = w / 2)
+- ``round_top``   a rectangle with its two TOP corners rounded, ``rise``
+                  their radius (PLANO_CURVAS_E_FORMAS F2, 2026-11-13: a
+                  customer's balcony opening); a radius of w / 2 is the
+                  round arch
 - ``seg_arch``    under a segment of a circle, ``rise`` high
 - ``pointed``     under a pointed (gothic) arch, ``rise`` high
 - ``pentagon``    under a gable, ``rise`` high
@@ -31,11 +35,13 @@ from __future__ import annotations
 import math
 
 SHAPES = ("rect", "round_arch", "seg_arch", "pointed", "pentagon",
-          "trapezoid", "triangle", "circle", "oval")
+          "trapezoid", "triangle", "circle", "oval", "round_top")
 #: the shapes with a rise of their own (m), and theirs when none is set
-RISE = {"seg_arch": 1 / 6, "pointed": 0.6, "pentagon": 1 / 3}   # × w
+RISE = {"seg_arch": 1 / 6, "pointed": 0.6, "pentagon": 1 / 3,   # × w
+        "round_top": 1 / 3}
 #: the shapes whose leaves stand in the rectangle under the curve
-WITH_LEAVES = ("round_arch", "seg_arch", "pointed", "pentagon")
+WITH_LEAVES = ("round_arch", "seg_arch", "pointed", "pentagon",
+               "round_top")
 STEPS = 24              # a half circle in this many steps
 MIN_RECT = 0.30         # m — under this the leaves don't fit: fixed glass
 MIN_FOOT = 0.01         # m — a round / an oval at least this over the floor
@@ -63,7 +69,11 @@ def clean(o: dict) -> dict:
             r = float(o.get("rise", RISE[s] * w))
         except (TypeError, ValueError):
             r = RISE[s] * w
-        out["rise"] = round(min(max(r, 0.05), h), 4)
+        top = min(w / 2, h) if s == "round_top" else h
+        out["rise"] = round(min(max(r, 0.05), top), 4)
+        if s == "round_top" and out["rise"] >= w / 2 - 1e-6:
+            out["shape"] = "round_arch"     # its corners met: the arch
+            out.pop("rise")
     if s == "trapezoid":
         try:
             tw = float(o.get("top_w", w / 2))
@@ -78,6 +88,8 @@ def rise(o: dict) -> float:
     w, h = float(o["w"]), float(o["h"])
     if s == "round_arch":
         return min(w / 2, h)
+    if s == "round_top":
+        return min(max(float(o.get("rise", RISE[s] * w)), 0.05), w / 2, h)
     if s in RISE:
         return min(max(float(o.get("rise", RISE[s] * w)), 0.05), h)
     return 0.0
@@ -123,7 +135,14 @@ def outline(o: dict, z0: float, steps: int = STEPS) -> list | None:
     if s == "pentagon":
         return base + [(s1, zp), (sc, zt), (s0, zp)] if base else \
             [(s0, zp), (s1, zp), (sc, zt)]
-    if s == "round_arch" and r >= hw - 1e-9:
+    if s == "round_top" and r < hw - 1e-9:
+        # two quarter circles, the flat top between them
+        n = max(steps // 2, 4)
+        right = [(s1 - r + r * math.cos(math.pi / 2 * i / n),
+                  zp + r * math.sin(math.pi / 2 * i / n)) for i in range(n + 1)]
+        left = [(2 * sc - q[0], q[1]) for q in reversed(right)]
+        top = right + left
+    elif s in ("round_arch", "round_top") and r >= hw - 1e-9:
         top = [(sc + hw * math.cos(math.pi * i / steps),
                 zp + hw * math.sin(math.pi * i / steps))
                for i in range(steps + 1)]

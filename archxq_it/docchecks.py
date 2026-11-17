@@ -47,6 +47,10 @@ def checks(built: dict, style: dict, state: str = "ok") -> list[dict]:
     out.append({"code": "overlap", "level": WARN if ov else OK,
                 "n": len(ov), "action": "show" if ov else None,
                 "pairs": ov})
+    from . import titleblock as TB
+    tb = len(TB.too_long(built, style)) + TB.under_block(built, style)
+    out.append({"code": "title_block", "level": WARN if tb else OK, "n": tb,
+                "action": None})
     ne = near_equal(built)
     out.append({"code": "near_equal", "level": WARN if ne else OK, "n": ne,
                 "action": "unify" if ne else None})

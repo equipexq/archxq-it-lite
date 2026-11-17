@@ -1197,7 +1197,7 @@ WALL_COLOR = (0.88, 0.86, 0.82)     # a plain wall: warm light grey
 #: what the building is made of — every one rebuilt together
 BUILT_KINDS = ("wall", "column", "beam", "slab", "footing", "opening",
                "roof", "ramp", "stair", "guard", "glazing", "street",
-               "profile", "copy")
+               "profile", "copy", "shaped")
 KIND_COLOR = {
     "roof": (0.66, 0.36, 0.27),        # tiles (each face has its own)
     "opening": (0.94, 0.94, 0.92),     # frames (each face has its own)
@@ -1218,6 +1218,8 @@ KIND_COLOR = {
     #                                    profile has its own colour)
     "copy": (0.30, 0.31, 0.33),        # copies along a path (copies.py:
     #                                    each object has its own colours)
+    "shaped": (0.70, 0.70, 0.68),      # a piece adopted as it is
+    #                                    (shaped.py: each face its own look)
 }
 
 
@@ -1328,6 +1330,28 @@ def watch_commands(fn, before=None) -> None:
     execute._axq = True
     execute._orig = orig
     History.execute = execute
+
+
+def group_meshes(group, xf=None, depth: int = 0) -> list:
+    """[(mesh, xform or None, group)] of a group AND the groups inside it (a
+    component: its own mesh empty, its faces in its children — the wall
+    lantern «Farol», his test 10/11/2026), each with the transform that
+    takes it to the model (the parent's times its own)."""
+    own = getattr(group, "xform", None)
+    if xf is None:
+        whole = own
+    elif own is None:
+        whole = xf
+    else:
+        whole = xf * own
+    out = []
+    mesh = getattr(group, "mesh", None)
+    if mesh is not None:
+        out.append((mesh, whole, group))
+    if depth < 8:
+        for c in list(getattr(group, "children", None) or ()):
+            out += group_meshes(c, whole, depth + 1)
+    return out
 
 
 def join_last_steps(history, first) -> None:
@@ -1495,6 +1519,37 @@ def whole_meshes(viewport, doc: dict, elevations, groups) -> list:
     return out
 
 
+def _put_edges(mesh, pending) -> None:
+    """A piece adopted as it is: its edges drawn soft / hidden again — each
+    found on ITS face by the nearest corners (a key rounded to 0.1 mm
+    missed the ones on a rounding's edge: 8 of a vase's 192, live 13/11)."""
+    if not pending:
+        return
+
+    def xyz(v):
+        v = getattr(v, "position", v)
+        return (v.x(), v.y(), v.z())
+    by = {frozenset((xyz(e.v0), xyz(e.v1))): e for e in mesh.edges}
+    for face, efs in pending:
+        ring = [xyz(v) for v in face.vertices] + [
+            xyz(v) for h in (getattr(face, "holes", None) or ()) for v in h]
+
+        def near(p):
+            best = min(ring, key=lambda r: (r[0] - p[0]) ** 2
+                       + (r[1] - p[1]) ** 2 + (r[2] - p[2]) ** 2)
+            d = sum((best[i] - p[i]) ** 2 for i in range(3))
+            return best if d < 1e-8 else None      # (0.1 mm)
+        for p, q, fl in efs:
+            a, b = near(p), near(q)
+            e = by.get(frozenset((a, b))) if a and b and a != b else None
+            if e is None:
+                continue
+            e.soft = "s" in fl
+            e.hidden = "h" in fl
+            if "c" in fl:
+                e.curve = True
+
+
 def mesh_of(faces, hide=()):
     """A host mesh from ArchXQ's faces (plain loops, or {loop, holes,
     color} dicts). ``hide``: edges (``seams.edge_key``) not drawn — a
@@ -1506,6 +1561,11 @@ def mesh_of(faces, hide=()):
     mesh = Mesh()
     smooth = set()                     # a round tube's facets (railings)
     curved = set()                     # a sweep's sides, in any direction
+    # a piece adopted as it is (shaped.py): every face's look and drawn
+    # edges put back EXACTLY — no seam softened of ArchXQ's own
+    exact = bool(faces) and all(isinstance(f, dict) and "ef" in f
+                                for f in faces)
+    pending = []                       # (host face, its edges drawn otherwise)
     for f in faces:
         if isinstance(f, dict):
             face = mesh.add_face([QVector3D(*q) for q in f["loop"]],
@@ -1523,8 +1583,17 @@ def mesh_of(faces, hide=()):
                 face.attrs["color"] = c[:3]
                 if len(c) > 3 and c[3] < 1.0:
                     face.attrs["opacity"] = c[3]
+            if f.get("attrs") and face is not None:
+                for k, v in f["attrs"].items():
+                    face.attrs[k] = (tuple(v[:3]) if k == "color" else
+                                     dict(v) if isinstance(v, dict) else v)
+            if exact and f["ef"] and face is not None:
+                pending.append((face, f["ef"]))
         else:
             mesh.add_face([QVector3D(*q) for q in f])
+    if exact:
+        _put_edges(mesh, pending)
+        return mesh
     _soften_flat_seams(mesh, smooth, curved)
     if hide:
         from .seams import edge_key
@@ -1573,7 +1642,9 @@ def build_sig(e: dict, layer, look: str, k: int, hide) -> str:
         e["faces"], e["name"], e["kind"], e["id"], e["level"],
         layer, bool(e.get("inwall")), e.get("okind"),
         k, look, e.get("floor"),
-        sorted(sorted(p) for p in hide) if hide else None)).encode(),
+        sorted(sorted(p) for p in hide) if hide else None)
+        # (a piece adopted: its category — its IFC class, its «Show» chip)
+        + ((e["cat"],) if e.get("cat") else ())).encode(),
         digest_size=16).hexdigest()
 
 
@@ -1629,7 +1700,9 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     try:
         from .seams import hidden_edges
         joints = hidden_edges(built, lambda el, color:
-                              materials.wall_face_mat(doc, el, color))
+                              materials.wall_face_mat(doc, el, color),
+                              {w["id"] for w in doc.get("walls") or []
+                               if w.get("kind") in ("arc", "circle")})
     except Exception:  # noqa: BLE001 — the lines drawn, as before
         joints = {}
     for i, e in enumerate(built):
@@ -1641,7 +1714,10 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
             kept.add(id(same.pop()))          # unchanged: left in place
             continue
         g = Group(mesh_of(e["faces"], hide), name=e["name"])
-        g.material = {"color": KIND_COLOR[e["kind"]], "opacity": 1.0}
+        if e["kind"] != "shaped":
+            # (a piece adopted as it is: none of its own — a face without a
+            # look shows as it did, the host's colour, front and back)
+            g.material = {"color": KIND_COLOR[e["kind"]], "opacity": 1.0}
         g.layer = layers[e["level"]]
         extra = {}
         if e.get("inwall"):              # hidden inside a wall (see ui)
@@ -1650,6 +1726,8 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
             extra["okind"] = e["okind"]
         if e.get("floor"):               # a room's floor on a layered slab
             extra["floor"] = e["floor"]
+        if e.get("cat"):                 # a piece adopted (shaped.py)
+            extra["cat"] = e["cat"]
         # (its build's fingerprint: kept in its tag — saved with the file)
         tag(g, e["kind"], id=e["id"], level=e["level"], sig=sig, **extra)
         # where it was built: the host's Move / Rotate / Copy is read from

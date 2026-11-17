@@ -51,6 +51,8 @@ from .i18n import N_, tr
 
 #: the categories, in the file's order (their words translated as written)
 CATEGORIES = (N_("Walls"), N_("Wall layers"), N_("Wall framing"),
+              # a grid wall's glass, panels and what opens (gridwall.py)
+              N_("Grid walls"),
               N_("Doors"), N_("Windows"),
               N_("Voids"), N_("Slabs"), N_("Slab layers"),
               N_("Floor framing"), N_("Floors"),
@@ -58,10 +60,13 @@ CATEGORIES = (N_("Walls"), N_("Wall layers"), N_("Wall framing"),
               N_("Footings"), N_("Roofs"), N_("Roof layers"),
               N_("Roof framing"), N_("Low walls"),
               N_("Grids"), N_("Stairs"), N_("Ramps"), N_("Streets"),
+              # pieces adopted as they are (shaped.py — F3c)
+              N_("Adopted pieces"),
               N_("Rooms"), N_("Excavations"))
 _WORDS = (N_("Curtain wall"), N_("Wall"), N_("Slab"), N_("Ceiling"),
           N_("Block"), N_("Column"), N_("Round column"), N_("Beam"),
           N_("Pad footing"), N_("Strip footing"), N_("Fill"),
+          N_("Shaped column"), N_("Shaped pad footing"), N_("corners"),
           N_("Asphalt"), N_("Sidewalk"), N_("Curb"),
           N_("All levels"), N_("Category"), N_("Item"), N_("Level"),
           N_("Count"), N_("Length"), N_("Area"), N_("Volume"))
@@ -134,6 +139,17 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
     walls = doc.get("walls") or []
     ops = doc.get("openings") or []
 
+    # ---- grid walls: the light (glass), the panels, the ventilation (what
+    # opens) — a building code asks for the first and the last
+    for w, pcs, z0, b, top, gops, ctx in S.grid_reads(doc, elevations):
+        from . import gridwall as GX
+        ar = GX.areas(w, pcs, z0, b, top, gops, ctx)
+        for key, word in (("glass", N_("Glass")), ("panel", N_("Opaque panels")),
+                          ("opening", N_("Opens (ventilation)"))):
+            if ar[key] > 0:
+                s.add("Grid walls", f"{tr('Grid wall')} · {tr(word)}",
+                      w["level"], 0, 0.0, ar[key], 0.0)
+
     # ---- walls (and their layers) ------------------------------------------------
     for lid in order:
         if lid not in info:
@@ -166,9 +182,19 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
             a_ops = sum(float(o["w"]) * float(o["h"]) for o in holes)
             area = max(L * h - a_ops, 0.0)
             vol = max(sum(_piece_area(p) for p in pcs) * h - a_ops * t, 0.0)
+            shp = S.shape_now(w)
+            if shp is not None:
+                # its SHAPE (F2): its front's exact area (arcs as arcs)
+                from . import wallshape as WS
+                A = WS.area_exact(shp)
+                area = max(A - a_ops, 0.0)
+                vol = max(sum(_piece_area(p) for p in pcs) / max(L, 1e-9)
+                          * A - a_ops * t, 0.0)
             ty = types.get(str(w.get("type") or ""))
             if w.get("cw"):
                 item = tr("Curtain wall")
+            elif w.get("gw"):                # (gridwall.py — the Pro)
+                item = tr("Grid wall")
             elif ty is not None:
                 item = ty["name"]
             else:
@@ -246,8 +272,9 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
             continue
         lid, li, typ = e["level"], info[e["level"]], e["type"]
         if typ == "slab":
-            a = _area(e["corners"]) - sum(_area(hh)
-                                          for hh in e.get("holes") or [])
+            # with arcs / rounded corners: the exact area (curved.py, F1)
+            from . import curved
+            a = curved.slab_area(e) - curved.holes_area(e)
             t = float(e["t"])
             if e.get("ceiling"):
                 s.add("Slabs", tr("Ceiling"), lid, 1, 0.0, a, a * t)
@@ -288,6 +315,10 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
             if e.get("shape") == "round":
                 sec = math.pi * (float(e["w"]) / 2) ** 2
                 item = f"{tr('Round column')} Ø{_cm(e['w'])}"
+            elif S.is_poly(e):            # its own outline (C1, 12/11)
+                sec = abs(S._area(S.poly_world(e)))
+                item = (f"{tr('Shaped column')} {_cm(e['w'])} × "
+                        f"{_cm(e['d'])} ({len(e['pts'])} {tr('corners')})")
             else:
                 sec = float(e["w"]) * float(e["d"])
                 item = f"{tr('Column')} {_cm(e['w'])} × {_cm(e['d'])}"
@@ -302,6 +333,12 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                 s.add("Footings", f"{tr('Strip footing')} {_cm(e['w'])} × "
                       f"{_cm(e['d'])}", lid, 1, L, 0.0,
                       L * float(e["w"]) * float(e["d"]))
+            elif S.is_poly(e):            # its own outline (C1, 12/11)
+                a = abs(S._area(S.pad_outline(e)))
+                s.add("Footings", f"{tr('Shaped pad footing')} "
+                      f"{_cm(e['w'])} × {_cm(e['d'])} "
+                      f"({len(e['pts'])} {tr('corners')})", lid, 1, 0.0,
+                      0.0, a * float(e["d"]))
             else:
                 s.add("Footings", f"{tr('Pad footing')} {_cm(e['w'])} × "
                       f"{_cm(e['w'])} × {_cm(e['d'])}", lid, 1, 0.0, 0.0,
@@ -385,6 +422,14 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
             if w > 0:
                 s.add("Streets", tr("Sidewalk"), lid, 0, 0.0, w, 0.0)
                 s.add("Streets", tr("Curb"), lid, 0, c, 0.0, 0.0)
+        elif typ == "shaped":
+            # a piece adopted as it is: by its category — a solid's volume,
+            # its faces' area (an open one: its area only)
+            from . import shaped as SP
+            vol = SP.volume(e)
+            item = tr(SP.CAT_LABEL.get(e.get("cat"), "Other"))
+            s.add("Adopted pieces", item, lid, 1, 0.0,
+                  0.0 if vol > 0 else SP.area(e), vol)
         elif typ in ("stair", "ramp"):
             cat = "Stairs" if typ == "stair" else "Ramps"
             s.add(cat, f"{type_label(typ, e)} {_m(e['w'])}", lid, 1)

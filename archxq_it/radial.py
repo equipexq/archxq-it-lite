@@ -30,11 +30,10 @@ B = 34            # a button's size
 from .look import ACCENT as UI_ACCENT, ACCENT_DARK, ACCENT_HOVER  # noqa: E402
 # (the ring's hover follows IngeTrazo's accent — 0.15.0, C3)
 _DK = QColor(ACCENT_DARK)
-BUTTON_CSS = ("QToolButton { background: rgba(32, 35, 40, 235); "
+BUTTON_CSS = ("QToolButton { background: rgb(32, 35, 40); "
               "border: 1px solid #4a5058; border-radius: 17px; }"
               f"QToolButton:hover {{ border: 2px solid {UI_ACCENT}; "
-              f"background: rgba({_DK.red()}, {_DK.green()}, {_DK.blue()}, "
-              "245); }")
+              f"background: rgb({_DK.red()}, {_DK.green()}, {_DK.blue()}); }}")
 
 
 def _icon(kind: str) -> QIcon:

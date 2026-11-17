@@ -86,9 +86,12 @@ class OptionsBar(QFrame):
         self._rows = []
         t = QLabel(tr(title))
         t.setObjectName("axq_title")
-        self._items = [self._block("", t)]
+        # (a bar whose first field says it all — the slab's «Slab |
+        # Opening» — goes without its title: «Slab  Slab | Opening»)
+        self._items = [] if options and options[0].get("kind") == "toggle" \
+            else [self._block("", t)]
         for o in options:
-            if o["kind"] == "icons":
+            if o["kind"] in ("icons", "toggle"):     # toggle: words, all seen
                 field = self._buttons(o)
             elif o["kind"] == "segments":
                 field = self._popup(o)

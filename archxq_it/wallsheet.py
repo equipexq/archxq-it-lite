@@ -118,21 +118,50 @@ def _segments(boundary) -> list:
     return out
 
 
+def zigzag(P, lo: float, hi: float, s0: float, s1: float, geom) -> list:
+    """The insulation's symbol (the «spring» drawn by hand — NBR, DIN,
+    the French drawings): a zigzag from face to face of its layer along
+    it, clipped to ``geom``. ``P(s, o)``: the point ``s`` along and ``o``
+    across; ``lo``..``hi`` the layer across, ``s0``..``s1`` along. Each
+    stroke goes half the layer's thickness along — as the light frames'
+    insulation (framing.plan_symbols). [(a, b)] in ``geom``'s space."""
+    from shapely.geometry import LineString
+    depth = hi - lo
+    if depth <= 1e-6 or s1 - s0 <= 1e-6 or geom.is_empty:
+        return []
+    k = max(2, math.ceil((s1 - s0) / (depth / 2)))
+    h = (s1 - s0) / k
+    e = depth * 0.12
+    pts = [P(s0 + j * h, (lo + e) if j % 2 == 0 else (hi - e))
+           for j in range(k + 1)]
+    got = LineString(pts).intersection(geom)
+    out = []
+    for g in getattr(got, "geoms", [got]):
+        if g.geom_type == "LineString" and g.length > 1e-9:
+            cs = list(g.coords)
+            out += list(zip(cs, cs[1:]))
+    return out
+
+
 def paint(pc, parts: list) -> int:
     """The layers on the sheet. ``parts``: [(wall id, layer index, class,
-    shape on paper)]. Each layer's fill, its hatch, the divisions; round
+    shape on paper[, its symbol's lines on paper])]. Each layer's fill, its
+    hatch — or its symbol, the insulation's zigzag — the divisions; round
     them all the cut's own pen. Returns the lines laid."""
     from shapely.ops import unary_union
     if not parts:
         return 0
     n_lines = 0
-    shapes = [g for *_x, g in parts if not g.is_empty]
+    shapes = [p[3] for p in parts if not p[3].is_empty]
     whole = unary_union(shapes).buffer(1e-3, join_style=2)
     edge = whole.boundary
     near = edge.buffer(0.02)
     seen: dict = {}
-    for wid, i, cls, geom in parts:
+    for wid, i, cls, geom, *more in parts:
         fill, fams = HATCH.get(cls, HATCH["finish"])
+        sym = more[0] if more else None
+        if sym is not None:
+            fams = ()                       # the symbol, not a hatch
         for poly in _polys(geom):
             k = seen.get((wid, i), 0)
             seen[(wid, i)] = k + 1
@@ -149,6 +178,9 @@ def paint(pc, parts: list) -> int:
             for j, (a, b) in enumerate(_segments(inner)):
                 pc.line(f"{key}:d{j}", a, b, "symbol")
                 n_lines += 1
+        for j, (a, b) in enumerate(sym or ()):    # over its fill
+            pc.line(f"{PREFIX}{wid}:{i}:z{j}", a, b, "symbol")
+            n_lines += 1
     for j, (a, b) in enumerate(_segments(edge)):
         pc.line(f"{PREFIX}edge:{j}", a, b, "cut")
         n_lines += 1
@@ -196,6 +228,7 @@ def plan_parts(doc: dict, lid: str, walls: list, openings: list, P,
                 gaps.append(Polygon(ring).buffer(0))
         except Exception:  # noqa: BLE001 — no gaps worked out: the wall whole
             gaps = []
+        gaps += _shape_gaps(w, walls, z0, cut)
         ls = W.layers_of(w)
         framed = symbols and FR.frame_of(w) is not None
         for i, part in bands.get(w["id"]) or []:
@@ -208,9 +241,54 @@ def plan_parts(doc: dict, lid: str, walls: list, openings: list, P,
             if g.is_empty:
                 continue
             paper = transform(lambda x, y, z=None: P((x, y)), g)
-            out.append((w["id"], i, classify(ls[i]["name"], ls[i]["role"]),
-                        paper))
+            cls = classify(ls[i]["name"], ls[i]["role"])
+            if cls != "insulation":
+                out.append((w["id"], i, cls, paper))
+                continue
+            # the insulation's zigzag, along the wall (a curve: its arc)
+            sym = []
+            try:
+                G = FR.Geo(w)
+                lo, hi = W.layer_bands(w)[i]
+                ss = [G.S(c) for pg in _polys(g) for c in pg.exterior.coords]
+                if ss:
+                    sym = [(P(a), P(c)) for a, c in
+                           zigzag(G.P, lo, hi, min(ss), max(ss), g)]
+            except Exception:  # noqa: BLE001 — no symbol: its hatch
+                sym = []
+            out.append((w["id"], i, cls, paper, sym or None))
     return out
+
+
+def _shape_gaps(w: dict, walls: list, z0: float, cut: float) -> list:
+    """A wall with a SHAPE (F2): where the plan's cut height passes OVER
+    or through a gap of its shape (its «C», a lower end) — plan polygons
+    across the wall there, the wall not cut. [] for any other wall."""
+    from . import structure as S
+    shp = S.shape_now(w)
+    if shp is None:
+        return []
+    from shapely.geometry import Polygon
+
+    from . import profilecut as PC
+    from . import wallshape as WS
+    try:
+        pcs = W.plan(walls).get(w["id"]) or ()
+        span = W.clear_span(w, pcs)
+        out, _arcs = WS.outline(shp, z0 + float(w.get("base", 0.0)))
+        far = W.drawn(w).L + 50.0
+        on = PC.spans_at(out, span, cut, lo=-50.0, hi=far)
+        G = FR.Geo(w)
+        half = float(w["t"]) / 2 + 0.05
+        gaps, s = [], -50.0
+        for s0, s1 in on + [(far, far)]:
+            if s0 - s > 1e-6:
+                gaps.append(Polygon([G.P(s, -half), G.P(s0, -half),
+                                     G.P(s0, half), G.P(s, half)]).buffer(0))
+            s = max(s, s1)
+        return gaps
+    except Exception:  # noqa: BLE001 — none worked out: the wall whole
+        return []
 
 
 def section_parts(doc: dict, elevations, info: dict, q, nrm, X, Y, right,
@@ -270,17 +348,37 @@ def section_parts(doc: dict, elevations, info: dict, q, nrm, X, Y, right,
                     high = top
                     if W.top_of(w) is not None:
                         high = z0 + W.top_h(w, s)
+                    shp = S.shape_now(w)
                     x0, x1 = sorted((X(ax * rx + ay * ry),
                                      X(cx * rx + cy * ry)))
-                    if high <= b or x1 - x0 < 1e-3:
+                    if shp is not None:
+                        # its SHAPE (F2): what stands at s (a «C»: two)
+                        from . import wallshape as WS
+                        zf = z0 + float(w.get("base", 0.0))
+                        ss = min(max(s, 0.0), W.drawn(w).L)
+                        g = None
+                        for k, (za, zb) in enumerate(WS.slice_at(shp, ss)):
+                            lo = b if za < 1e-9 else zf + za
+                            part = box(x0, Y(zf + zb), x1, Y(lo))
+                            g = part if g is None else g.union(part)
+                        if g is None or x1 - x0 < 1e-3:
+                            continue
+                    elif high <= b or x1 - x0 < 1e-3:
                         continue
-                    g = box(x0, Y(high), x1, Y(b))
+                    else:
+                        g = box(x0, Y(high), x1, Y(b))
                     for s0, s1, zs, zt in spans:
                         if s0 <= s <= s1:
                             g = g.difference(box(x0 - 1, Y(zt), x1 + 1, Y(zs)))
-                    if not g.is_empty:
-                        out.append((w["id"], i,
-                                    classify(ls[i]["name"], ls[i]["role"]), g))
+                    if g.is_empty:
+                        continue
+                    cls = classify(ls[i]["name"], ls[i]["role"])
+                    if cls == "insulation":     # its zigzag, up the band
+                        _a, y0, _b, y1 = g.bounds
+                        sym = zigzag(lambda s, o: (o, s), x0, x1, y0, y1, g)
+                        out.append((w["id"], i, cls, g, sym or None))
+                    else:
+                        out.append((w["id"], i, cls, g))
     return out
 
 

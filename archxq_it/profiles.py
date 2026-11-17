@@ -25,14 +25,16 @@ STONE = (0.86, 0.84, 0.80, 1.0)
 ANCHORS = (("floor", "Floor"), ("ceiling", "Ceiling"), ("height", "Height"),
            ("top", "Wall top"))
 HOWS = (("points", "Point by point"), ("line", "On a line"),
-        ("circle", "Circle"), ("rect", "Rectangle"),
+        ("loop", "Closed loop"), ("circle", "Circle"), ("rect", "Rectangle"),
         ("room", "By room"), ("face", "By wall face"),
         ("element", "By element"))
 #: copies: not round a column (part 5)
 COPY_HOWS = (("points", "Point by point"), ("line", "On a line"),
+             ("loop", "Closed loop"), ("circle", "Circle"),
+             ("rect", "Rectangle"),
              ("room", "By room"), ("face", "By wall face"))
 #: these make their own path: where it sits comes from the clicks / the line
-FREE_HOWS = ("points", "line", "circle", "rect")
+FREE_HOWS = ("points", "line", "loop", "circle", "rect")
 #: continuous, or pieces this long with a gap between (part 5, P5b)
 RUNS = (("continuous", "Continuous"), ("repeat", "Repeat"))
 #: where its own line runs on it (a path of its own: points, a line)
@@ -141,11 +143,31 @@ COLUMN_CAPS = ("none", "slab", "tuscan", "doric", "empire", "stepped")
 #: key → (label, tip)
 COPY_OBJECTS = {
     "bollard": ("Bollard", "A 90 cm bollard — a path's edge, a car stop"),
+    "lit_bollard": ("Lit bollard", "An 85 cm bollard with a band of light "
+                    "— a garden path, a drive"),
     "lamp": ("Garden lamp", "A 3.7 m lamp post — a street, a drive"),
+    "street_lamp": ("Street lamp", "A classic street lamp, 3.9 m, its "
+                    "lantern on top — a street, a square"),
+    "hanging_lantern": ("Hanging lantern", "A lantern on a chain, 59 cm — "
+                        "under a porch or an eave: lift it with «Raised»"),
+    "stone_lantern": ("Stone lantern", "A stone garden lantern, 80 cm — a "
+                      "path, a garden"),
     "tree": ("Tree", "A simple tree, 4.7 m — along a street, a wall"),
+    "leafy_tree": ("Leafy tree", "A leafy tree, 5.4 m, a crown of five "
+                   "clumps — an avenue, a garden"),
+    "hedge": ("Hedge", "A clipped hedge, 1.2 m high: «Gap» 0 and it runs "
+              "on, one hedge"),
     "planter": ("Planter", "A 60 cm concrete planter with its plant"),
+    "bench": ("Bench", "A park bench, 1.70 m — along a path, round a square"),
+    "railing": ("Steel railing", "A steel railing, 2 m a piece: «Gap» 0 and it "
+                "runs on — a sidewalk, a ramp"),
+    "baluster": ("Baluster", "A turned stone baluster, 70 cm — a "
+                 "balustrade: a small «Gap» between them"),
     "post": ("Fence post", "A 12 × 12 cm post, 1.2 m — a fence: «Gap»"),
 }
+#: the ones that are models from IngeTrazo's catalog (CC0, BlendSwap):
+#: their faces in copy_models.json, their cards' pictures in copy_img/
+COPY_MODELS = ("bench", "railing", "stone_lantern", "hanging_lantern")
 #: the copy taken from an object selected in the model
 COPY_MINE = "mine"
 COPY_MODES = (("path", "Whole path"), ("segment", "Each segment"),

@@ -879,26 +879,270 @@ def offset_chain(pts, d: float, closed: bool) -> list:
     return out
 
 
+def _rounded(corners, arcs: dict, r: float):
+    """(the curves, how many corners stayed sharp): ``r`` on every corner
+    between two straight sides where it fits, the arcs kept."""
+    from . import curved as CV
+    cv = CV.clean({"arc": arcs})
+    sharp = 0
+    if r and r > 1e-4:
+        for i in range(len(corners)):
+            if CV._key(cv["arc"], i - 1) or CV._key(cv["arc"], i):
+                continue
+            trial = {"r": dict(cv["r"], **{str(i): r}), "arc": cv["arc"]}
+            if CV.why_not(corners, trial) is None:
+                cv = CV.clean(trial)
+            else:
+                sharp += 1
+    return cv, sharp
+
+
 def slab_tool(base):
     """One of the plot's outline tools, drawing a slab's outline on the
-    level's floor."""
+    level's floor. With ``curve_opts`` (the slab bar: PLANO_CURVAS F1,
+    13/11/2026): every corner rounded by its «Corner radius», and — the
+    Points tool — a side drawn as an ARC (A, or the bar's «Arc»): its end
+    clicked, then its middle pulled out (or its radius typed + Enter)."""
+    chain = base is plottools.PlotPolyTool
+
     class T(base):
         name = "ArchXQ slab"
         axq_element = "slab"
         noun = "Slab"
+        #: () → the slab bar's options ("rad", "arc") — set for a slab only
+        curve_opts = None
+        claimed_keys = base.claimed_keys | ({Qt.Key_A} if chain
+                                            else frozenset())
 
         def __init__(self, on_done, on_cancelled, z):
+            self.arcs = {}               # side → sagitta (+ left of it)
+            self.bending = None          # the side being bent, its sagitta
+            self.closing = False         # …the closing one
             base.__init__(self, on_done, on_cancelled)
             self.z = z
 
+        # -- the bar ---------------------------------------------------------------
+        def _opts(self) -> dict:
+            try:
+                return dict(self.curve_opts() or {}) if self.curve_opts \
+                    else {}
+            except Exception:  # noqa: BLE001
+                return {}
+
+        def _arc_on(self) -> bool:
+            return chain and bool(self._opts().get("arc"))
+
+        def _reset(self) -> None:
+            self.arcs = {}
+            self.bending = None
+            self.closing = False
+            base._reset(self)
+
+        def _busy(self) -> bool:
+            return self.bending is not None or base._busy(self)
+
+        # -- an arc side (Points) -----------------------------------------------
+        def _chord(self, k: int):
+            pts = self.pts
+            return pts[k], pts[(k + 1) % len(pts)] if self.closing \
+                and k == len(pts) - 1 else pts[k + 1]
+
+        def _sag_at(self, k: int, p) -> float:
+            a, b = self._chord(k)
+            L = math.dist(a, b) or 1.0
+            nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
+            h = (p[0] - (a[0] + b[0]) / 2) * nx + (p[1] - (a[1] + b[1]) / 2) * ny
+            return round(max(-L, min(L, h)), 4)
+
+        def _bent(self, h) -> None:
+            """The side being bent takes ``h`` — on with the drawing."""
+            k, _h = self.bending
+            if abs(h) > 1e-4:
+                self.arcs[k] = h
+            else:
+                self.arcs.pop(k, None)
+            self.bending = None
+            if self.closing:
+                plottools.PlotPolyTool._close(self)
+                return
+            self._show_hint()
+            self.viewport.update()
+
+        def on_hover(self, ctx) -> None:
+            if self.bending is not None:
+                p = plottools._xy(ctx)
+                self.hover = p
+                self.bending = (self.bending[0],
+                                self._sag_at(self.bending[0], p))
+                self._sync()
+                self._show_hint()
+                self.viewport.update()
+                return
+            base.on_hover(self, ctx)
+
+        def on_click(self, ctx) -> None:
+            if self.bending is not None:
+                self._bent(self._sag_at(self.bending[0],
+                                        plottools._xy(ctx)))
+                return
+            n0 = len(getattr(self, "pts", []) or [])
+            base.on_click(self, ctx)
+            if chain and self._arc_on() and len(self.pts) == n0 + 1 \
+                    and len(self.pts) >= 2 and self.bending is None:
+                self.bending = (len(self.pts) - 2, 0.0)   # now its middle
+                self._show_hint()
+
+        def _close(self) -> None:
+            if chain and self._arc_on() and not self.closing \
+                    and len(self.pts) >= 3:
+                self.closing = True              # the closing side bent too
+                self.bending = (len(self.pts) - 1, 0.0)
+                self._show_hint()
+                self.viewport.update()
+                return
+            base._close(self)
+
+        def on_value(self, viewport, value) -> bool:
+            if self.bending is not None and isinstance(value, (int, float)):
+                from . import curved as CV
+                R = abs(float(value))
+                if R < 1e-6:
+                    self._bent(0.0)
+                    return True
+                a, b = self._chord(self.bending[0])
+                h = CV.sagitta_for_radius(a, b, R, self.bending[1] or 1.0)
+                if h is None:
+                    compat.flash(viewport, "An arc on this side needs a "
+                                 "radius of " + compat.fmt_len(
+                                     math.dist(a, b) / 2) + " at least", 5000)
+                    return True
+                self._bent(h)
+                return True
+            return base.on_value(self, viewport, value)
+
+        def on_key(self, viewport, key, modifiers) -> bool:
+            typing = bool(compat.typed_value(viewport))
+            if chain and key == Qt.Key_A and not typing \
+                    and self.curve_opts is not None:
+                o = self.curve_opts()
+                o["arc"] = not o.get("arc")
+                if not o["arc"] and self.bending is not None:
+                    self.bending, self.closing = None, False
+                compat.flash(viewport, "Arc on — click the side's end, then "
+                             "pull its middle" if o["arc"] else "Arc off — "
+                             "straight sides", 3000)
+                self._show_hint()
+                viewport.update()
+                return True
+            if self.bending is not None and key == Qt.Key_Backspace \
+                    and not typing:
+                self.bending, self.closing = None, False     # straight
+                self._show_hint()
+                viewport.update()
+                return True
+            got = base.on_key(self, viewport, key, modifiers)
+            if chain and key == Qt.Key_Backspace and not typing:
+                for k in [k for k in self.arcs if k >= len(self.pts) - 1]:
+                    self.arcs.pop(k)
+            return got
+
+        def on_cancel(self, viewport) -> None:
+            if self.bending is not None:
+                self.bending, self.closing = None, False      # straight
+                self._show_hint()
+                viewport.update()
+                return
+            base.on_cancel(self, viewport)
+
+        def _arc_line(self, a, b, h) -> list:
+            from . import curved as CV
+            sa = CV.side_arc(a, b, h)
+            if sa is None:
+                return [a, b]
+            c, R, sw = sa
+            return [a] + [list(q) for q in CV._arc_pts(c, R, a, sw, 0.01)] \
+                + [b]
+
+        def rubber_band_lines(self):
+            if not chain or not (self.arcs or self.bending is not None):
+                return base.rubber_band_lines(self)
+            line = [self.pts[0]] if self.pts else []
+            for k in range(len(self.pts) - 1):
+                h = self.arcs.get(k)
+                if self.bending is not None and self.bending[0] == k:
+                    h = self.bending[1]
+                line += self._arc_line(self.pts[k], self.pts[k + 1],
+                                       h or 0.0)[1:]
+            if self.closing and self.bending is not None:
+                line += self._arc_line(self.pts[-1], self.pts[0],
+                                       self.bending[1])[1:]
+            segs = [(self._P(a), self._P(b)) for a, b in zip(line, line[1:])]
+            if self.bending is None and self.pts and self.hover is not None:
+                segs.append((self._P(self.pts[-1]), self._P(self.hover)))
+            return segs
+
+        def value_label(self):
+            if self.bending is not None:
+                from . import curved as CV
+                a, b = self._chord(self.bending[0])
+                R = CV.radius_of_sagitta(a, b, self.bending[1])
+                return (("R " + compat.fmt_len(R)) if R else "straight",
+                        None)
+            return base.value_label(self)
+
+        def status_clause(self) -> str:
+            if self.bending is not None:
+                return (f"{self.noun}: pull the arc's middle and click — or "
+                        "type its radius + Enter  ·  Backspace / Esc = "
+                        "straight")
+            text = base.status_clause(self)
+            if chain and self.curve_opts is not None:
+                text += "  ·  A = arc " + ("off" if self._arc_on() else "on")
+            return text
+
+        # -- done -----------------------------------------------------------------
         def _finish(self, corners) -> None:
+            from . import curved as CV
             corners = [list(c) for c in corners]
-            if abs(S._area(corners)) < 0.05:
+            o = self._opts()
+            cv, sharp = (_rounded(corners, dict(self.arcs),
+                                  float(o.get("rad") or 0.0))
+                         if self.curve_opts is not None
+                         else ({"r": {}, "arc": {}}, 0))
+            curved = bool(cv["r"] or cv["arc"])
+            if curved:
+                why = CV.why_not(corners, cv)
+                if why is None:
+                    try:
+                        from shapely.geometry import Polygon
+                        if not Polygon(CV.expand(corners, cv)).is_valid:
+                            why = "An arc would cross another side"
+                    except ImportError:
+                        pass
+                if why:
+                    compat.flash(self.viewport, f"{why} — draw it again "
+                                 "(Backspace undoes a corner)", 6000)
+                    if self.closing:             # the closing arc goes
+                        self.arcs.pop(len(corners) - 1, None)
+                    self.closing = False
+                    return
+                area = CV.area(corners, cv)
+            else:
+                area = abs(S._area(corners))
+            if area < 0.05:
                 compat.flash(self.viewport, "Too small for a slab", 4000)
                 return
             self._reset()
             self.viewport.update()
-            self.on_done(corners)            # the tool stays for the next
+            if curved:
+                self.on_done(corners, cv)    # the tool stays for the next
+                if sharp:
+                    compat.flash(self.viewport, f"{sharp} corner"
+                                 + ("" if sharp == 1 else "s")
+                                 + " too short for the radius — left sharp "
+                                 "(Edit slabs › Round corner)", 6000)
+            else:
+                self.on_done(corners)        # the tool stays for the next
     T.__name__ = "Slab" + base.__name__.replace("Plot", "")
     return T
 

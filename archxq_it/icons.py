@@ -248,6 +248,53 @@ def _slab_hole(p) -> None:
     p.drawRect(QRectF(26, 22, 22, 20))
 
 
+#: an OPENING's ink (the slab bar's «Opening» mode): the AI badge's green
+HOLE_INK = QColor("#5fd38a")
+
+
+def _green_host(p, key: str) -> None:
+    """The HOST's own icon for ``key`` with its light ink turned GREEN (the
+    orange stays) — an opening's shape: the very picture of the slab's, as
+    sharp, in another colour (his ask, 2026-11-11: the same icon confused;
+    a picture of our own, a cut-out slab, was blurred at the bar's size)."""
+    from PySide6.QtGui import QImage
+    try:
+        from views.icons import tool_icon
+        img = tool_icon(key).pixmap(QSize(PX, PX)).toImage()
+    except Exception:  # noqa: BLE001 — no host picture: nothing drawn
+        return
+    img = img.convertToFormat(QImage.Format_ARGB32)
+    g = HOLE_INK
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha() and c.hsvSaturation() < 70:     # the grey ink
+                img.setPixelColor(x, y, QColor(g.red(), g.green(), g.blue(),
+                                               c.alpha()))
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.drawImage(QRectF(0, 0, PX, PX), img)
+
+
+def _hole_rect(p) -> None:
+    _green_host(p, "rectangle")
+
+
+def _hole_rect_c(p) -> None:
+    _green_host(p, "rectangle_center")
+
+
+def _hole_rect_r(p) -> None:
+    _green_host(p, "rotated_rect")
+
+
+def _hole_chain(p) -> None:
+    _green_host(p, "geopath")
+
+
+def _hole_circle(p) -> None:
+    _green_host(p, "circle")
+
+
 def _roof_walls(p) -> None:
     """A house's walls (outline) with a gable roof over them."""
     from PySide6.QtGui import QPolygonF
@@ -599,6 +646,21 @@ def _wall_split(p) -> None:
     p.drawLine(QPointF(32, 10), QPointF(32, 54))
 
 
+def _wall_join(p) -> None:
+    """Two walls in line become one, the seam gone — «Join» (the Split's
+    inverse, C2a 12/11/2026)."""
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(4, 24, 56, 16))
+    p.setPen(_pen(ACCENT, 3.5, dash=True))
+    p.drawLine(QPointF(32, 14), QPointF(32, 50))
+    p.setPen(_pen(ACCENT, 3.5))
+    for s in (1, -1):                         # two arrows meeting the seam
+        p.drawLine(QPointF(32 - s * 22, 10), QPointF(32 - s * 8, 10))
+        p.drawLine(QPointF(32 - s * 13, 6), QPointF(32 - s * 8, 10))
+        p.drawLine(QPointF(32 - s * 13, 14), QPointF(32 - s * 8, 10))
+
+
 def _wall_trim(p) -> None:
     """A wall reaching on to another's face (an arrow) — «Trim / Extend»."""
     p.setPen(_pen(INK, 3))
@@ -639,6 +701,41 @@ def _surroundings(p) -> None:
     p.drawLine(QPointF(56, 40), QPointF(56, 4))
 
 
+def _round_corner(p) -> None:
+    """A slab's corner rounded, its radius marked — «Round corner» (F1,
+    PLANO_CURVAS 13/11/2026)."""
+    from PySide6.QtGui import QPainterPath
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    path = QPainterPath(QPointF(8, 56))
+    path.lineTo(QPointF(8, 30))
+    path.arcTo(QRectF(8, 8, 44, 44), 180, -90)       # the rounded corner
+    path.lineTo(QPointF(56, 8))
+    p.drawPath(path)
+    p.setPen(_pen(ACCENT, 3.5, dash=True))           # the old sharp corner
+    p.drawLine(QPointF(8, 30), QPointF(8, 8))
+    p.drawLine(QPointF(8, 8), QPointF(30, 8))
+    p.setPen(_pen(ACCENT, 3.5))                      # its radius
+    p.drawLine(QPointF(30, 30), QPointF(14.5, 14.5))
+
+
+def _bend_side(p) -> None:
+    """A slab's side bent into an arc, the old straight one dashed — «Bend
+    side» (F1, PLANO_CURVAS 13/11/2026)."""
+    p.setPen(_pen(INK, 3))
+    p.setBrush(Qt.NoBrush)
+    p.drawLine(QPointF(8, 30), QPointF(8, 56))
+    p.drawLine(QPointF(8, 56), QPointF(56, 56))
+    p.drawLine(QPointF(56, 56), QPointF(56, 30))
+    p.drawArc(QRectF(8, 6, 48, 48), 0, 180 * 16)    # the side, an arc
+    p.setPen(_pen(ACCENT, 3.5, dash=True))
+    p.drawLine(QPointF(8, 30), QPointF(56, 30))      # where it was straight
+    p.setPen(_pen(ACCENT, 3.5))
+    p.drawLine(QPointF(32, 28), QPointF(32, 10))     # pulled out
+    p.drawLine(QPointF(27, 15), QPointF(32, 10))
+    p.drawLine(QPointF(37, 15), QPointF(32, 10))
+
+
 def _block(p) -> None:
     """A box in perspective, its top orange — the «Block» element."""
     from PySide6.QtGui import QPolygonF
@@ -655,6 +752,8 @@ def _block(p) -> None:
 
 _CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
            "wall_split": _wall_split, "wall_trim": _wall_trim,
+           "wall_join": _wall_join,
+           "round_corner": _round_corner, "bend_side": _bend_side,
            "align": _align, "block": _block,
            "surroundings": _surroundings,
            "glazing": _glazing, "survey": _survey, "add_point": _add_point, "fit": _fit,
@@ -665,6 +764,9 @@ _CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
            "col_grid": _col_grid, "col_corners": _col_corners,
            "beam_walls": _beam_walls, "slab_walls": _slab_walls,
            "slab_hole": _slab_hole, "op_door": _op_door,
+           "hole_rect": _hole_rect, "hole_rect_c": _hole_rect_c,
+           "hole_rect_r": _hole_rect_r, "hole_chain": _hole_chain,
+           "hole_circle": _hole_circle,
            "roof_walls": _roof_walls, "doc_sheets": _doc_sheets,
            "doc_open": _doc_open, "doc_pdf": _doc_pdf,
            "doc_rooms": _doc_rooms, "doc_dxf": _doc_dxf, "io": _io,
@@ -729,3 +831,17 @@ def ai_badge(height: int = 18) -> tuple[QIcon, QSize]:
     p.drawText(QPointF(start + a_w, base), "I")
     p.end()
     return QIcon(pm), QSize(pm.width() // scale, height)
+
+
+def brand() -> QIcon:
+    """The XQ mark (the orange ring round the X — xq.com.br's logo) for
+    ArchXQ's tab in the side tray: IngeTrazo 0.6.2's tabs show only an
+    icon, and without one ours was a plain «A»."""
+    from pathlib import Path
+    icon = QIcon()
+    here = Path(__file__).resolve().parent / "brand"
+    for n in (32, 48, 64):
+        f = here / f"xq_logo_{n}.png"
+        if f.is_file():
+            icon.addFile(str(f), QSize(n, n))
+    return icon

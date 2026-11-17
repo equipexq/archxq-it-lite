@@ -380,6 +380,45 @@ def _view_icon(key: str, size: int = 22):
     return QIcon(pm)
 
 
+def _sky_icon(size: int = 18):
+    """The sky chip's picture (his ask, 14/11/2026: «a little icon by the
+    word Sky, to tell it from the camera views»): a sun behind a cloud."""
+    from PySide6.QtCore import QPointF, QRectF
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+    s = size * 3                                   # drawn big, shown small
+    pm = QPixmap(s, s)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    sun, ray = QColor("#ffc94a"), QColor("#ffb020")
+    c = QPointF(s * 0.40, s * 0.40)
+    p.setPen(QPen(ray, s * 0.06, Qt.SolidLine, Qt.RoundCap))
+    import math
+    for k in range(8):
+        a = math.radians(k * 45 + 22.5)
+        p.drawLine(QPointF(c.x() + math.cos(a) * s * 0.24, c.y() + math.sin(a) * s * 0.24),
+                   QPointF(c.x() + math.cos(a) * s * 0.33, c.y() + math.sin(a) * s * 0.33))
+    p.setPen(Qt.NoPen)
+    p.setBrush(sun)
+    p.drawEllipse(c, s * 0.18, s * 0.18)
+    parts = []
+    for kind, r in (("e", QRectF(s * 0.30, s * 0.50, s * 0.32, s * 0.30)),
+                    ("e", QRectF(s * 0.46, s * 0.40, s * 0.38, s * 0.38)),
+                    ("r", QRectF(s * 0.24, s * 0.62, s * 0.70, s * 0.22))):
+        part = QPainterPath()
+        if kind == "e":
+            part.addEllipse(r)
+        else:
+            part.addRoundedRect(r, s * 0.11, s * 0.11)
+        parts.append(part)
+    cloud = parts[0].united(parts[1]).united(parts[2])
+    p.setPen(QPen(QColor(60, 70, 85, 170), s * 0.035))
+    p.setBrush(QColor("#f4f7fb"))
+    p.drawPath(cloud)
+    p.end()
+    return QIcon(pm)
+
+
 class ViewsStrip(QFrame):
     """The plan and the four elevations — five icons, no text, under the
     «Plan view» switch while it is on; the one shown is lit."""
@@ -459,13 +498,18 @@ class ViewBar(QFrame):
         self.parts: dict[str, QPushButton] = {}
         # (+ «Slabs» after Structure — his ask, 2026-10-16: the slabs on
         # their own; the «View» chips went — the Plan view strip has them)
+        # (+ «Stairs» after it — his ask, 12/11: hiding the structure hid
+        # the stairs too; it decides the stairs and the ramps)
         keys = list(VISIBLE_PARTS)
         keys.insert(keys.index("structure") + 1, "slabs")
+        keys.insert(keys.index("slabs") + 1, "stairs")
+        own = {"slabs": "Slabs", "stairs": "Stairs"}
         for key in keys:
-            label = "Slabs" if key == "slabs" else PHASES[key].label
+            label = own.get(key) or PHASES[key].label
             b = _chip(label)
             b.setChecked(True)
-            b.setToolTip(f"Show / hide the {label.lower()}")
+            b.setToolTip("Show / hide the stairs and ramps" if key == "stairs"
+                         else f"Show / hide the {label.lower()}")
             b.toggled.connect(
                 lambda on, k=key: owner.on_view_option(f"show:{k}", on))
             self.parts[key] = b
@@ -495,6 +539,24 @@ class ViewBar(QFrame):
         ext.setToolTip("Zoom to the whole model")
         ext.clicked.connect(lambda: owner.on_camera("extents"))
         lay.addWidget(ext)
+        # the SKY behind the view (PLANO_FUNDO_HDRI.md, 14/11/2026): the
+        # chip shows / hides it, its arrow opens the sky window
+        lay.addWidget(_vsep())
+        from . import skyview
+        self.sky = _chip("Sky")
+        self.sky.setIcon(_sky_icon())
+        self.sky.setIconSize(QSize(18, 18))
+        self.sky.setToolTip("Show / hide the sky picture behind the 3D view")
+        self.sky.toggled.connect(lambda on: skyview.toggle(owner, on))
+        lay.addWidget(self.sky)
+        self.sky_more = _chip("▾", checkable=False)
+        self.sky_more.setToolTip("Pick the sky: rotation, exposure, horizon, ground")
+        self.sky_more.clicked.connect(
+            lambda: skyview.open_window(owner, self.sky_more))
+        lay.addWidget(self.sky_more)
+        # the project in front gets its sky as ArchXQ starts (then at each
+        # change of document: ui._on_doc_changed)
+        QTimer.singleShot(400, lambda: skyview.apply(owner))
 
     def sync_view(self, plan: bool) -> None:
         """(The «View» chips are gone — 2026-10-16.)"""

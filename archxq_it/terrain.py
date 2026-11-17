@@ -335,25 +335,47 @@ def why_not_dig(doc: dict, corners, ignore: str | None = None) -> str | None:
     plot = doc.get("plot")
     if not plot:
         return "Draw the plot first"
-    if not plotgeo.within(snug(doc, corners), plot["corners"]):
+    if not plotgeo.covered(snug(doc, corners), plot["corners"]):
         return "The excavation has to stay inside the plot"
     return None
 
 
-def snug(doc: dict, corners, gap: float = 0.02, reach: float = 0.05):
-    """The outline the GROUND is cut by. An excavation on the plot's sides
-    (a basement dug to the boundary, his case 2026-10-05) keeps the
-    measures it was given in the data; only its geometry has its corners
-    nudged ``gap`` inside, the rim the ground keeps (``plotgeo.within``).
-    Corners more than ``reach`` outside are left: that one is a real
-    mistake, and is said."""
+def snug(doc: dict, corners, reach: float = 0.05):
+    """The outline the GROUND is cut by: the excavation's own, exactly —
+    on the plot's side it is dug right TO it (support #93, 2026-11-11:
+    the 2 cm rim the ground kept there is gone, «a medida técnica é
+    soberana»). A corner a hair past a side (≤ ``reach``) is taken onto
+    it; one further out is a real mistake, left, and said."""
     plot = doc.get("plot")
     if not plot or len(corners) < 3:
         return corners
     if plotgeo.within(corners, plot["corners"]):
         return corners
-    out = _nudged(plot["corners"], corners, gap, reach)
-    return out if plotgeo.within(out, plot["corners"]) else corners
+    out = _onto_sides(plot["corners"],
+                      _nudged(plot["corners"], corners, 0.0, reach))
+    return out if plotgeo.covered(out, plot["corners"]) else corners
+
+
+def _onto_sides(outer, corners, tol: float = 1e-4) -> list:
+    """Corners within ``tol`` of a side put EXACTLY on its line (no
+    rounding): the ground's pieces and the pit then share that side, with
+    no sliver between them."""
+    out = []
+    for p in corners:
+        q = [float(p[0]), float(p[1])]
+        for i in range(len(outer)):
+            a, b = outer[i], outer[(i + 1) % len(outer)]
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            L2 = ex * ex + ey * ey
+            if L2 < 1e-18:
+                continue
+            t = ((q[0] - a[0]) * ex + (q[1] - a[1]) * ey) / L2
+            if -1e-9 <= t <= 1 + 1e-9 and \
+                    plotgeo._dist_to_segment(q, a, b) < tol:
+                q = [a[0] + t * ex, a[1] + t * ey]
+                break
+        out.append(q)
+    return out
 
 
 def on_boundary(doc: dict, corners, reach: float = 0.05):
@@ -412,7 +434,8 @@ def opened(doc: dict) -> list[dict]:
     if not plot:
         return []
     return [d for d in doc.get("digs") or [] if len(d["corners"]) >= 3
-            and plotgeo.within(top_of(_cut_by(d, doc), doc), plot["corners"])]
+            and plotgeo.covered(top_of(_cut_by(d, doc), doc),
+                                plot["corners"])]
 
 
 def _cut_by(dig: dict, doc: dict) -> dict:
@@ -453,6 +476,60 @@ def volume(dig: dict, doc: dict) -> float:
 # ---- the faces -------------------------------------------------------------------------
 def _key(p) -> tuple:
     return (round(p[0], 4), round(p[1], 4))
+
+
+#: an excavation dug to the boundary: draw an earth face ON the boundary,
+#: from its floor up to the ground (the neighbour's earth)? No (2026-11-11):
+#: the ground is a block cut at the plot's sides, and the pit's notch in
+#: that cut is what closes the solid — that face would hang, its top edge
+#: meeting nothing. Kept as a switch to compare on screen.
+BOUNDARY_EARTH = False
+ON_SIDE = 1e-4          # m: a point this close to a plot side is on it
+
+
+def _on_side(p, a, b) -> bool:
+    return plotgeo._dist_to_segment(p, a, b) < ON_SIDE
+
+
+def _on_boundary_edge(a, b, sides2d, touched) -> bool:
+    """The edge (a, b) lies along one of the plot's sides an excavation
+    was dug to."""
+    return any(_on_side(a, *sides2d[i]) and _on_side(b, *sides2d[i])
+               for i in touched)
+
+
+def _side_profile(seg, regions, edge_map, floor_z, gz) -> list:
+    """The top of the ground block's side ``seg`` where an excavation was
+    dug to it: [(x, y, z)] from its first corner to its second, through
+    every piece of the arrangement on it, each at that piece's surface (a
+    step where a pit's floor meets the ground: both points). [] when the
+    pieces on it can't be followed (the side drawn as before)."""
+    a, b = seg
+    ex, ey = b[0] - a[0], b[1] - a[1]
+    L2 = ex * ex + ey * ey
+    if L2 < 1e-18:
+        return []
+    on = {_key(a): a, _key(b): b}
+    for r in regions:
+        for loop in [r["outer"]] + r["holes"]:
+            for p in loop:
+                if _on_side(p, a, b):
+                    on.setdefault(_key(p), p)
+    stops = sorted(on.values(), key=lambda p: ((p[0] - a[0]) * ex
+                                               + (p[1] - a[1]) * ey) / L2)
+    top = []
+    for p, q in zip(stops, stops[1:]):
+        ks = edge_map.get(frozenset((_key(p), _key(q))))
+        if not ks:
+            return []
+        z = floor_z(regions[ks[0]])
+        zp, zq = z(p), z(q)
+        if BOUNDARY_EARTH:
+            zp, zq = min(zp, gz(p)), min(zq, gz(q))
+        for pt in ((p[0], p[1], zp), (q[0], q[1], zq)):
+            if not top or top[-1] != pt:
+                top.append(pt)
+    return top
 
 
 def _tri_faces(outer, holes, zf, earcut):
@@ -538,6 +615,15 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
     # between survey points (a hill, a hollow) is followed exactly, and a
     # pit's wall bends where the ground does
     whole = bool(digs) and not flat
+    # an excavation dug TO the boundary (support #93, 2026-11-11): the
+    # plot's sides go into the arrangement too, so the ground is pieces
+    # around it (as ``whole`` above) — a hole can't touch the face's rim
+    sides2d = [(tuple(pts[i][:2]), tuple(pts[(i + 1) % len(pts)][:2]))
+               for i in range(len(pts))]
+    touched = {i for i, (a, b) in enumerate(sides2d)
+               if any(_on_side(p, a, b) for d in digs
+                      for p in top_of(d, doc))}
+    edged = bool(touched) and not whole
 
     memo: dict = {}
 
@@ -564,6 +650,8 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
                     if e not in done:
                         done.add(e)
                         segs.append((TP[a][:2], TP[b][:2]))
+        elif edged:
+            segs += sides2d
         for d in digs:
             c, t = d["corners"], tops[d["id"]]
             segs += [(t[i], t[(i + 1) % len(t)]) for i in range(len(t))]
@@ -630,9 +718,11 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
            if sum(1 for k in ks if regions[k]["dig"] is not None) == 1
            and len(ks) == 1
            for a, b in [tuple(e)]]
-    openings = ([o for o, _h, _ip in arrange(rim)] if rim and not whole
-                else [])
-    if whole:
+    openings = ([o for o, _h, _ip in arrange(rim)]
+                if rim and not whole and not edged else [])
+    if edged:
+        pass        # every piece of ground is a region (drawn below)
+    elif whole:
         # every piece of ground is a region of the arrangement (below);
         # the ground's creases between them drawn smooth, fold lines not
         hard2d = set()
@@ -711,6 +801,9 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
     for e, ks in side.items():
         a, b = tuple(e)
         sides = [regions[k] for k in ks]
+        if len(sides) == 1 and not BOUNDARY_EARTH and \
+                _on_boundary_edge(a, b, sides2d, touched):
+            continue        # on the boundary: the block's side closes it
         if len(sides) == 1:
             sides.append({"dig": None, "ip": None})   # the ground outside
         ra, rb = sides
@@ -761,6 +854,16 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
         n = len(pts)
         for i in range(n):
             j = (i + 1) % n
+            if i in touched:
+                # an excavation dug to this side: the side's top follows
+                # what meets it — the pit's floor, the ground, a fill's top
+                top = _side_profile(sides2d[i], regions, side, floor_z, gz)
+                if top:
+                    loop = [bot[i], bot[j]] + list(reversed(top))
+                    loop = [p for k, p in enumerate(loop)
+                            if p != loop[k - 1]]
+                    faces.append(loop)
+                    continue
             faces.append([bot[i], bot[j], ring[j], ring[i]])
 
     return {"plot": {"faces": faces, "soft": soft},

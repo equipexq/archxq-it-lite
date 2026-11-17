@@ -112,6 +112,50 @@ def _plain_door(o) -> bool:
     return not _shop(o) and not _garage(o)
 
 
+#: the plain walls' cards (PLANO_PAREDE_CAIXILHO.md, Part 1 — his ask,
+#: 11/11/2026): key, label, thickness, look (materials.WALL_LOOKS), tip
+WALL_CARDS = (
+    ("masonry25", "Masonry 25", 0.25, "render",
+     "A 25 cm masonry wall, rendered and painted a light colour"),
+    ("concrete15", "Concrete 15", 0.15, "concrete",
+     "A 15 cm wall of exposed concrete"),
+    ("concrete20", "Concrete 20", 0.20, "concrete",
+     "A 20 cm wall of exposed concrete"),
+    ("brick", "Exposed brick", 0.11, "brick",
+     "A half-brick wall (11 cm), the bricks seen"),
+    ("cblock", "Concrete block", 0.14, "block",
+     "A 14 cm wall of concrete blocks, the blocks seen"),
+    ("boards_v", "Vertical boards", 0.05, "boards_v",
+     "Vertical timber boards with battens over the joints (5 cm)"),
+    ("boards_h", "Horizontal boards", 0.05, "boards_h",
+     "Horizontal timber lap siding (5 cm)"),
+    ("glass_block", "Glass block", 0.10, "glass_block",
+     "A 10 cm wall of glass blocks"),
+)
+#: a grid wall's thickness (its frame's depth)
+GW_T = 0.10
+#: the grid walls' cards (gridwall.MODELS): model, label, tip
+GRID_CARDS = (
+    ("industrial", "Grid wall — Industrial",
+     "A frame between the columns, under the beam: an opaque panel at the "
+     "foot, a band of awning windows, glass over it — one line along the "
+     "whole front, each bay between columns fills itself"),
+    ("full", "Grid wall — Full grid",
+     "A frame between the columns, under the beam: all glass, in a grid "
+     "of panes — one line along the whole front"),
+    ("office", "Grid wall — Office band",
+     "A frame between the columns, under the beam: an opaque sill panel "
+     "and glass from it to the head — one line along the whole front"),
+    ("storefront", "Grid wall — Storefront",
+     "A shop's front: glass, a double door in the middle of each bay and a light over it — up to the wall's own height"),
+    ("living", "Grid wall — Living room",
+     "A living room's glass wall: fixed glass at the ends, sliding doors between them, down to the floor"),
+    ("partition", "Grid wall — Glass partition",
+     "A glass partition indoors, with its glass door and a light over it"),
+    ("vent", "Grid wall — Sliding and louvre",
+     "Each row its own: a low row of fixed glass, a row of sliding windows with no mullions, a louvre over them"),
+)
+
 #: a column's ready styles: key, label, section, base, capital, tip
 COLUMN_ORDERS = (
     ("round_tuscan", "Round — Tuscan", "round", "tuscan", "tuscan",
@@ -399,6 +443,7 @@ SILL_PARTS = (
 #: option «oshape» (a window's «shape» is how it is drawn), its record's
 #: «shape»; a card's leaves stay in an arch's rectangle
 SHAPE_CHOICES = (("rect", "Rectangle"), ("round_arch", "Round arch"),
+                 ("round_top", "Rounded top"),
                  ("seg_arch", "Segmental arch"), ("pointed", "Pointed arch"),
                  ("pentagon", "Gable top"), ("trapezoid", "Trapezoid"),
                  ("triangle", "Triangle"), ("circle", "Circle"),
@@ -414,8 +459,9 @@ SHAPE_PARTS = (
          tip="The arches and the gable keep the leaves in their rectangle, "
              "a fixed light over them; the others are fixed glass"),
     _size("rise", "Rise", 0.05, 2.00, 0.01, 0.30, (0.20, 0.30, 0.40, 0.60),
-          _shaped("seg_arch", "pointed", "pentagon"),
-          tip="How high its top rises over its sides"),
+          _shaped("seg_arch", "pointed", "pentagon", "round_top"),
+          tip="How high its top rises over its sides (Rounded top: its "
+              "corners' radius)"),
     _size("top_w", "Top width", 0.05, 4.00, 0.05, 0.60, (0.40, 0.60, 0.80),
           _shaped("trapezoid"), tip="Its top's width, centred"))
 
@@ -829,6 +875,11 @@ CATALOG = {
         Type("round_arch", "Round arch", "win_round_arch",
              _shape_set("round_arch"), "A half-round top",
              {"w": 1.00, "h": 1.50, "sill": 0.90}),
+        # (F2, 2026-11-13: a customer's balcony opening — its two top
+        # corners rounded, the leaves under them)
+        Type("round_top", "Rounded top", "win_round_top",
+             _shape_set("round_top"), "Its two top corners rounded",
+             {"w": 1.20, "h": 1.60, "sill": 0.90, "rise": 0.30}),
         Type("seg_arch", "Segmental arch", "win_seg_arch",
              _shape_set("seg_arch"), "A shallow curved top",
              {"w": 1.20, "h": 1.40, "sill": 0.90}),
@@ -869,6 +920,24 @@ CATALOG = {
              "each slab's edge — drawn, joined and moved as any wall. Its "
              "window (double-click): the mullions', transoms' and posts' "
              "widths and depths, the glass, the colours")) + tuple(
+            # (12/11/2026, his ask: more plain walls, one of timber boards)
+            # a thickness + what its faces are made of
+            # (materials.WALL_LOOKS: a texture in the Pro, a colour in the
+            # Lite) — no layers, none of YOUR types
+            Type(k, label, "wall_look_" + look,
+                 {"t": t, "cw": False, "wtype": "", "layers": None,
+                  "look": look}, tip)
+            for k, label, t, look, tip in WALL_CARDS) + (
+            # the GRID WALL (gridwall.py, Pro): a frame and its cells
+            () if edition.lite() else tuple(
+                # (its frame's depth for the next one drawn; one picked
+                # for a wall selected keeps the wall's thickness)
+                # («look»: None — so it says MORE than «15 cm» / «Partition»,
+                # which a grid of that thickness also fits: its card wins)
+                Type("gw_" + m, label, "wall_grid_" + m,
+                     {"cw": False, "wtype": "", "layers": None,
+                      "look": None, "gwm": m}, tip, {"t": GW_T})
+                for m, label, tip in GRID_CARDS)) + tuple(
             # BY MARKET (markets.py, 2026-11-02): a click puts the type in
             # the project's types and picks it (frames are the Pro's)
             Type("m_" + m[0], m[1], "mk_" + m[0], {"_market": m[0]}, m[2])
@@ -884,7 +953,56 @@ CATALOG = {
               ((0, "1"), (1, "2"), (2, "3"), (3, "4")),
               lambda o: bool(o.get("cw"))),
          _size("cw_s", "Mullions every", 0.50, 3.00, 0.05, 1.25,
-               (1.00, 1.25, 1.50, 2.00), lambda o: bool(o.get("cw"))))),
+               (1.00, 1.25, 1.50, 2.00), lambda o: bool(o.get("cw"))),
+         # timber boards: their relief, so a sheet's elevation shows them
+         Part("clad", "Boards", (("battens", "Battens"),
+                                 ("lap", "Lap siding"), ("none", "Flat")),
+              lambda o: o.get("look") in ("boards_v", "boards_h")
+              or o.get("clad") in ("battens", "lap"),
+              tip="Battens over the joints, or lap siding — drawn, so a "
+                  "sheet's elevation shows the boards"),
+         # a grid wall: its columns in each bay (between columns)
+         Part("gw_n", "Panes per bay", ((0, "Auto"), (2, "2"), (3, "3"),
+                                        (4, "4"), (5, "5"), (6, "6")),
+              lambda o: bool(o.get("gwm")),
+              tip="How many panes side by side between two columns — "
+                  "Auto: as wide as its model makes them"),
+         _size("gw_sill", "Panel height", 0.0, 2.00, 0.05, 1.00,
+               (0.0, 0.90, 1.00, 1.10, 1.20),
+               lambda o: o.get("gwm") in ("industrial", "office"),
+               tip="The opaque panel at the foot, from the floor"),
+         _size("gw_band", "Window band", 0.20, 1.50, 0.05, 0.60,
+               (0.40, 0.50, 0.60, 0.80),
+               lambda o: o.get("gwm") == "industrial",
+               tip="The band of awning windows over the panel"),
+         Part("gw_corners", "Corners", (("mitred", "Mitred"),
+                                        ("butt", "Butt")),
+              lambda o: bool(o.get("gwm")),
+              tip="How the frame's posts and rails meet: cut at 45°, as a "
+                  "PVC or aluminium frame — or the posts running through"),
+         # a click on a pane fills it with this (gridcell.py)
+         Part("gw_cell", "Fill a pane", (
+             ("glass", "Glass"), ("panel", "Panel"), ("awning", "Awning"),
+             ("hopper", "Hopper"), ("pivot", "Pivot"),
+             ("casement", "Casement"), ("sliding", "Sliding"),
+             ("louvre", "Louvre"), ("door", "Door"),
+             ("door2", "Double door"), ("door_s", "Sliding door"),
+             ("empty", "Empty")),
+              lambda o: bool(o.get("gwm")),
+              tip="Pick what goes in, then click the panes of a grid "
+                  "wall — only the pane clicked changes"),
+         Part("gw_join", "Join panes", (("join", "Join"),
+                                        ("split", "Split")),
+              lambda o: bool(o.get("gwm")),
+              tip="Join: click two panes of one bay — they and all "
+                  "between them become one (a wide door, a tall glass). "
+                  "Split: click a joined pane"),
+         # one grid's pattern onto others (phase C)
+         Part("gw_pat", "Pattern", (("copy", "Copy"), ("paste", "Paste")),
+              lambda o: bool(o.get("gwm")),
+              tip="Copy: the selected grid wall's pattern is kept. Paste: "
+                  "it goes onto the grid walls selected (their lengths "
+                  "and places stay)"))),
     "column": Shelf("Columns", (
         Type("rect", "Rectangular", "col_rect",
              {"section": "rect", "cbase": "none", "ccap": "none"}),
@@ -1191,7 +1309,9 @@ CATALOG = {
         (Part("how", "How", PF.HOWS,
               tip="Point by point: click where it runs, at any height, in 3D "
                   "(Tab: the other side). On a line: click a line and the "
-                  "profile runs along it, level, sloped or curved. Circle: "
+                  "profile runs along it, level, sloped or curved. Closed "
+                  "loop: click a line or a face and it runs all round, in "
+                  "one click. Circle: "
                   "click the centre on a face, then the radius (a medallion). "
                   "Rectangle: click two opposite corners on a face (a raised "
                   "panel). By room: "
@@ -1250,7 +1370,11 @@ CATALOG = {
              "each editable; anything else, copies of its faces"),),
         (Part("how", "How", PF.COPY_HOWS,
               tip="Point by point: along a line you draw, at any height. On "
-                  "a line: click one that is in the model. By room: click "
+                  "a line: click one that is in the model. Closed loop: click "
+                  "a line or a face and they stand all round it, in one "
+                  "click. Circle: click the centre on a face, then the "
+                  "radius. Rectangle: click two opposite corners on a face. "
+                  "By room: click "
                   "inside a room — the copies run round its walls. By wall "
                   "face: along a wall's face (Shift + click: the next face "
                   "joins)"),
@@ -1530,7 +1654,9 @@ def _same(a, b) -> bool:
 UNSET = {"cbase": "none", "ccap": "none",
          "top": "square", "oshape": "rect", "louvred": False, "bars_x": 0,
          "bars_z": 0, "top_h": 0.0, "lw1": 0.0, "lw2": 0.0, "lw3": 0.0,
-         "garage": "sectional", "leaf": "solid", "leaves": 1}
+         "garage": "sectional", "leaf": "solid", "leaves": 1,
+         # a wall without boards' relief (clad.py)
+         "clad": "none"}
 #: a card's value that its variants still fit: a «solid» leaf is also a
 #: panelled or a half-glass one (the Swing card stays lit, 2026-10-27)
 ALIKE = {("leaf", "solid"): ("solid", "panels", "half")}
@@ -1731,6 +1857,135 @@ def _wall(p, t) -> None:
     p.drawRect(QRectF(48 - t / 2, 10, t, 76))
     p.setPen(_pen(INK, 2.5))
     p.drawLine(QPointF(14, 86), QPointF(82, 86))
+
+
+def _wall_look(p, look: str) -> None:
+    """A plain wall's card: its face seen, as it is made (brick courses,
+    blocks, boards…), on its floor."""
+    x0, x1, y0, y1 = 16.0, 80.0, 14.0, 84.0
+    face = {"render": QColor("#e9e4da"), "concrete": QColor("#a3a39d"),
+            "brick": QColor("#b0533a"), "block": QColor("#b3b3ad"),
+            "boards_v": QColor("#c99a62"), "boards_h": QColor("#bf8c55"),
+            "glass_block": QColor("#b5d7d6")}.get(look, ACCENT)
+    p.setPen(Qt.NoPen)
+    p.setBrush(face)
+    p.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+    line = QColor("#3b4046")
+    if look in ("brick", "block"):
+        h, w = (7.0, 14.0) if look == "brick" else (10.0, 21.0)
+        p.setPen(_pen(QColor("#efe9e0") if look == "brick" else line, 1.4))
+        y, row = y0 + h, 0
+        while y < y1 - 0.5:
+            p.drawLine(QPointF(x0, y), QPointF(x1, y))
+            y += h
+        y, row = y0, 0
+        while y < y1 - 0.5:
+            x = x0 + (w / 2 if row % 2 else w)
+            while x < x1 - 0.5:
+                p.drawLine(QPointF(x, y), QPointF(x, min(y + h, y1)))
+                x += w
+            y += h
+            row += 1
+    elif look == "concrete":                  # the form-tie holes
+        p.setPen(Qt.NoPen)
+        p.setBrush(line)
+        for y in (30, 54, 76):
+            for x in (26, 48, 70):
+                p.drawEllipse(QPointF(x, y), 1.6, 1.6)
+        p.setPen(_pen(QColor("#8c8c86"), 1.2))
+        for y in (42, 66):
+            p.drawLine(QPointF(x0, y), QPointF(x1, y))
+    elif look == "boards_v":                  # battens over the joints
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#8a5f33"))
+        for x in (24, 40, 56, 72):
+            p.drawRect(QRectF(x - 2, y0, 4, y1 - y0))
+    elif look == "boards_h":                  # lap siding: a shadow each
+        p.setPen(_pen(QColor("#7a5430"), 2.2))
+        y = y0 + 9
+        while y < y1:
+            p.drawLine(QPointF(x0, y), QPointF(x1, y))
+            y += 9
+    elif look == "glass_block":
+        p.setPen(_pen(QColor("#f4fbfb"), 2.0))
+        for x in (32, 48, 64):
+            p.drawLine(QPointF(x, y0), QPointF(x, y1))
+        for y in (30, 46, 62, 78):
+            p.drawLine(QPointF(x0, y), QPointF(x1, y))
+    p.setPen(_pen(INK, 2.5))
+    p.drawLine(QPointF(8, 86), QPointF(88, 86))
+
+
+def _wall_grid(p, model: str) -> None:
+    """A grid wall's card: two columns, the beam over them, the frame
+    between — panel, awning windows and glass (Industrial) or all glass."""
+    glass = QColor("#8fc3dd")
+    glass.setAlpha(150)
+    p.setPen(Qt.NoPen)
+    p.setBrush(DIM)
+    p.drawRect(QRectF(6, 10, 84, 9))                     # the beam
+    p.drawRect(QRectF(6, 19, 9, 67))                     # the columns
+    p.drawRect(QRectF(81, 19, 9, 67))
+    x0, x1, y0, y1 = 15.0, 81.0, 19.0, 86.0
+    cols = 3
+    xs = [x0 + (x1 - x0) * i / cols for i in range(cols + 1)]
+    if model == "industrial":
+        rows = [(y0, 56.0, "glass"), (56.0, 70.0, "awning"),
+                (70.0, y1, "panel")]
+    elif model == "office":
+        rows = [(y0, 64.0, "glass"), (64.0, y1, "panel")]
+    elif model in ("storefront", "partition"):
+        rows = [(y0, 36.0, "glass"), (36.0, y1, "glass")]
+    elif model == "living":
+        rows = [(y0, y1, "glass")]
+    elif model == "vent":
+        rows = [(y0, 44.0, "louvre"), (44.0, 70.0, "glass"),
+                (70.0, y1, "glass")]
+    else:
+        rows = [(y0, 52.0, "glass"), (52.0, y1, "glass")]
+    for a, b in zip(xs, xs[1:]):
+        for top, bot, fill in rows:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#e9e6df") if fill == "panel" else glass)
+            p.drawRect(QRectF(a, top, b - a, bot - top))
+            if fill == "awning":                 # hinged at the top
+                p.setPen(_pen(INK, 1.4, True))
+                p.drawLine(QPointF(a + 2, top + 2), QPointF((a + b) / 2,
+                                                            bot - 2))
+                p.drawLine(QPointF(b - 2, top + 2), QPointF((a + b) / 2,
+                                                            bot - 2))
+    if model == "vent":                          # the louvre's slats
+        p.setPen(_pen(INK, 1.2))
+        for k in range(1, 6):
+            y = y0 + (44.0 - y0) * k / 6
+            p.drawLine(QPointF(x0 + 2, y), QPointF(x1 - 2, y))
+    p.setPen(_pen(ACCENT, 2.6))
+    p.setBrush(Qt.NoBrush)
+    for x in xs:
+        if model == "vent" and x not in (xs[0], xs[-1]):
+            # (the sliding row: no mullions)
+            p.drawLine(QPointF(x, y0), QPointF(x, 44.0))
+            p.drawLine(QPointF(x, 70.0), QPointF(x, y1))
+            continue
+        p.drawLine(QPointF(x, y0), QPointF(x, y1))
+    for _t, bot, _f in rows[:-1]:
+        p.drawLine(QPointF(x0, bot), QPointF(x1, bot))
+    p.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+    if model in ("storefront", "partition", "living"):
+        # the door in the middle pane, down to the floor
+        a, b = xs[1], xs[2]
+        top = y0 + 3 if model == "living" else 39.0
+        p.setPen(_pen(INK, 2.2))
+        p.drawRect(QRectF(a + 3, top, b - a - 6, y1 - top - 1))
+        if model == "storefront":
+            p.drawLine(QPointF((a + b) / 2, top), QPointF((a + b) / 2,
+                                                          y1 - 1))
+        elif model == "living":                  # it slides
+            p.setPen(_pen(INK, 1.4))
+            ym = (top + y1) / 2
+            p.drawLine(QPointF(a + 7, ym), QPointF(b - 7, ym))
+            p.drawLine(QPointF(a + 7, ym), QPointF(a + 11, ym - 3))
+            p.drawLine(QPointF(a + 7, ym), QPointF(a + 11, ym + 3))
 
 
 def _wall_curtain(p) -> None:
@@ -2059,9 +2314,26 @@ def _column_order(p, sec, cbase, ccap) -> None:
 
 def _copy(p, key) -> None:
     """An object copied along a path: three of it, side by side, on a line
-    seen from the front — the middle one in the accent."""
+    seen from the front — the middle one in the accent. A model of the
+    catalog: its own picture (copy_img/, tools/copy_models_build.py)."""
+    if key in PF.COPY_MODELS:
+        import os
+        pic = QPixmap(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "copy_img", key + ".png"))
+        if not pic.isNull():
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawPixmap(QRectF(4, 4, 88, 88), pic, QRectF(pic.rect()))
+            return
     p.setPen(_pen(DIM, 2, dash=True))
     p.drawLine(QPointF(4, 84), QPointF(92, 84))         # the path
+    if key == "hedge":                                  # one, running on
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#4f7f3f"))
+        p.drawRoundedRect(QRectF(6, 50, 84, 34), 9, 9)
+        p.setPen(_pen(QColor("#3c6531"), 1.5))
+        for x in (34, 62):
+            p.drawLine(QPointF(x, 54), QPointF(x, 82))
+        return
     for i, x in enumerate((18, 48, 78)):
         ink = QColor("#2f7df6") if i == 1 else INK
         p.setPen(Qt.NoPen)
@@ -2082,6 +2354,47 @@ def _copy(p, key) -> None:
             p.drawEllipse(QPointF(x, 62), 9, 7)
         elif key == "post":
             p.drawRect(QRectF(x - 4, 40, 8, 44))
+        elif key == "lit_bollard":
+            p.drawRoundedRect(QRectF(x - 6, 54, 12, 30), 3, 3)
+            p.setBrush(QColor("#f6e3a1"))
+            p.drawRect(QRectF(x - 5, 58, 10, 6))
+        elif key == "street_lamp":
+            p.drawRect(QRectF(x - 6, 76, 12, 8))
+            p.drawRect(QRectF(x - 1.5, 34, 3, 44))
+            p.setBrush(QColor("#f6e3a1"))
+            lant = QPainterPath()
+            lant.moveTo(x - 3, 34)
+            lant.lineTo(x - 6, 22)
+            lant.lineTo(x + 6, 22)
+            lant.lineTo(x + 3, 34)
+            lant.closeSubpath()
+            p.drawPath(lant)
+            p.setBrush(ink)
+            roof = QPainterPath()
+            roof.moveTo(x - 8, 22)
+            roof.lineTo(x, 13)
+            roof.lineTo(x + 8, 22)
+            roof.closeSubpath()
+            p.drawPath(roof)
+        elif key == "leafy_tree":
+            p.setBrush(QColor("#9a6a3e"))
+            p.drawRect(QRectF(x - 2, 58, 4, 26))
+            p.setBrush(QColor("#5b9a4a") if i != 1 else ink)
+            p.drawEllipse(QPointF(x - 6, 50), 8, 8)
+            p.drawEllipse(QPointF(x + 6, 48), 8, 8)
+            p.drawEllipse(QPointF(x, 38), 10, 10)
+        elif key == "baluster":
+            p.drawRect(QRectF(x - 6, 78, 12, 6))
+            p.drawRect(QRectF(x - 6, 44, 12, 5))
+            vase = QPainterPath()
+            vase.moveTo(x - 3, 78)
+            vase.cubicTo(x - 9, 72, x - 7, 62, x - 2, 54)
+            vase.lineTo(x - 3, 49)
+            vase.lineTo(x + 3, 49)
+            vase.lineTo(x + 2, 54)
+            vase.cubicTo(x + 7, 62, x + 9, 72, x + 3, 78)
+            vase.closeSubpath()
+            p.drawPath(vase)
         else:                                           # one of his own
             p.setPen(_pen(ink, 2))
             p.setBrush(Qt.NoBrush)
@@ -2241,6 +2554,16 @@ PICS = {
     "win_pivot": _win_pivot,
     "wall_15": lambda p: _wall(p, 15), "wall_20": lambda p: _wall(p, 20),
     "wall_10": lambda p: _wall(p, 10), "wall_curtain": _wall_curtain,
+    **{"wall_look_" + _k: (lambda p, k=_k: _wall_look(p, k))
+       for _k in ("render", "concrete", "brick", "block", "boards_v",
+                  "boards_h", "glass_block")},
+    "wall_grid_industrial": lambda p: _wall_grid(p, "industrial"),
+    "wall_grid_full": lambda p: _wall_grid(p, "full"),
+    "wall_grid_office": lambda p: _wall_grid(p, "office"),
+    "wall_grid_storefront": lambda p: _wall_grid(p, "storefront"),
+    "wall_grid_living": lambda p: _wall_grid(p, "living"),
+    "wall_grid_partition": lambda p: _wall_grid(p, "partition"),
+    "wall_grid_vent": lambda p: _wall_grid(p, "vent"),
     "col_rect": _col_rect, "col_round": _col_round,
     "beam_s": lambda p: _beam(p, 15, 40), "beam_m": lambda p: _beam(p, 20,
                                                                     45),
@@ -2291,6 +2614,7 @@ def _opening_pics() -> dict:
         "win_awning": lambda p: W(p, "awning"),
         "win_pivot": lambda p: W(p, "pivot"),
         "win_round_arch": lambda p: CP.shaped(p, "round_arch"),
+        "win_round_top": lambda p: CP.shaped(p, "round_top"),
         "win_seg_arch": lambda p: CP.shaped(p, "seg_arch"),
         "win_gothic": lambda p: CP.shaped(p, "pointed"),
         "win_gable": lambda p: CP.shaped(p, "pentagon"),
@@ -2957,18 +3281,24 @@ class LibraryPanel(QWidget):
             items = list(self.your_types(self.key) or ())
         except Exception:  # noqa: BLE001 — no cards, the rest stays
             items = []
+        from .help import help_button
         lab = QLabel(tr("Your types"))
         lab.setStyleSheet("color: #8a9099; font-size: 11px; "
                           "letter-spacing: 1px;")
-        self.body_lay.addWidget(lab)
+        # the title and its «?»: how to make one (his ask, 10/11/2026 — the
+        # «+ New from a face» link said nothing of the how)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(lab)
+        head.addWidget(help_button("yours_" + self.key))
+        head.addStretch(1)
+        self.body_lay.addLayout(head)
         grid = QGridLayout()
         grid.setSpacing(6)
         cur = opts.get(opt) or ""
         # ALL of them, no favourites: his own, made and deleted at will (his
         # call, 2026-10-28 — «in use» + its star never let him delete one);
         # the trash DELETES the type (asked first; its walls keep the layers)
-        if not items:
-            lab.hide()
         prof = self.key == "profile"
         for i, t in enumerate(items):
             b = self._card(QSize(84, 86), CARD_CSS)
@@ -2999,14 +3329,31 @@ class LibraryPanel(QWidget):
             p.setIcon(trash_icon())
             p.setIconSize(QSize(14, 14))
             grid.addWidget(b, i // 3, i % 3)
+        # the last card: «Add» — the «More» card's look (the ring with +, the
+        # dashed border: «here is more», one sign everywhere — his call,
+        # 10/11/2026), in place of the «+ New from a face» link
+        a = self._card(QSize(84, 86), MORE_CSS)
+        a.setIcon(more_icon())
+        a.setIconSize(QSize(40, 40))
+        a.setText(tr("Add"))
+        a.setToolTip(new_type_tip(self.key))
+        a.setCursor(Qt.PointingHandCursor)
+        a.clicked.connect(lambda _c=False: self.on_pick(
+            self.key, {"_newtype": True}))
+        grid.addWidget(a, len(items) // 3, len(items) % 3)
+        self.add_card = a
+        # three even columns, as the strip above — with one or two cards
+        # the row spread out of line with it
+        for c in range(3):
+            grid.setColumnStretch(c, 1)
+            grid.setColumnMinimumWidth(c, 84)
         self.body_lay.addLayout(grid)
         # the types' own actions (A4): the one marked edited (its window:
         # name + layers) or duplicated — deleted: its card's trash; every
         # type to a file and back — another project, another PC
         row = QHBoxLayout()
         row.setSpacing(2)
-        acts = [("_new", tr("+ New from a face") if prof
-                 else tr("+ New type"))]
+        acts = []
         if cur and any(t["id"] == cur for t in items):
             acts += [("edit", tr("Edit…"))] + (
                 [] if prof else [("duplicate", tr("Duplicate"))])
@@ -3021,16 +3368,12 @@ class LibraryPanel(QWidget):
             b.setStyleSheet("QPushButton { color: #5bc8e8; border: none; "
                             "padding: 1px 4px; } QPushButton:hover { "
                             "text-decoration: underline; }")
-            if act == "_new":
-                b.setToolTip(new_type_tip(self.key))
-                b.clicked.connect(lambda _c=False: self.on_pick(
-                    self.key, {"_newtype": True}))
-            else:
-                b.clicked.connect(lambda _c=False, act=act: self.on_pick(
-                    self.key, {"_types": act}))
+            b.clicked.connect(lambda _c=False, act=act: self.on_pick(
+                self.key, {"_types": act}))
             row.addWidget(b)
-        row.addStretch(1)
-        self.body_lay.addLayout(row)
+        if acts:
+            row.addStretch(1)
+            self.body_lay.addLayout(row)
 
     # ---- favourites (0.17.0) ----------------------------------------------------
     def _fav_state(self, shelf: Shelf) -> None:
@@ -3429,7 +3772,16 @@ class AllTypesDialog(QDialog):
                 h = QLabel(tr(name))
                 h.setStyleSheet("color: #8a9099; font-size: 11px; "
                                 "letter-spacing: 1px;")
-                lay.addWidget(h)
+                if new_card:                 # «yours»: its «?» — how to add
+                    from .help import help_button
+                    hr = QHBoxLayout()
+                    hr.setSpacing(6)
+                    hr.addWidget(h)
+                    hr.addWidget(help_button("yours_" + self.key))
+                    hr.addStretch(1)
+                    lay.addLayout(hr)
+                else:
+                    lay.addWidget(h)
             grid = QGridLayout()
             grid.setSpacing(6)
             cards = [self._card(k, by.get(k), yours.get(k),
@@ -3481,9 +3833,12 @@ class AllTypesDialog(QDialog):
 
     def _new_card(self) -> Card:
         from .i18n import tr
-        b = Card(QSize(104, 108), IN_USE_CSS)
-        b.setText(tr("+ New from a face") if self.key == "profile"
-                  else tr("+ New type"))
+        # the strip's «Add» card, larger (the «More» look: one sign)
+        b = Card(QSize(104, 108), MORE_CSS)
+        b.setIcon(more_icon())
+        b.setIconSize(QSize(44, 44))
+        b.setText(tr("Add"))
+        b.setCursor(Qt.PointingHandCursor)
         b.setToolTip(new_type_tip(self.key))
         b.clicked.connect(lambda _c=False: self._pick({"_newtype": True}))
         return b

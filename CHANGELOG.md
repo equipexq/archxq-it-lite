@@ -1,5 +1,23 @@
 # Changelog — ArchXQ IT Lite
 
+## 0.13.0
+
+**A sky behind the 3D view, «Join» for walls, a corner column at any angle, 8 more walls and solid panels.** Tested with IngeTrazo 0.6.2.1. Your projects open as before.
+
+- **NEW: a sky behind the 3D view.** The «Sky» chip on the view bar (after «Extents») shows a real sky picture behind your model, in perspective and in parallel views, with a plain ground in the sky's own tone below the horizon. The chip has its own little sun-and-cloud icon. It is on by default, in new projects and in the ones you saved before (where you turn it off, it stays off); it is saved with the project and never shows in the plan or the sheets. (ArchXQ IT Pro adds more than 600 skies to pick, your own pictures, rotation, exposure, horizon and the picture's own ground.)
+- **NEW: 8 more walls in the library,** each with its colour from the start: Masonry 25, Concrete 15, Concrete 20, Exposed brick, Concrete block, Vertical boards, Horizontal boards and Glass block. Pick one before you draw, or click it with walls selected. (The Pro gives them their textures.)
+- **Timber boards you can see in the drawings:** the vertical boards come with battens over the joints, the horizontal ones as lap siding. «Boards» in the library: Battens, Lap siding or Flat. On a wall with layers they stay, cut in the outer layer (3 cm or more).
+- **NEW: the corner column fits the walls at any angle.** A column put where walls meet (L, T, X or Y, at 30°, 60°, 120° or any angle) takes the exact shape of the meeting: nothing sticks out of the walls and nothing is left open. At 90° with walls of the same thickness it is the square it was; with different thicknesses it is their two thicknesses (20 × 15 cm). Columns you already have stay as they are.
+- **NEW: Edit walls ▸ «Join»** — the inverse of Split: click a wall, then the one in line with it, end to end, and they become one wall. Their doors and windows stay exactly where they are. Only like walls are joined (thickness, layers, height, alignment, material); otherwise the status bar says what differs. Also with the right click on two selected walls: ArchXQ ▸ «Join walls». Ctrl+Z puts them back.
+- **ArchXQ's panels are solid now.** The phase bar, Levels, the view bar, the Plan view and Present buttons, the quick help, the round menu and the labels drawn over the 3D view had a slightly see-through background: on a busy model, its lines showed through the icons and the text. They keep the same colours, with nothing of the model behind them, so they read clearly on any scene.
+- **ArchXQ's tab in the side tray shows the XQ mark** instead of a plain «A», beside IngeTrazo 0.6.2's new tab icons (with an earlier IngeTrazo it stays as it was).
+- **The ghost of a level is now green, with a thicker line,** so it no longer hides under the blue guide lines.
+- **FIXED: a short return between two outside walls.** A wall as long as it is thick, joining two outside walls (a 200 mm step in the façade), overlapped one of them at the mitred corner. Now it meets both on the exact mitre. Found by Drazen on a real project: thank you.
+- **FIXED: an excavation on the plot's boundary is dug right to it.** The ground no longer keeps a thin strip of 2 cm along the boundary, and the earth is counted at the real size. Files with the strip written in their data keep it until you move the corners onto the boundary.
+- **FIXED: a curved wall no longer fills the outside rows with tiny dimensions.** Each facet of its curve was dimensioned as a corner, and dozens of 2 cm numbers were stacked on each other; now only its two ends are.
+- **FIXED: the Update button on some Windows computers.** Where Windows' own list of certificates is out of date, «Update to …» failed with «certificate has expired», and no update came through the button. ArchXQ now checks xq.com.br with the certificate it carries, and only then with Windows'. It works from this version on: if your button fails today, install this one by hand from GitHub, once.
+- Walls you already have stay exactly as they are.
+
 ## 0.12.1
 
 **Compatibility with the multiple views of IngeTrazo 0.6.1.** With two to four views in a tab, the views now sit inside and ArchXQ around them.

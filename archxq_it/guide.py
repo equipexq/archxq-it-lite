@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from . import edition
 from .help import HELP
-from .phases import ELEMENTS, PHASES, is_pro
+from .phases import ELEMENTS, PHASES, TOOLS, is_pro
 from .style import BLUE
 
 IMAGES = Path(__file__).with_name("guide_img")      # pictures, when there are
@@ -44,6 +44,17 @@ IMAGES = Path(__file__).with_name("guide_img")      # pictures, when there are
 #   image  : a file in guide_img/ (shown under the title)
 #   video  : a YouTube link
 TERRAIN_VIDEO = ""      # set when the Terrain tutorial is out
+
+#: «Adopt as it is» (PLANO_CURVAS F3c, 13/11/2026) — said on the wall, slab
+#: and column pages: what none of their tools draws, modelled by hand
+ADOPT_TIP = (
+    "<b>Anything you modelled yourself</b> (Pro) — a fountain, a curved "
+    "bench, a sculpted wall: right click its group ▸ ArchXQ ▸ <b>Adopt as "
+    "it is…</b>. It keeps its faces, colours and textures exactly; you "
+    "say what it is (Wall, Slab, Column, Railing or Other) and its level. "
+    "It then counts in the quantities, goes to the IFC as that, and "
+    "shows and hides with its kind. Double-click: its window again. "
+    "Explode gives its faces back.")
 
 GUIDES: dict[str, dict] = {
     "plot": {
@@ -327,6 +338,8 @@ GUIDES.update({
     },
     # ---- Structure -------------------------------------------------------
     "column": {
+        # How-To 03 (video 27, 11/11/2026): a row of columns with its beams
+        "video": "https://www.youtube.com/watch?v=5P1RpMk99Vs",
         "image": "column.jpg",
         "what": "A column stands on its level's floor and goes up to the "
                 "<b>underside of the slab above</b> (it follows the slab), "
@@ -366,6 +379,7 @@ GUIDES.update({
             "(to a footing).",
             "A row drawn along a <b>footing row</b> stands centred on it, "
             "one column on each pad.",
+            ADOPT_TIP,
         ],
         "mistakes": [
             "A column «that did not appear» on a wall: it was fitted and is "
@@ -418,6 +432,12 @@ GUIDES.update({
              "and press <b>Delete</b> — or double-click the slab ▸ "
              "<b>Openings</b>: tick «Close it» on the one to close (or «Close "
              "all») ▸ OK."),
+            ("Slab from outline", "Draw the outline with IngeTrazo's lines "
+             "and arcs (or pick a flat face, or a plain group), right click "
+             "▸ ArchXQ ▸ <b>Slab from outline</b>. Arcs drawn as segments "
+             "become real arcs, an arc between two straight sides a rounded "
+             "corner, the outlines inside it openings. It goes to the level "
+             "at its height; the lines go away in the same Ctrl+Z."),
         ],
         "tips": ["<b>Top</b>: 0 = the floor itself; a small negative value "
                  "sinks it (a bathroom, a terrace).",
@@ -429,8 +449,54 @@ GUIDES.update({
                  "it back. A slab you draw over it on that level takes its "
                  "place.",
                  "Ramps and stairs open their way through the slabs by "
-                 "themselves."],
+                 "themselves.",
+                 "<b>Curves</b>: a corner rounded to a radius, a side bent "
+                 "into an arc — on the slab and on its openings. With the "
+                 "mouse: <b>Edit slabs › Round corner / Bend side</b>, or "
+                 "the round grips of a picked slab. Typed: double-click the "
+                 "slab ▸ <b>Curves</b>; <b>Straighten all</b> puts it back. "
+                 "The plan, the DXF, the PDF and the quantities follow the "
+                 "exact curve.",
+                 ADOPT_TIP],
         "keys": [("Ctrl+Z", "undo")],
+    },
+    "slab_edit": {
+        "what": "Change a drawn slab with the mouse: its corners, its "
+                "sides, its curves and its openings. Pick the tool, then "
+                "click the slab's corner or side; the walls on it are not "
+                "moved.",
+        "steps": [
+            ("Move points", "Click a corner: it follows the cursor (it "
+             "snaps to edges and guides). Click where it goes — or type a "
+             "distance + Enter. <b>X</b> / <b>Y</b> keep it on an axis."),
+            ("Move side", "Click a side: it moves parallel to itself. Click "
+             "where it goes, or type the distance + Enter."),
+            ("Add point", "Click on a side: a new corner there."),
+            ("Delete point", "Click a corner to remove it."),
+            ("Round corner", "Click a corner, move along it and click — or "
+             "type the radius + Enter (0 = sharp again). A corner between "
+             "two straight sides only."),
+            ("Bend side", "Click a side, pull its middle and click — or "
+             "type the radius + Enter (0 = straight again)."),
+            ("Cut opening", "Goes to the slab bar's <b>Opening</b>: draw "
+             "the hole inside the slab (see <b>Slab</b>)."),
+        ],
+        "tips": [
+            "The same on the <b>openings</b> of a slab: their corners and "
+            "sides take grips, rounds and arcs too.",
+            "Exact numbers: double-click the slab ▸ <b>Curves</b> — every "
+            "corner's radius and every side's arc in a table.",
+        ],
+        "mistakes": [
+            "A radius bigger than the sides allow: it stops at the most "
+            "that fits and says so.",
+            "Rounding a corner next to an arc: straighten the arc first "
+            "(Bend side, 0).",
+        ],
+        "keys": [("number + Enter", "the distance / the radius"),
+                 ("X / Y", "keep the move on the red / green axis"),
+                 ("Esc", "put it back (again: the tool ends)"),
+                 ("Ctrl+Z", "undo")],
     },
     "footing": {
         "image": "footing.jpg",
@@ -510,10 +576,31 @@ GUIDES.update({
             "A partition is simply a thinner wall.",
             "To move a wall's end afterwards: <b>Edit walls › Move points</b>"
             ", or <b>Start / End</b> in its window (double-click it).",
+            "<b>Round the corner</b> (Pro): select the two straight walls of "
+            "an L, right click ▸ ArchXQ ▸ <b>Round the corner…</b> and give "
+            "the radius (the window says the most these walls allow). Each "
+            "wall is shortened to where the curve leaves it; the curve is a "
+            "wall like them, tangent to both, with no seam.",
+            "<b>A wall with its own shape</b> (Pro): its window's "
+            "<b>Shape</b> tab (or right click ▸ <b>Edit shape…</b>) — move "
+            "the face's corners and sides, <b>Round corner</b>, "
+            "<b>Chamfer</b>, <b>Notch</b>, <b>Bend side</b>. A «C» balcony "
+            "wall, a parapet with a rounded end, a stepped wall. <b>Back to "
+            "rectangle</b> undoes it all.",
+            "<b>Cut with IngeTrazo's Subtract</b> (Pro): right click the "
+            "«Difference» ▸ ArchXQ ▸ <b>Wall from shape</b> — it is the wall "
+            "again, the cut on its Shape tab, its doors and windows back, "
+            "its other holes as Openings.",
+            ADOPT_TIP,
         ],
         "mistakes": [
             "Walls on the wrong side of the line: press <b>Tab</b> while "
             "drawing, or change <b>Alignment</b>.",
+            "Rounding a corner with a door or window where the curve goes: "
+            "the window names it — move it, or take a smaller radius.",
+            "Rounding the corner of walls that differ (thickness, height, "
+            "alignment, material): the menu says which — make them alike "
+            "first.",
         ],
         "keys": [("number + Enter", "the next point that far"),
                  ("C", "close the run (a room)"),
@@ -533,6 +620,16 @@ GUIDES.update({
              "follows the cursor (it snaps to edges, guides and their "
              "crossings). Click where it goes — or type a distance + Enter. "
              "<b>X</b> / <b>Y</b> keep it on an axis."),
+            ("Split", "Click on a wall where it is cut in two — or point at "
+             "it and type the distance from its start + Enter."),
+            ("Join", "Click a wall, then the one in line with it, end to "
+             "end: they become one wall, their doors and windows where they "
+             "were. Only like walls (thickness, layers, height, alignment, "
+             "material) — otherwise the bar says what differs."),
+            ("Trim / Extend", "Click the wall near the end that goes, then "
+             "the wall it goes to: its end lands on that wall's line."),
+            ("Align", "Click the reference edge, then the edge of the "
+             "element to line up: it moves onto the reference."),
         ],
         "tips": [
             "Exact numbers instead: double-click the wall — its window has "
@@ -540,6 +637,8 @@ GUIDES.update({
             "step; <b>Apply</b> shows it without closing.",
             "Curved and round walls: change them in their window.",
             "Doors and windows keep their distance from the wall's start.",
+            "With the right click on two selected walls: ArchXQ ▸ <b>Join "
+            "walls</b> (in line) or <b>Round the corner…</b> (an L).",
         ],
         "keys": [("X / Y", "keep the move on the red / green axis"),
                  ("number + Enter", "move it that far, toward the cursor"),
@@ -793,6 +892,21 @@ GUIDES["studio"] = {
         "area schedule read the names.",
         "A section through the earth (floors under the ground) is "
         "<b>hatched</b> by itself (<b>Cut fill: Auto</b>).",
+        "<b>Size</b> (a plan's annotations, Pro): each door and window says "
+        "its size by its tag — «0,90 × 2,10», a window its sill below — as "
+        "width × height, the width, the height, the width over the height, "
+        "or nothing.",
+        "<b>Dimensions</b> (a section's or an elevation's, Pro): <b>Opening "
+        "heights</b> chains the floor, the sill, the head and the next floor "
+        "beside the building — on a section, the cut slab's thickness too; "
+        "<b>Width below</b> chains the openings across under an elevation.",
+        "A dimension you draw yourself in the composer, from one corner, "
+        "opening edge or level of the drawing to another, is <b>tied</b> to "
+        "the model (Pro): each <b>Update</b> measures it again and moves it "
+        "with the walls. One whose ends are not on the drawing is told: "
+        "check its figure.",
+        "<b>Export</b> to DXF writes the sheet's dimensions — ArchXQ's and "
+        "yours — as real CAD dimensions, true size.",
     ],
 }
 GUIDES["update_all"] = {
@@ -1054,6 +1168,72 @@ GUIDES["surroundings"] = {
     "keys": [("Esc", "end the tool"), ("Ctrl+Z", "undo")],
 }
 
+# Tools ▸ Along a path (his note, 10/11/2026: its Help opened empty — brief:
+# how to use the profiles, the library, and make one's own)
+GUIDES["along"] = {
+    # Each How-To out, its link here: How-To 02 (video 26, 10/11/2026) and
+    # How-To 04 (video 28, 11/11/2026). A list = one link per tool.
+    "video": [("Profile along", "https://www.youtube.com/watch?v=LLuDe5Bsmoc"),
+              ("Copy along", "https://www.youtube.com/watch?v=kdQ-Ybjr9ng")],
+    "what": "Two tools that run <b>along a path</b>. <b>Profile along</b>: a "
+            "profile — a baseboard, a crown, a cornice, a frame, a coping — "
+            "along a line, round a room, on a face. <b>Copy along</b>: copies "
+            "of an object — bollards, lamps, trees, columns — along a path, "
+            "by count, spacing or gap. Both work the same way: pick the tool, "
+            "pick on the library (right) <b>what</b> and <b>how</b>, then "
+            "click in the model.",
+    "steps": [
+        ("Profile along", "On the library, a profile's card — the most used "
+         "are on the strip; <b>More</b> (the card with the ring and the +) "
+         "opens all of them, over a hundred, by category, with a search. "
+         "Then <b>How</b> its path is drawn, its <b>Depth</b> and "
+         "<b>Face size</b>. Click in the model."),
+        ("Copy along", "On the library, the object's card (<b>More</b>: all "
+         "of them) — or <b>From the model</b>: that card, then click an "
+         "object of yours in the model (or select it first). Then "
+         "<b>How</b>, <b>Where</b> (whole path, each segment, corners only) "
+         "and <b>Spread by</b> (count, spacing, gap). Click the path."),
+        ("How", "<b>Point by point</b>, <b>On a line</b>, <b>Closed "
+         "loop</b>, <b>Circle</b>, <b>Rectangle</b>, <b>By room</b>, <b>By "
+         "wall face</b> — and, for profiles, <b>By element</b> (round a "
+         "column or a beam). The mouse over «How» tells each one; the card "
+         "at the bottom left lists the clicks."),
+        ("Your own profile", "Draw its cut — the section — as <b>one flat "
+         "face</b> with IngeTrazo's tools, in its real size. On the library, "
+         "under <b>Your types</b>, click <b>Add</b>, then click the face (or "
+         "select it first). Give it a name, the side the wall is on and a "
+         "category: it is kept in your library, for every project. The "
+         "<b>?</b> by «Your types» tells it again."),
+        ("Change it", "Double-click a profile or a set of copies placed: "
+         "its window. In the copies' window, <b>Separate them</b>: each "
+         "copy a group of its own (they no longer follow the path)."),
+    ],
+    "tips": [
+        "<b>More</b> — the card with the ring and the + — always means "
+        "«there is more here»: every profile, every object, by category. "
+        "The star on a card keeps it on the strip.",
+        "<b>Tab</b> while drawing: the profile (or the copies) on the other "
+        "side of the line.",
+        "<b>By room</b>: it follows the room's walls when they move, and "
+        "stops at the doors.",
+        "<b>Count</b> is for the whole path: where a door cuts a wall face "
+        "in two, the copies are shared out between the stretches.",
+    ],
+    "mistakes": [
+        "Your own profile: the face must be <b>flat and one piece</b>; its "
+        "holes are left out, and an outline that crosses itself is refused.",
+        "<b>From the model</b> with a very heavy object (over 4,000 faces): "
+        "refused — simplify it first.",
+    ],
+    "keys": [("Enter", "ends the path"),
+             ("C", "closes it (point by point)"),
+             ("Tab", "the other side of the line"),
+             ("Shift + click", "By wall face: the next face joins"),
+             ("Alt", "On a line: only that stretch"),
+             ("Esc", "done"),
+             ("Ctrl+Z", "undo")],
+}
+
 
 # ---- typed sizes (his ask, 2026-10-05: «used a lot, and easy to forget») ----
 # checked against the tools' on_value and the host's _parse_value_buffer
@@ -1146,6 +1326,8 @@ def _elements_of(element: str) -> tuple[str, list[str]]:
     """The phase holding ``element`` and its elements (in phase order)."""
     if element in BUILDING:
         return "Building elements", list(BUILDING)
+    if element in TOOLS.elements:       # the top bar's «Tools ▾»
+        return TOOLS.label, list(TOOLS.elements)
     for ph in PHASES.values():
         if element in ph.elements:
             return ph.label, list(ph.elements)
@@ -1213,9 +1395,14 @@ def page_html(key: str) -> str:
                 for k, d in g["keys"]]
         out.append("</table>")
     video = g.get("video") or (TERRAIN_VIDEO if phase == "Terrain" else "")
+    if isinstance(video, str):
+        video = [("", video)] if video else []
     if video:
-        out.append(f"<h2>{tr('Video')}</h2><p><a href='{video}'>"
-                   + tr("Watch it on YouTube") + "</a></p>")
+        out.append(f"<h2>{tr('Video')}</h2>")
+        for name, url in video:
+            lead = f"{html.escape(tr(name))}: " if name else ""
+            out.append(f"<p>{lead}<a href='{url}'>"
+                       + tr("Watch it on YouTube") + "</a></p>")
     return "".join(out)
 
 

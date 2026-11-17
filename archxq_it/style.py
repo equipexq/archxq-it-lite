@@ -17,38 +17,38 @@ PLAN = "#f07d14"     # the plan view switch: orange, never mistaken for blue
 CSS = f"""
 QFrame#axq_hub {{ background: transparent; }}
 QFrame#axq_row, QFrame#axq_sub, QFrame#axq_strip, QFrame#axq_viewbar {{
-    background: rgba(32, 35, 40, 225); border-radius: 8px;
+    background: rgb(32, 35, 40); border-radius: 8px;
     border: 1px solid rgba(255, 255, 255, 22); }}
 QLabel {{ background: transparent; border: none; }}
 QToolButton#axq_power {{
-    background: rgba(70, 75, 82, 230); color: #d6d9dd;
+    background: rgb(70, 75, 82); color: #d6d9dd;
     border-radius: 5px; padding: 5px 12px; font-weight: bold; }}
-QToolButton#axq_power:hover {{ background: rgba(90, 96, 104, 240); }}
+QToolButton#axq_power:hover {{ background: rgb(90, 96, 104); }}
 QToolButton#axq_power:checked {{ background: {BLUE}; color: white; }}
 QPushButton#axq_plan {{
-    background: rgba(32, 35, 40, 235); color: #f3f4f6; text-align: left;
+    background: rgb(32, 35, 40); color: #f3f4f6; text-align: left;
     border: 2px solid {PLAN}; border-radius: 7px; padding: 6px 14px;
     font-weight: bold; }}
-QPushButton#axq_plan:hover {{ background: rgba(60, 64, 70, 240); }}
+QPushButton#axq_plan:hover {{ background: rgb(60, 64, 70); }}
 QPushButton#axq_plan:checked {{ background: {PLAN}; color: white;
     border: 2px solid #ffc27a; }}
 QPushButton#axq_present {{
-    background: rgba(32, 35, 40, 235); color: #f3f4f6;
+    background: rgb(32, 35, 40); color: #f3f4f6;
     border: 2px solid {PLAN}; border-radius: 7px; padding: 5px 14px;
     font-weight: bold; }}
-QPushButton#axq_present:hover {{ background: rgba(60, 64, 70, 240); }}
+QPushButton#axq_present:hover {{ background: rgb(60, 64, 70); }}
 QPushButton#axq_present[faint="true"] {{ background: transparent;
     color: rgba(243, 244, 246, 50); border: 2px solid rgba(240, 125, 20, 45); }}
 QPushButton#axq_present[faint="true"]:hover {{
-    background: rgba(32, 35, 40, 235); color: #f3f4f6;
+    background: rgb(32, 35, 40); color: #f3f4f6;
     border: 2px solid {PLAN}; }}
 QPushButton#axq_levels_tab {{
-    background: rgba(32, 35, 40, 225); color: #d6d9dd;
+    background: rgb(32, 35, 40); color: #d6d9dd;
     border: 1px solid rgba(255, 255, 255, 22); border-radius: 7px;
     padding: 4px 10px; font-weight: bold; }}
-QPushButton#axq_levels_tab:hover {{ background: rgba(60, 64, 70, 240);
+QPushButton#axq_levels_tab:hover {{ background: rgb(60, 64, 70);
     color: #f3f4f6; border: 2px solid {PLAN}; }}
-QPushButton#axq_levels_tab[hint="true"] {{ background: rgba(32, 35, 40, 240);
+QPushButton#axq_levels_tab[hint="true"] {{ background: rgb(32, 35, 40);
     color: #f3f4f6; border: 2px solid {PLAN}; }}
 QLabel#axq_sep {{ color: #6b7280; padding: 0 1px; }}
 QLabel#axq_caption {{ color: #9aa5b1; padding: 0 4px 0 10px; }}
@@ -95,7 +95,7 @@ QMenu#axq_menu::indicator {{ width: 10px; height: 10px; left: 6px; }}
 QFrame#axq_vsep {{ background: rgba(255,255,255,30); border: none;
     min-width: 1px; max-width: 1px; margin: 3px 6px; }}
 QFrame#axq_levels {{
-    background: rgba(32, 35, 40, 225); border-radius: 8px;
+    background: rgb(32, 35, 40); border-radius: 8px;
     border: 1px solid rgba(255, 255, 255, 22); }}
 QScrollArea#axq_levels_scroll, QWidget#axq_levels_body {{
     background: transparent; border: none; }}

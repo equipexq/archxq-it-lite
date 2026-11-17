@@ -87,8 +87,14 @@ def wall_grips(w: dict, z0: float, top: float) -> list[Grip]:
     u = _unit2((b[0] - a[0], b[1] - a[1]))
     n = (-u[1], u[0])
     own = W.top_of(w)
+    from .wallshape import profile_of, slice_at
+    shp = profile_of(w)                 # its SHAPE (F2): edited in its tab
 
     def hz(s):                          # how high it is there (its own top)
+        if shp is not None:
+            sl = slice_at(shp, min(max(s * shp["L"] / L, 0.0), shp["L"]))
+            return z0 + float(w.get("base", 0.0)) + (sl[-1][1] if sl
+                                                     else 0.0)
         return z0 + (W.top_h(w, s) if own is not None else top)
     m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
     out = [Grip("a", (a[0], a[1], hz(0.0)), (-u[0], -u[1], 0.0), L,
@@ -98,7 +104,7 @@ def wall_grips(w: dict, z0: float, top: float) -> list[Grip]:
            Grip("across", (m[0], m[1], hz(L / 2)), (n[0], n[1], 0.0), 0.0,
                 "move", True, "Move it across — the walls joined to it "
                 "stretch")]
-    if w.get("cw"):
+    if w.get("cw") or shp is not None:
         return out
     # its TOP (PLANO_PAREDE_TOPO, 2026-10-31): an arrow up at each end — a
     # flat wall dragged there becomes sloped — and a gable's ridge (up,
@@ -184,14 +190,74 @@ def _col_axes(c: dict):
     return (math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a))
 
 
+def outline_grips(loop, z: float) -> list[Grip]:
+    """Each corner of a column's / a pad's outline (free on its plane — a
+    rectangle's turns it into its own outline, in one step) and each
+    side's middle (the side moves parallel) — the slab's (PLANO_CONTORNO_
+    JUNTAS C1, 12/11/2026). ``loop``: counter-clockwise, as built."""
+    out = [Grip(f"v{i}", (p[0], p[1], z), (1.0, 0.0, 0.0), 0.0, "point",
+                tip="Its corner — drag it anywhere (onto the walls' faces "
+                "and corners)") for i, p in enumerate(loop)]
+    for i, p in enumerate(loop):
+        q = loop[(i + 1) % len(loop)]
+        n = _outward(list(loop), i)
+        out.append(Grip(f"s{i}", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, z),
+                        (n[0], n[1], 0.0), 0.0, "move", True,
+                        "Move this side, parallel"))
+    return out
+
+
+def outline_changed(e: dict, key: str, v):
+    """(the record with corner / side ``key`` moved by ``v``, why not or
+    None) — a column's / a pad's own outline («poly»); a rectangle (a
+    square pad) becomes one. Its place and angle stay."""
+    from . import structure as S
+    loop = [tuple(p) for p in (S.pad_outline(e) if e.get("type") == "footing"
+                               else S.column_outline(e, 0.0))]
+    i = int(key[1:])
+    if i >= len(loop):
+        return None, "Gone"
+    if key[0] == "v":
+        loop[i] = (loop[i][0] + v[0], loop[i][1] + v[1])
+    else:
+        n = _outward(loop, i)
+        for j in (i, (i + 1) % len(loop)):
+            loop[j] = (loop[j][0] + n[0] * v, loop[j][1] + n[1] * v)
+    why = S.poly_why(loop)
+    if why:
+        return None, why
+    # (its insertion point — the centre, or a corner — stays where it is:
+    # the corners are measured from it; a base / a capital it had waits,
+    # unbuilt, for «Back to rectangle»)
+    return S.poly_record(dict(e), loop, keep_xy=True), None
+
+
+def pad_grips(f: dict, z: float, edit: bool = True) -> list[Grip]:
+    """A pad footing's grips, on its top ``z``: its middle (MOVE it, in its
+    own axes) and — ``edit`` (Pro) — each corner and side (a square pad's
+    corner turns it into its own outline, C1 12/11/2026)."""
+    from . import structure as S
+    loop = S.pad_outline(f)
+    cx, cy = S.centroid(loop)
+    u, v = _col_axes(f)
+    out = [Grip("m", (cx, cy, z), (u[0], u[1], 0.0), 0.0, "point",
+                tip="Move it — onto the columns' centres",
+                extra={"e2": (v[0], v[1], 0.0), "shape": "circle"})]
+    if edit:
+        out += outline_grips(loop, z)
+    return out
+
+
 def column_grips(c: dict, z: float, z0: float | None = None,
-                 bot: float | None = None) -> list[Grip]:
+                 bot: float | None = None, edit: bool = True) -> list[Grip]:
     """A column's grips — at HALF its height (as a door's: his test,
     2026-10-12 — on its top they were lost among each other): its centre
     (a circle: MOVE it; ↑ = up / down), a grip on each face (its width /
     depth — the face opposite stays); its top (its height) and its foot
     (its base). ``z`` = its top, ``z0`` = its level's floor, ``bot`` =
-    its foot."""
+    its foot. ``edit`` (Pro): its corners too — a rectangle's turn it
+    into its own outline; an outline («poly») has its corners and sides
+    (outline_grips) instead of the faces'."""
     from . import structure as S
     cx, cy = S.column_centre(c)
     u, v = _col_axes(c)
@@ -214,6 +280,12 @@ def column_grips(c: dict, z: float, z0: float | None = None,
         return [move, Grip("r", (cx + u[0] * w / 2, cy + u[1] * w / 2, zm),
                            (u[0], u[1], 0.0), w, tip="Its diameter")] + ends
     out = [move] + ends
+    if S.is_poly(c):                     # its own outline: corners, sides
+        return out + (outline_grips(S.column_outline(c, 0.0), zm)
+                      if edit else [])
+    if edit:                             # a rectangle's corners (→ poly)
+        out += [g for g in outline_grips(S.column_outline(c, 0.0), zm)
+                if g.key[0] == "v"]
     z = zm
     for key, ax, size in (("w+", u, w), ("d+", v, d)):
         for s in (1, -1):
@@ -262,23 +334,65 @@ def _outward(pts, k):
     return ((b[1] - a[1]) / L * s, -(b[0] - a[0]) / L * s)
 
 
+def _curved_live(e: dict) -> bool:
+    from . import curved as CV
+    return CV.live(e)
+
+
 def slab_grips(s: dict, z: float) -> list[Grip]:
     """A drawn slab's: each corner (moves freely on its plane) and each
-    side's middle (the side moves parallel to itself)."""
-    pts = [tuple(p) for p in s["corners"]]
+    side's middle (the side moves parallel to itself). With ARCS and
+    ROUNDED CORNERS (curved.py, F1 13/11/2026): its clicked corners, an
+    arc side's middle (how deep — its radius), a rounded corner's middle
+    (its radius)."""
+    from . import curved as CV
+    from . import edition
+    live = CV.live(s)
+    pts = [tuple(p) for p in (s["ctrl"] if live else s["corners"])]
+    cv = CV.clean(s.get("curves")) if live else {"r": {}, "arc": {}}
+    pro = not edition.lite()       # (the Lite shows them, never edits them)
     out = []
     zc = s.get("zc") or []                    # a block's corners up / down
-    if len(zc) != len(pts):
+    if live or len(zc) != len(pts):
         zc = [0.0] * len(pts)
     for i, p in enumerate(pts):
         out.append(Grip(f"v{i}", (p[0], p[1], z + zc[i]), (1.0, 0.0, 0.0),
                         0.0, "point", tip="Its corner — drag it anywhere"))
     for i, p in enumerate(pts):
         q = pts[(i + 1) % len(pts)]
+        h = CV._key(cv["arc"], i)
+        if h and not pro:
+            continue
+        if h:                                 # an arc: its middle, how deep
+            L = math.dist(p, q) or 1.0
+            nl = (-(q[1] - p[1]) / L, (q[0] - p[0]) / L)
+            m = ((p[0] + q[0]) / 2 + nl[0] * h, (p[1] + q[1]) / 2 + nl[1] * h)
+            out.append(Grip(f"a{i}", (m[0], m[1], z), (nl[0], nl[1], 0.0), h,
+                            tip="The arc — pull it deeper / flatter (0 = "
+                                "straight), or type its radius",
+                            extra={"chord": L}))
+            continue
         n = _outward(pts, i)
         out.append(Grip(f"s{i}", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, z),
                         (n[0], n[1], 0.0), 0.0, "move", True,
                         "Move this side, parallel"))
+    for i, p in enumerate(pts):              # a rounded corner: its radius
+        r = CV._key(cv["r"], i)
+        if not r or not pro:
+            continue
+        prev, nxt = pts[i - 1], pts[(i + 1) % len(pts)]
+        u1 = _unit2((prev[0] - p[0], prev[1] - p[1]))
+        u2 = _unit2((nxt[0] - p[0], nxt[1] - p[1]))
+        b = _unit2((u1[0] + u2[0], u1[1] + u2[1]))
+        per = CV.radius_through(prev, p, nxt, 1.0)
+        per = 1.0 / per if per > 1e-9 else 0.0
+        if per <= 0:
+            continue
+        d = r * per
+        out.append(Grip(f"r{i}", (p[0] + b[0] * d, p[1] + b[1] * d, z),
+                        (b[0], b[1], 0.0), d,
+                        tip="The rounded corner — drag it, or type its "
+                            "radius (0 = sharp)", extra={"per": per}))
     # up / down (its «Top») over its middle, its thickness under it
     cx = sum(p[0] for p in pts) / len(pts)
     cy = sum(p[1] for p in pts) / len(pts)
@@ -288,8 +402,12 @@ def slab_grips(s: dict, z: float) -> list[Grip]:
     out.append(Grip("t", (cx, cy, z - t), (0.0, 0.0, -1.0), t,
                     tip="Its thickness — its top stays"))
     for j, h in enumerate(s.get("holes") or []):
-        out += hole_grips(j, [tuple(p) for p in h], z)
-    if s.get("block") and not s.get("holes"):
+        ent = CV.hole_entry(s, j)
+        if ent is not None:              # an opening with arcs (F1)
+            out += curved_hole_grips(j, ent, z, pro)
+        else:
+            out += hole_grips(j, [tuple(p) for p in h], z)
+    if s.get("block") and not s.get("holes") and not live:
         # a BLOCK: an arrow up at each corner — its top there up / down
         # (his ask 21/10; 2026-10-31), a little in towards its middle
         for i, p in enumerate(pts):
@@ -344,6 +462,96 @@ def hole_grips(j: int, h: list, z: float) -> list[Grip]:
     out.append(Grip(f"h{j}m", (cx, cy, z), (1.0, 0.0, 0.0), 0.0, "point",
                     tip="Move the opening", extra={"shape": "circle"}))
     return out
+
+
+def curved_hole_grips(j: int, ent: dict, z: float, pro: bool) -> list[Grip]:
+    """An opening drawn WITH ARCS (curved.py, F1): its clicked corners, its
+    straight sides' middles, an arc's depth and a rounded corner's radius
+    (Pro), its middle (move it whole)."""
+    from . import curved as CV
+    h = [tuple(p) for p in ent["ctrl"]]
+    cv = CV.clean(ent["curves"])
+    n = len(h)
+    out = [Grip(f"h{j}v{i}", (p[0], p[1], z), (1.0, 0.0, 0.0), 0.0, "point",
+                tip="The opening's corner — drag it anywhere")
+           for i, p in enumerate(h)]
+    for i, p in enumerate(h):
+        q = h[(i + 1) % n]
+        a = CV._key(cv["arc"], i)
+        if a:
+            if not pro:
+                continue
+            L = math.dist(p, q) or 1.0
+            nl = (-(q[1] - p[1]) / L, (q[0] - p[0]) / L)
+            m = ((p[0] + q[0]) / 2 + nl[0] * a, (p[1] + q[1]) / 2 + nl[1] * a)
+            out.append(Grip(f"h{j}a{i}", (m[0], m[1], z), (nl[0], nl[1], 0.0),
+                            a, tip="The opening's arc — deeper / flatter (0 "
+                                   "= straight), or type its radius",
+                            extra={"chord": L}))
+            continue
+        nn = _outward(h, i)
+        out.append(Grip(f"h{j}s{i}", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, z),
+                        (nn[0], nn[1], 0.0), 0.0, "move", True,
+                        "Move this side of the opening, parallel"))
+    for i, p in enumerate(h):
+        r = CV._key(cv["r"], i)
+        if not r or not pro:
+            continue
+        prev, nxt = h[i - 1], h[(i + 1) % n]
+        u1 = _unit2((prev[0] - p[0], prev[1] - p[1]))
+        u2 = _unit2((nxt[0] - p[0], nxt[1] - p[1]))
+        b = _unit2((u1[0] + u2[0], u1[1] + u2[1]))
+        k = CV.radius_through(prev, p, nxt, 1.0)
+        per = 1.0 / k if k > 1e-9 else 0.0
+        if per <= 0:
+            continue
+        d = r * per
+        out.append(Grip(f"h{j}q{i}", (p[0] + b[0] * d, p[1] + b[1] * d, z),
+                        (b[0], b[1], 0.0), d,
+                        tip="The opening's rounded corner — drag it, or "
+                            "type its radius (0 = sharp)", extra={"per": per}))
+    cx = sum(p[0] for p in h) / n
+    cy = sum(p[1] for p in h) / n
+    out.append(Grip(f"h{j}m", (cx, cy, z), (1.0, 0.0, 0.0), 0.0, "point",
+                    tip="Move the opening", extra={"shape": "circle"}))
+    return out
+
+
+def curved_hole_changed(ent: dict, key: str, v):
+    """(clicked corners, curves) of an opening with arcs, its grip ``key``
+    (after «h<j>») at ``v`` — or (None, why)."""
+    from . import curved as CV
+    pts = [list(p) for p in ent["ctrl"]]
+    cv = CV.clean(ent["curves"])
+    if key == "m":
+        return [[round(p[0] + v[0], 4), round(p[1] + v[1], 4)]
+                for p in pts], cv
+    i = int(key[1:])
+    if i >= len(pts):
+        return None, "Gone"
+    if key[0] == "v":
+        pts[i] = [round(pts[i][0] + v[0], 4), round(pts[i][1] + v[1], 4)]
+    elif key[0] == "s":
+        nn = _outward([tuple(p) for p in pts], i)
+        for k in (i, (i + 1) % len(pts)):
+            pts[k] = [round(pts[k][0] + nn[0] * v, 4),
+                      round(pts[k][1] + nn[1] * v, 4)]
+    elif key[0] == "a":
+        cv["arc"].pop(str(i), None)
+        L = math.dist(pts[i], pts[(i + 1) % len(pts)])
+        if abs(v) > 1e-4:
+            cv["arc"][str(i)] = round(max(-L, min(L, float(v))), 4)
+    elif key[0] == "q":
+        k = CV.radius_through(pts[i - 1], pts[i], pts[(i + 1) % len(pts)],
+                              1.0)
+        rad = float(v) * k if k > 1e-9 else 0.0
+        cv["r"].pop(str(i), None)
+        if rad > 1e-4:
+            cv["r"][str(i)] = round(rad, 4)
+    why = CV.why_not(pts, cv)
+    if why:
+        return None, why
+    return pts, cv
 
 
 def hole_changed(h: list, key: str, v) -> list:
@@ -1068,6 +1276,19 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         r["corners"] = pts
         why = S.why_not(r)
         return (doc, why) if why else (_struct_set(doc, r), None)
+    if t in ("column", "footing") and key[:1] in ("v", "s") \
+            and key[1:].isdigit():
+        # a corner / a side of its own outline (C1, 12/11/2026)
+        got, why = outline_changed(e, key, v)
+        if why:
+            return doc, why
+        why = S.why_not(got)
+        return (doc, why) if why else (_struct_set(doc, got), None)
+    if t == "footing" and key == "m":     # a pad moved, in its own axes
+        u, vv = _col_axes(e)
+        r.update(x=round(float(e["x"]) + u[0] * v[0] + vv[0] * v[1], 4),
+                 y=round(float(e["y"]) + u[1] * v[0] + vv[1] * v[1], 4))
+        return _struct_set(doc, r), None
     if t == "column":
         cx, cy = S.column_centre(e)
         u, vv = _col_axes(e)
@@ -1075,7 +1296,14 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
         h_now = float(e["height"]) if e.get("height", "level") != "level" \
             else lv.get("top", 0.0) - lv.get("z0", 0.0)
         base = float(e.get("base", 0.0))
-        if key == "m":                    # moved, in its own axes
+        if key == "m" and S.is_poly(e):   # its corners hang off x, y
+            r.update(x=round(float(e["x"]) + u[0] * v[0] + vv[0] * v[1], 4),
+                     y=round(float(e["y"]) + u[1] * v[0] + vv[1] * v[1], 4))
+            dz = v[2] if len(v) > 2 else 0.0
+            if dz:                        # up / down, whole (↑)
+                r.update(base=round(base + dz, 4),
+                         height=round(h_now + dz, 4))
+        elif key == "m":                  # moved, in its own axes
             r.update(x=round(cx + u[0] * v[0] + vv[0] * v[1], 4),
                      y=round(cy + u[1] * v[0] + vv[1] * v[1], 4),
                      anchor="centre")
@@ -1146,12 +1374,71 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
     elif t == "slab" and key.startswith("h"):   # one of its openings
         j, k = _hole_key(key)
         holes = [list(h) for h in e.get("holes") or []]
+        from . import curved as CV
+        ent = CV.hole_entry(e, j)
+        if ent is not None:              # an opening with arcs (F1)
+            pts, cv = curved_hole_changed(ent, k, v)
+            if pts is None:
+                return doc, cv
+            r = CV.with_hole(r, j, pts, cv)
+            try:
+                from shapely.geometry import Polygon
+                if not Polygon(r["holes"][j]).is_valid:
+                    return doc, "The sides would cross"
+            except Exception:  # noqa: BLE001
+                return doc, "Not an opening"
+            why = S.holes_fit(r, e)
+            if why:
+                return doc, why
+            return _struct_set(doc, r), None
         if j >= len(holes) or (k == "r" and not round_hole(holes[j])):
             return doc, "Gone"
         if k == "r" and float(v) < 0.05:
             return doc, "Too small for an opening"
         holes[j] = hole_changed(holes[j], k, v)
         r["holes"] = holes
+    elif t == "slab" and key[:1] in ("a", "r") or (
+            t == "slab" and key[:1] in ("v", "s") and _curved_live(e)):
+        # a slab with ARCS / ROUNDED CORNERS (curved.py, F1 13/11/2026):
+        # its clicked corners moved, an arc deepened, a radius changed —
+        # the fine outline made again from them
+        from . import curved as CV
+        if not CV.live(e):
+            return doc, "Gone"
+        pts = [list(p) for p in e["ctrl"]]
+        cv = CV.clean(e["curves"])
+        i = int(key[1:])
+        if i >= len(pts):
+            return doc, "Gone"
+        if key[0] == "v":
+            pts[i] = [round(pts[i][0] + v[0], 4), round(pts[i][1] + v[1], 4)]
+        elif key[0] == "s":
+            n = _outward([tuple(p) for p in pts], i)
+            for j in (i, (i + 1) % len(pts)):
+                pts[j] = [round(pts[j][0] + n[0] * v, 4),
+                          round(pts[j][1] + n[1] * v, 4)]
+        elif key[0] == "a":
+            cv["arc"].pop(str(i), None)
+            L = math.dist(pts[i], pts[(i + 1) % len(pts)])
+            if abs(v) > 1e-4:
+                cv["arc"][str(i)] = round(max(-L, min(L, float(v))), 4)
+        else:
+            prev, p, nxt = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+            per = CV.radius_through(prev, p, nxt, 1.0)
+            rad = float(v) * per if per > 1e-9 else 0.0
+            cv["r"].pop(str(i), None)
+            if rad > 1e-4:
+                cv["r"][str(i)] = round(rad, 4)
+        why = CV.why_not(pts, cv)
+        if why:
+            return doc, why
+        try:
+            from shapely.geometry import Polygon
+            if not Polygon(CV.expand(pts, cv)).is_valid:
+                return doc, "The sides would cross"
+        except Exception:  # noqa: BLE001
+            return doc, "Not a slab outline"
+        r = CV.with_curves(r, pts, cv)
     elif t == "slab":
         pts = [list(p) for p in e["corners"]]
         if key.startswith("v"):
@@ -1485,6 +1772,125 @@ def _column_move_magnets(doc: dict, c: dict, z: float) -> list:
     return [(w_, round(k, 4), A) for w_, k, A in out]
 
 
+OUTLINE_NEAR = 3.0      # m: the walls' faces / corners a corner looks at
+
+
+def outline_magnets(doc: dict, e: dict, key: str, z: float) -> list:
+    """A column's / a pad's outline (C1, 12/11/2026). A CORNER: onto the
+    walls' corners as built, the points where their FACES cross (an
+    angled wall's exact corner — Stephan #106), the drawn ends, the other
+    columns' corners — ("pt", (dx, dy), anchor); along a wall's face or
+    another column's side at any angle — ("ln", (px, py, ux, uy), anchor);
+    lined up with its own other corners — ("x" | "y", d, anchor). A SIDE:
+    onto the faces and sides parallel to it — (d, anchor)."""
+    from . import structure as S
+    st = doc.get("structure") or []
+    lid = e["level"]
+    loop = [tuple(p) for p in (S.pad_outline(e) if e.get("type") == "footing"
+                               else S.column_outline(e, 0.0))]
+    i = int(key[1:])
+    if i >= len(loop):
+        return []
+    walls = [w for w in doc.get("walls") or [] if w.get("level") == lid
+             and W.why_not(w) is None]
+    segs, corners = [], []
+    try:
+        for pcs in W.plan(walls).values():
+            for pc in pcs:
+                for lp in [pc["outer"]] + list(pc.get("holes") or []):
+                    lp = [tuple(p[:2]) for p in lp]
+                    corners += lp
+                    segs += list(zip(lp, lp[1:] + lp[:1]))
+    except Exception:  # noqa: BLE001 — without the walls' plan: the rest
+        pass
+    others = [S.column_outline(c, 0.0) for c in st
+              if c.get("type") == "column" and c.get("level") == lid
+              and c["id"] != e["id"] and S.why_not(c) is None]
+    for lp in others:
+        lp = [tuple(p) for p in lp]
+        segs += list(zip(lp, lp[1:] + lp[:1]))
+
+    def seg_near(a, b, P):
+        q = _nearest_on(a, b, P)
+        return math.dist(q, P), q
+    if key[0] == "v":
+        P = loop[i]
+        near = [(a, b) for a, b in segs if math.dist(a, b) > 1e-6
+                and seg_near(a, b, P)[0] <= OUTLINE_NEAR]
+        pts = [q for q in corners if math.dist(q, P) <= OUTLINE_NEAR]
+        pts += [tuple(w[k]) for w in walls for k in ("a", "b")
+                if k in w and math.dist(w[k], P) <= OUTLINE_NEAR]
+        pts += [tuple(q) for lp in others for q in lp
+                if math.dist(q, P) <= OUTLINE_NEAR]
+        for j, (a, b) in enumerate(near):         # the faces crossing
+            for c2, d2 in near[j + 1:]:
+                got = W._meet(("line", a, _unit2((b[0] - a[0], b[1] - a[1]))),
+                              ("line", c2, _unit2((d2[0] - c2[0],
+                                                   d2[1] - c2[1]))))
+                if got and math.dist(got[0], P) <= OUTLINE_NEAR / 2:
+                    pts.append(tuple(got[0]))
+        out = [("pt", (Q[0] - P[0], Q[1] - P[1]), (Q[0], Q[1], z))
+               for Q in pts]
+        for a, b in near:
+            u = _unit2((b[0] - a[0], b[1] - a[1]))
+            _d, q = seg_near(a, b, P)
+            out.append(("ln", (a[0] - P[0], a[1] - P[1], u[0], u[1]),
+                        (q[0], q[1], z)))
+        for j, Q in enumerate(loop):              # its own other corners
+            if j != i:
+                out.append(("x", Q[0] - P[0], (Q[0], Q[1], z)))
+                out.append(("y", Q[1] - P[1], (Q[0], Q[1], z)))
+        return out
+    a, b = loop[i], loop[(i + 1) % len(loop)]
+    n = _outward(loop, i)
+    su = _unit2((b[0] - a[0], b[1] - a[1]))
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    L = math.dist(a, b)
+    out = []
+    for p, q in segs:
+        if math.dist(p, q) < 1e-6:
+            continue
+        ou = _unit2((q[0] - p[0], q[1] - p[1]))
+        if abs(ou[0] * su[1] - ou[1] * su[0]) > 0.02:
+            continue                              # not parallel to the side
+        t0 = (p[0] - mid[0]) * su[0] + (p[1] - mid[1]) * su[1]
+        t1 = (q[0] - mid[0]) * su[0] + (q[1] - mid[1]) * su[1]
+        if max(t0, t1) < -L / 2 - 0.5 or min(t0, t1) > L / 2 + 0.5:
+            continue                              # not beside it
+        dd = (p[0] - mid[0]) * n[0] + (p[1] - mid[1]) * n[1]
+        if abs(dd) <= 2.0:
+            tt = min(max((t0 + t1) / 2, -L / 2), L / 2)
+            out.append((dd, (mid[0] + n[0] * dd + su[0] * tt,
+                             mid[1] + n[1] * dd + su[1] * tt, z)))
+    return [(round(v, 6), A) for v, A in out]
+
+
+def pad_magnets(doc: dict, fid: str, key: str, z: float) -> list:
+    """A pad's: moved — its middle onto the centres of its level's columns
+    (in its own ways, as its move grip); its corners / sides — as a
+    column's outline (outline_magnets)."""
+    from . import structure as S
+    st = doc.get("structure") or []
+    f = next((x for x in st if x["id"] == fid), None)
+    if f is None:
+        return []
+    if key != "m":
+        return outline_magnets(doc, f, key, z)
+    cx, cy = S.centroid(S.pad_outline(f))
+    u, v = _col_axes(f)
+    out = []
+    for c in st:
+        if c.get("type") != "column" or c.get("level") != f["level"]:
+            continue
+        q = S.column_centre(c)
+        dx, dy = q[0] - cx, q[1] - cy
+        if math.hypot(dx, dy) > 30.0:
+            continue
+        out.append(("pt", (dx * u[0] + dy * u[1], dx * v[0] + dy * v[1]),
+                    (q[0], q[1], z)))
+    return out
+
+
 def column_magnets(doc: dict, cid: str, key: str, z: float) -> list:
     """A column's face lined up with the faces of the columns in its row
     (the same line across the face) and onto the walls' faces near it."""
@@ -1493,6 +1899,8 @@ def column_magnets(doc: dict, cid: str, key: str, z: float) -> list:
     c = next((x for x in st if x["id"] == cid), None)
     if c is None or key == "r":
         return []
+    if key[:1] in ("v", "s") and key[1:].isdigit():   # its outline (C1)
+        return outline_magnets(doc, c, key, z)
     if key == "m":
         return _column_move_magnets(doc, c, z)
     u, vv = _col_axes(c)
@@ -1581,11 +1989,15 @@ def hole_magnets(doc: dict, s: dict, key: str, z: float, walls: list) -> list:
     ("x" | "y", …). Its side: onto the parallel sides of those outlines
     and the walls' faces near it — (d, anchor). Moved whole: nothing."""
     from . import structure as S
+    from . import curved as CV
     j, k = _hole_key(key)
     holes = [[tuple(p) for p in h] for h in s.get("holes") or []]
-    if j >= len(holes) or k in ("m", "r"):
+    if j >= len(holes) or k in ("m", "r") or k[:1] in ("a", "q"):
         return []
     h = holes[j]
+    ent = CV.hole_entry(s, j)            # with arcs: its clicked corners
+    if ent is not None:
+        h = [tuple(p) for p in ent["ctrl"]]
     lid = s["level"]
     st = doc.get("structure") or []
     outlines = _flight_outlines(doc, lid) + [pts for i, pts in
@@ -1646,7 +2058,10 @@ def slab_magnets(doc: dict, sid: str, key: str, z: float) -> list:
     if s is None:
         return []
     lid = s["level"]
-    pts = [tuple(p) for p in s["corners"]]
+    if key[:1] in ("a", "r"):            # an arc's depth, a corner's radius
+        return []
+    from . import curved as CV           # (with curves: its clicked corners)
+    pts = [tuple(p) for p in CV.control(s)]
     # the walls of EVERY level (a line seen over another level pulls too —
     # his test, 2026-10-13)
     walls = [w for w in doc.get("walls") or [] if straight(w)]
@@ -1803,6 +2218,24 @@ def joined_end(doc: dict, w: dict, end: str) -> list:
             for e in ("a", "b") if math.dist(x[e], P) <= TOL]
 
 
+def reshaped(walls: list) -> tuple:
+    """(walls, why not or None): each wall with a SHAPE (F2) whose length
+    changed takes its shape along (wallshape.stretched, the anchor rule) —
+    or the change is refused: «Its shape doesn't fit that length»."""
+    from . import wallshape as WS
+    out = []
+    for x in walls:
+        prof = WS.profile_of(x)
+        if prof is not None:
+            got = WS.stretched(prof, W.drawn(x).L)
+            if got is None:
+                return walls, f"«{x.get('name', 'Wall')}»: {WS.WHY_LENGTH}"
+            if got is not prof:
+                x = dict(x, profile=got)
+        out.append(x)
+    return out, None
+
+
 def wall_changed(doc: dict, wid: str, key: str, v: float,
                  flat_h=None, carry: bool = False):
     """(the document with the wall's grip ``key`` at value ``v``, why not
@@ -1818,6 +2251,10 @@ def wall_changed(doc: dict, wid: str, key: str, v: float,
     w = next((x for x in walls if x["id"] == wid), None)
     if w is None or not straight(w):
         return doc, "Gone"
+    if key in ("h0", "h1", "hp", "at") and w.get("profile"):
+        from .wallshape import profile_of
+        if profile_of(w) is not None:
+            return doc, "Its shape is edited in its window's Shape tab"
     if key in ("h0", "h1", "hp", "at"):
         fh = flat_h or (lambda x: float(x["height"])
                         if x.get("height", "level") != "level" else 3.0)
@@ -1883,6 +2320,9 @@ def wall_changed(doc: dict, wid: str, key: str, v: float,
             if why:
                 return doc, why
         out.append(x)
+    out, why = reshaped(out)
+    if why:
+        return doc, why
     new = dict(new, walls=out)
     if slid:     # their start slid: openings keep their place in the world
         new["openings"] = [dict(o, pos=round(float(o["pos"]) - slid[o["wall"]],
@@ -2171,7 +2611,7 @@ def _nearest(magnets: list, p, point: bool) -> list:
     best: dict = {}
     for m in magnets:
         if point:
-            key, A = (m[0], round(m[1], 4) if m[0] != "pt" else
+            key, A = (m[0], round(m[1], 4) if m[0] not in ("pt", "ln") else
                       tuple(round(c, 4) for c in m[1])), m[2]
         else:
             key, A = round(m[0], 4), m[1]
@@ -2340,11 +2780,29 @@ class GripControl(QObject):
         pts = [m for m in d["magnets"] if m[0] == "pt"
                and math.dist(m[1], raw) <= tol]
         anchors = []
+        # onto a LINE at any angle — a wall's face (a column's corner,
+        # C1 12/11/2026): ("ln", (px, py, ux, uy), anchor) in the grip's
+        # own ways; the nearest point of it, exactly
+        lns = []
+        if not pts and d.get("lock") is None:
+            for m in d["magnets"]:
+                if m[0] != "ln":
+                    continue
+                px_, py_, ux, uy = m[1]
+                k = (raw[0] - px_) * ux + (raw[1] - py_) * uy
+                foot = (px_ + ux * k, py_ + uy * k)
+                if math.dist(foot, raw) <= tol:
+                    lns.append((math.dist(foot, raw), foot, m[2]))
         if pts:          # onto a point: its diamond marks it (no line)
             best = min(pts, key=lambda m: math.dist(m[1], raw))
-            v = (round(best[1][0], 4), round(best[1][1], 4))
+            v = (round(best[1][0], 6), round(best[1][1], 6))
             stuck = True
             anchors.append(best[2])
+        elif lns:
+            _dd, foot, A = min(lns, key=lambda x: x[0])
+            v = (round(foot[0], 6), round(foot[1], 6))
+            stuck = True
+            anchors.append(A)
         else:
             step = FINE if fine else STEP
             v = [round(round(c / step) * step, 4) for c in raw]
@@ -2579,6 +3037,17 @@ class GripControl(QObject):
                               else "len")
             if v is None:
                 return True
+            if g.extra.get("per") or g.extra.get("chord"):
+                # a slab's rounded corner / arc (curved.py, F1): the RADIUS
+                # typed, the grip's own value made of it
+                v = radius_to_grip(g, abs(v), self.drag["v"])
+                if v is None:
+                    from . import compat
+                    compat.flash(self.owner.viewport, "An arc on this side "
+                                 "needs a radius of " + compat.fmt_len(
+                                     g.extra["chord"] / 2) + " at least",
+                                 4000)
+                    return True
             if g.mode == "point":       # that far, the way it is going
                 cur = self.drag["v"]
                 L = math.hypot(*cur)
@@ -2777,7 +3246,7 @@ class GripControl(QObject):
                     wpx = fm.horizontalAdvance(text) + 12
                     box = QRectF(q[0] + 12, q[1] - 26, wpx, 20)
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(30, 34, 40, 225))
+                    painter.setBrush(QColor(30, 34, 40))
                     painter.drawRoundedRect(box, 4, 4)
                     painter.setPen(QColor("#ffb27a" if d["why"] else "#ffffff"))
                     painter.drawText(box, Qt.AlignCenter, text)
@@ -2853,4 +3322,26 @@ def label(g: Grip, v) -> str:
         return compat.fmt_len(math.hypot(*v))
     if g.mode == "move":
         return compat.fmt_level(v)
+    if g.extra.get("per"):              # a rounded corner: its radius
+        return "R " + compat.fmt_len(max(0.0, v) / float(g.extra["per"]))
+    if g.extra.get("chord"):            # an arc side: its radius
+        s = float(g.extra["chord"]) / 2
+        if abs(v) < 1e-4:
+            return "straight"
+        return "R " + compat.fmt_len((s * s + v * v) / (2 * abs(v)))
     return compat.fmt_len(v)
+
+
+def radius_to_grip(g: Grip, R: float, now):
+    """A typed RADIUS → the grip's value: a rounded corner's distance off
+    its corner (R · per), an arc's sagitta (the short arc, on the side it
+    bulges now) — None when the arc can't have that radius."""
+    if g.extra.get("per"):
+        return R * float(g.extra["per"])
+    if R < 1e-6:
+        return 0.0
+    s = float(g.extra["chord"]) / 2
+    if R < s - 1e-9:
+        return None
+    h = R - math.sqrt(max(0.0, R * R - s * s))
+    return math.copysign(h, now if now else (g.base or 1.0))

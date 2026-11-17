@@ -117,7 +117,15 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
     _e("slab_edit", "Edit slabs", (("Move points", "move"),
                                    ("Move side", "move"),
                                    ("Add point", "add_point"),
-                                   ("Delete point", "eraser"))),
+                                   ("Delete point", "eraser"),
+                                   # its corners rounded, its sides bent
+                                   # (PLANO_CURVAS F1, promised 13/11/2026)
+                                   ("Round corner", "round_corner"),
+                                   ("Bend side", "bend_side"),
+                                   # an opening cut out of a slab, from
+                                   # where its outline is edited too (his
+                                   # ask, 2026-11-11)
+                                   ("Cut opening", "slab_hole"))),
     _e("footing", "Footing", ()),
     # -- Walls
     # HOW it is drawn (rectangle, point by point, arc, circle…), its
@@ -132,6 +140,9 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
                                    # (0.15.0, B1: a wall cut in two at a
                                    # click; a wall's end on to another's line)
                                    ("Split", "wall_split"),
+                                   # (its inverse: two walls in line made
+                                   # one — C2a, idea #11.2, 12/11/2026)
+                                   ("Join", "wall_join"),
                                    ("Trim / Extend", "wall_trim"),
                                    # (as Revit's: reference, then the edge)
                                    ("Align", "align"))),

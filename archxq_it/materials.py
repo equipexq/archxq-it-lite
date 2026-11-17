@@ -27,9 +27,14 @@ from __future__ import annotations
 import copy
 import json
 import os
+import queue
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from . import edition
+from . import matfav as MF
+from . import webtex as WT
 from .i18n import tr
 
 #: an element kind's PARTS: (key, label). One part = the whole element.
@@ -60,6 +65,8 @@ SLOTS = {
     "profile": (("all", "Profile"),),
     # copies along a path (copies.py): each object keeps its own colours
     "copy": (("all", "Copies"),),
+    # a piece adopted as it is (shaped.py): its own look, until one is chosen
+    "shaped": (("all", "Piece"),),
     "roof": (("cover", "Covering (tiles, sheets)"),
              ("parapet", "Parapet and gable walls"),
              ("gutter", "Gutter"), ("slab", "Slab (flat, hidden)")),
@@ -75,7 +82,7 @@ PLURAL = {"plot": "plots", "dig": "excavations", "fill": "fills",
           "footing": "footings", "wall": "walls", "ramp": "ramps",
           "stair": "stairs", "roof": "roofs", "guard": "low walls",
           "street": "streets", "profile": "profiles", "copy": "copies",
-          "opening": "doors and windows"}
+          "shaped": "adopted pieces", "opening": "doors and windows"}
 MAT_PREFIX = "ArchXQ · "
 #: kinds whose faces carry colours of their own on purpose (a door's glass
 #: and frame) — kept under a material. Ramps and stairs carry their plain
@@ -189,8 +196,17 @@ def valid_ref(ref) -> dict | None:
     """A ref as stored (None: not one) — a texture only where allowed."""
     if not isinstance(ref, dict):
         return None
+    if WT.is_ref(ref):
+        return WT.clean_ref(ref)
     if isinstance(ref.get("lib"), str):
-        return {"lib": ref["lib"]}
+        out = {"lib": ref["lib"]}
+        try:
+            sw, sh = float(ref["sw"]), float(ref["sh"])
+        except (KeyError, TypeError, ValueError):
+            return out
+        if 0 < sw < 1e4 and 0 < sh < 1e4:  # (not NaN either)
+            out.update(sw=sw, sh=sh)
+        return out
     c = ref.get("color")
     try:
         rgb = [min(max(float(v), 0.0), 1.0) for v in c][:3]
@@ -204,19 +220,76 @@ def valid_ref(ref) -> dict | None:
     return out
 
 
+SIZE_MIN, SIZE_MAX = 0.05, 20.0     # how wide one tile of a texture can be
+
+
+def tex_size(ref) -> tuple | None:
+    """(width, height) in metres of one tile of a texture ref (None: not a
+    texture) — its own, or the library's."""
+    if WT.is_ref(ref):
+        return float(ref["sw"]), float(ref["sh"])
+    it = lib_item(ref["lib"]) if ref and "lib" in ref else None
+    if it is None:
+        return None
+    if "sw" in ref and "sh" in ref:
+        return float(ref["sw"]), float(ref["sh"])
+    return it["sw"], it["sh"]
+
+
+def sized(ref, width: float) -> dict:
+    """The texture ref at this width, its proportion kept (his ask, 09/11:
+    most come out too small on a wall); at the library's width, a plain ref —
+    so a project stays as it was."""
+    if WT.is_ref(ref):
+        return WT.sized(ref, width)
+    it = lib_item(ref["lib"])
+    if it is None or abs(width - it["sw"]) < 1e-4:
+        return {"lib": ref["lib"]}
+    return {"lib": ref["lib"], "sw": round(width, 4),
+            "sh": round(width * it["sh"] / it["sw"], 4)}
+
+
+def _embedded(stem: str) -> str | None:
+    """A project opened on another computer: the image the host took out of
+    the project file, under any size of this material."""
+    try:
+        mats = sys.modules[__package__]._instance.viewport.scene.materials
+        for name, m in mats.items():
+            if name == stem or name.startswith(stem + " · "):
+                path = (getattr(m, "texture", None) or {}).get("path")
+                if path and os.path.isfile(path):
+                    return path
+    except Exception:  # noqa: BLE001 — no project yet
+        pass
+    return None
+
+
 def attrs(ref) -> tuple[str, dict] | None:
     """(material name, the attrs it paints a face with) — None: nothing
     (an unknown texture, or a texture in the Lite: the plain colour)."""
     from core.materials import Material
     if not ref:
         return None
+    if WT.is_ref(ref):
+        if not textures_allowed():
+            return None
+        stem = MAT_PREFIX + WT.label_of(ref)
+        path = WT.ref_path(ref) or _embedded(stem)
+        if path is None:
+            return None
+        custom = abs(ref["sw"] - ref["w0"]) >= 1e-4
+        m = Material(stem + (f" · {ref['sw']:g} m" if custom else ""),
+                     texture={"path": path, "sw": ref["sw"], "sh": ref["sh"]})
+        return m.name, m.face_attrs()
     if "lib" in ref:
         it = lib_item(ref["lib"])
         if it is None or not textures_allowed():
             return None
-        m = Material(MAT_PREFIX + it["name"],
-                     texture={"path": it["path"], "sw": it["sw"],
-                              "sh": it["sh"]})
+        sw, sh = tex_size(ref)
+        # (its size in the name: two sizes are two materials in the host)
+        m = Material(MAT_PREFIX + it["name"]
+                     + ("" if "sw" not in ref else f" · {sw:g} m"),
+                     texture={"path": it["path"], "sw": sw, "sh": sh})
     else:
         m = Material(MAT_PREFIX + ref_label(ref),
                      color=tuple(ref["color"][:3]))
@@ -226,6 +299,17 @@ def attrs(ref) -> tuple[str, dict] | None:
 def _wall(doc: dict, el_id) -> dict | None:
     return next((w for w in doc.get("walls") or [] if w["id"] == el_id),
                 None)
+
+
+def _grid_of(w: dict | None) -> dict | None:
+    """A grid wall's ``gw`` (cleaned) — None: any other wall, the Lite."""
+    if not w or not w.get("gw") or w.get("cw"):
+        return None
+    try:
+        from . import gridwall as GX
+    except ImportError:
+        return None
+    return GX.of(w)
 
 
 def slots(kind: str, el_id: str | None, doc: dict) -> list:
@@ -240,6 +324,11 @@ def slots(kind: str, el_id: str | None, doc: dict) -> list:
             return SLOTS["column"][:1]
     if kind == "wall" and el_id:
         w = _wall(doc, el_id)
+        g = _grid_of(w)
+        if g is not None:
+            # a GRID WALL (gridwall.py): its frame, its glass, its panels
+            from . import gridwall as GX
+            return [(k, tr(label)) for k, label in GX.PARTS]
         ls = (w or {}).get("layers") or []
         # a LIGHT-FRAMED core (framing.py): its studs are the core's part,
         # the insulation between them one of its own («fill»)
@@ -631,6 +720,77 @@ def roof_part(color) -> str:
     return "cover"
 
 
+#: the walls' library cards' LOOKS (PLANO_PAREDE_CAIXILHO.md, Part 1 —
+#: his ask, 11/11/2026: «more walls, at least one of timber boards»): a
+#: card = a thickness + what its faces are made of, there from the start
+#: (``doc["materials"]["el"][wall id]``, where the Material tab keeps a
+#: wall's own). key → (Pro: IngeTrazo's texture, Lite: a plain colour)
+WALL_LOOKS = {
+    "render": ({"lib": "wall/white_roughcast.jpg"},
+               {"color": [0.95, 0.94, 0.91], "name": "Painted render"}),
+    "concrete": ({"lib": "concrete/concrete_exposed.png"},
+                 {"color": [0.63, 0.63, 0.61], "name": "Exposed concrete"}),
+    "brick": ({"lib": "brick/brick_red.png"},
+              {"color": [0.66, 0.31, 0.22], "name": "Exposed brick"}),
+    "block": ({"lib": "wall/cinderblock.jpg"},
+              {"color": [0.70, 0.70, 0.68], "name": "Concrete block"}),
+    "boards_v": ({"lib": "wall/wood_paneling.jpg"},
+                 {"color": [0.80, 0.63, 0.40], "name": "Timber boards"}),
+    "boards_h": ({"lib": "wall/wood_paneling_3.jpg"},
+                 {"color": [0.76, 0.56, 0.35], "name": "Timber siding"}),
+    # (no texture of glass blocks: a pale sea-green, the Pro's too)
+    "glass_block": ({"color": [0.71, 0.84, 0.84], "name": "Glass block"},
+                    {"color": [0.71, 0.84, 0.84], "name": "Glass block"}),
+}
+
+
+def wall_look(key) -> dict | None:
+    """A card's look as a wall's own parts ({"all": ref}) — the edition's
+    (textures in the Pro, the colour in the Lite); None: not one."""
+    got = WALL_LOOKS.get(key or "")
+    if got is None:
+        return None
+    return {"all": copy.deepcopy(got[0] if textures_allowed() else got[1])}
+
+
+def look_of(doc: dict, wall_id) -> str | None:
+    """The card look a wall wears as it came (its own parts equal to one's,
+    in this edition) — None: none, or changed in its Material tab."""
+    own = ((doc.get("materials") or {}).get("el") or {}).get(wall_id or "")
+    if not own:
+        return None
+    return next((k for k in WALL_LOOKS if wall_look(k) == own), None)
+
+
+def with_wall_look(doc: dict, ids, key) -> dict:
+    """``doc`` with the walls ``ids`` wearing the look ``key`` as their own
+    (their part «all»; a part of their own elsewhere is replaced — a card
+    picked is what they are made of now)."""
+    parts = wall_look(key)
+    if parts is None or not ids:
+        return doc
+    m = dict(doc.get("materials") or {})
+    els = dict(m.get("el") or {})
+    for i in ids:
+        els[i] = dict(parts)
+    m["el"] = els
+    m.setdefault("type", {})
+    return dict(doc, materials=m)
+
+
+def without_wall_look(doc: dict, ids) -> dict:
+    """``doc`` with the walls ``ids`` wearing no card look any more — one
+    made a grid wall (its frame / glass / panels wear their own colours):
+    only a card's look goes, a material chosen in the Material tab stays."""
+    els = (doc.get("materials") or {}).get("el") or {}
+    gone = [i for i in ids or () if look_of(doc, i) is not None]
+    if not gone:
+        return doc
+    m = dict(doc.get("materials") or {})
+    m["el"] = {k: v for k, v in els.items() if k not in gone}
+    return dict(doc, materials=m)
+
+
 #: a hidden roof's sheets when nothing is chosen for its covering (Pro)
 SHEET_DEFAULT = {"lib": "roof/corrugated_sheet.jpg"}
 #: what a kind's part is made of when nothing is chosen (Pro: textures).
@@ -855,6 +1015,28 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
                 return "_treated"
             i = layer_of_color(color)
             return names[i] if i is not None and i < len(names) else None
+    if kind == "shaped":
+        # a piece adopted as it is (shaped.py): it keeps its own look — a
+        # material CHOSEN for it covers every face but the see-through ones
+        a = made.get("all")
+        if a is not None:
+            for f in group.mesh.faces:
+                if float(f.attrs.get("opacity", 1.0)) < 1.0:
+                    continue
+                f.attrs.pop("texture", None)
+                f.attrs.update(a[1])
+        return
+    grid = _grid_of(_wall(doc, el_id)) if kind == "wall" and el_id else None
+    if grid is not None:
+        # a grid wall: each face's part by the colour it is built with — a
+        # part with a material takes it, the others keep their colour (the
+        # walls' «Use for all» and their default never reach it)
+        from . import gridwall as GX
+        for f in group.mesh.faces:
+            a = made.get(GX.part_of_color(f.attrs.get("color"), grid))
+            if a is not None:
+                f.attrs.update(a[1])
+        return
     for f in group.mesh.faces:
         if layer_part is not None:
             part = layer_part(f.attrs.get("color"))
@@ -936,6 +1118,9 @@ def _qt():
 THUMB = 64
 _PIX: dict = {}
 _REOPEN_AT: dict = {}     # a window reopened by Apply: (tab, part row)
+_POOL = ThreadPoolExecutor(4, thread_name_prefix="archxq-webtex")
+_LAST_PAGE = None         # the gallery's tab last used, while the host is open
+_TILE = None              # the class of a gallery tile (with its star)
 
 
 def thumb(ref, size: int = THUMB):
@@ -945,9 +1130,13 @@ def thumb(ref, size: int = THUMB):
     if key in _PIX:
         return _PIX[key]
     pm = QtGui.QPixmap(size, size)
-    if ref and "lib" in ref:
-        it = lib_item(ref["lib"])
-        img = QtGui.QPixmap(it["path"]) if it else QtGui.QPixmap()
+    if ref and ("lib" in ref or WT.is_ref(ref)):
+        if WT.is_ref(ref):
+            path = WT.ref_path(ref)
+            img = QtGui.QPixmap(path) if path else QtGui.QPixmap()
+        else:
+            it = lib_item(ref["lib"])
+            img = QtGui.QPixmap(it["path"]) if it else QtGui.QPixmap()
         if img.isNull():
             pm.fill(QtGui.QColor("#555"))
         else:
@@ -964,6 +1153,134 @@ def thumb(ref, size: int = THUMB):
         p.end()
     _PIX[key] = pm
     return pm
+
+
+def _star_poly(c, r: float):
+    _c, QtGui, _w = _qt()
+    import math
+    pts = []
+    for i in range(10):
+        a = -math.pi / 2 + i * math.pi / 5
+        k = r if i % 2 == 0 else r * 0.45
+        pts.append(_c.QPointF(c.x() + k * math.cos(a),
+                              c.y() + k * math.sin(a)))
+    return QtGui.QPolygonF(pts)
+
+
+def _tile_class():
+    """A gallery tile with a star in its corner — under the pointer, or lit
+    (a favourite): a click on the star keeps / drops it, elsewhere picks."""
+    global _TILE
+    if _TILE is not None:
+        return _TILE
+    QtCore, QtGui, W = _qt()
+
+    class Tile(W.QToolButton):
+        def __init__(self, ref, tip: str, on_star) -> None:
+            super().__init__()
+            self.ref, self.tip, self.on_star = ref, tip, on_star
+            self.fav = False
+            self._over = False
+            self._on_star = False
+            self.set_fav(MF.is_fav(ref))
+
+        def set_fav(self, on: bool) -> None:
+            self.fav = bool(on)
+            self.setToolTip(self.tip + "\n" + (
+                tr("★ In your favourites — click the star to take it out")
+                if self.fav else
+                tr("Click the ☆ to keep it in your favourites")))
+            self.update()
+
+        def _star(self):
+            s = 18
+            return QtCore.QRect(self.width() - s - 3, 3, s, s)
+
+        def enterEvent(self, ev):  # noqa: N802
+            self._over = True
+            self.update()
+            super().enterEvent(ev)
+
+        def leaveEvent(self, ev):  # noqa: N802
+            self._over = False
+            self.update()
+            super().leaveEvent(ev)
+
+        def mousePressEvent(self, ev):  # noqa: N802
+            if ev.button() == QtCore.Qt.LeftButton and \
+                    self._star().contains(ev.position().toPoint()):
+                self._on_star = True
+                ev.accept()
+                return
+            super().mousePressEvent(ev)
+
+        def mouseReleaseEvent(self, ev):  # noqa: N802
+            if self._on_star:
+                self._on_star = False
+                ev.accept()
+                if self._star().contains(ev.position().toPoint()):
+                    self.on_star(self.ref)
+                return
+            super().mouseReleaseEvent(ev)
+
+        def paintEvent(self, ev):  # noqa: N802
+            super().paintEvent(ev)
+            if not (self.fav or self._over):
+                return
+            p = QtGui.QPainter(self)
+            p.setRenderHint(QtGui.QPainter.Antialiasing)
+            r = QtCore.QRectF(self._star())
+            p.setPen(QtCore.Qt.NoPen)
+            p.setBrush(QtGui.QColor(20, 24, 30, 175))
+            p.drawEllipse(r)
+            poly = _star_poly(r.center(), r.width() * 0.42)
+            if self.fav:
+                p.setBrush(QtGui.QColor("#f5c518"))
+                p.setPen(QtGui.QPen(QtGui.QColor("#8a6d00"), 1))
+            else:
+                p.setBrush(QtCore.Qt.NoBrush)
+                p.setPen(QtGui.QPen(QtGui.QColor("#e8edf2"), 1.4))
+            p.drawPolygon(poly)
+            p.end()
+    _TILE = Tile
+    return Tile
+
+
+def _web_item(ref) -> dict:
+    """A web texture's ref as its list's item (to fetch it)."""
+    src, key = ref["web"].split("/")
+    return {"src": src, "id": key, "name": ref["name"], "w": ref["w0"],
+            "h": ref["h0"]}
+
+
+def _icon_of(ref):
+    """A tile's picture: a web texture not fetched yet, its little one."""
+    QtCore, QtGui, _w = _qt()
+    if WT.is_ref(ref) and "web" in ref and WT.ref_path(ref) is None:
+        path = WT.thumb_path(*ref["web"].split("/"))
+        key = ("t", path)
+        if key not in _PIX:
+            img = QtGui.QPixmap(path) if os.path.isfile(path) \
+                else QtGui.QPixmap()
+            if img.isNull():
+                img = QtGui.QPixmap(THUMB, THUMB)
+                img.fill(QtGui.QColor("#3a4048"))
+            else:
+                img = img.scaled(THUMB, THUMB,
+                                 QtCore.Qt.KeepAspectRatioByExpanding,
+                                 QtCore.Qt.SmoothTransformation)
+            _PIX[key] = img
+        return _PIX[key]
+    return thumb(ref)
+
+
+def _fav_shown(ref) -> bool:
+    """A kept one still here (a texture of the library, your own file)."""
+    if "lib" in ref:
+        return lib_item(ref["lib"]) is not None
+    if WT.is_ref(ref) and "own" in ref:
+        return WT.ref_path(ref) is not None
+    return True
 
 
 def _section(title: str, fill_fn, opened: bool = False):
@@ -1014,6 +1331,7 @@ class MaterialTab:
         self.start = {p: resolve(doc, kind, el_id, p) for p, _l in self.parts}
         self.now = dict(self.start)
         self.part = self.parts[0][0]
+        self._tiles = {}             # a ref's key: its tiles (their stars)
         self.widget = w = W.QWidget()
         w.setMinimumSize(600, 380)
         root = W.QHBoxLayout(w)
@@ -1041,6 +1359,9 @@ class MaterialTab:
         self.name.setWordWrap(True)
         self.name.setMaximumWidth(196)
         left.addWidget(self.name)
+        self._size_busy = False
+        self.size_box = self._size_row()
+        left.addWidget(self.size_box)
         self.list = W.QListWidget()
         self.list.setIconSize(QtCore.QSize(28, 28))
         # wide enough for «Railing (posts, handrail)» (cut, a scroll bar
@@ -1054,13 +1375,13 @@ class MaterialTab:
         self.list.currentRowChanged.connect(self._pick_part)
         if len(self.parts) == 1:
             self.list.hide()
+            left.addStretch(1)             # (the size stays under the name)
         left.addWidget(self.list, 1)
         root.addLayout(left)
 
         right = W.QVBoxLayout()
-        scroll = W.QScrollArea()
-        scroll.setWidgetResizable(True)
-        inner = W.QWidget()
+        self._web_setup()
+        scroll, inner = self._page()
         self.sections = W.QVBoxLayout(inner)
         self.sections.setContentsMargins(2, 2, 2, 2)
         self.sections.setSpacing(2)
@@ -1068,12 +1389,15 @@ class MaterialTab:
         cur_cat = (cur.get("lib") or "").split("/")[0]
         if textures_allowed():
             for c in library():
-                self.sections.addWidget(_section(
+                box = _section(
                     f"{c['name']}  ({len(c['items'])})",
                     lambda body, c=c: self._grid(
                         body, [({"lib": it["file"]}, it["name"])
                                for it in c["items"]]),
-                    opened=c["id"] == cur_cat))
+                    opened=c["id"] == cur_cat)
+                self.sections.addWidget(box)
+                if c["id"] == "wall" and not cur_cat:
+                    self._open_on_show(inner, box)
         else:
             note = W.QLabel("Textures are in ArchXQ IT Pro — "
                             f"{edition.PRO_URL}. Solid colours below.")
@@ -1089,13 +1413,28 @@ class MaterialTab:
                             f"{c['code']} — {c['name']}")
                            for c in fam["colors"]])))
         self.sections.addStretch()
-        scroll.setWidget(inner)
-        right.addWidget(scroll, 1)
+        self.pages = None
+        if textures_allowed():
+            self._make_pages(scroll, cur)
+            right.addWidget(self.pages, 1)
+        else:
+            right.addWidget(scroll, 1)
+        self.web_note = W.QLabel()
+        self.web_note.setWordWrap(True)
+        self.web_note.setStyleSheet("color: #8fb8f9;")
+        self.web_note.hide()
+        right.addWidget(self.web_note)
 
         row = W.QHBoxLayout()
         own = W.QPushButton("Solid colour…")
         own.clicked.connect(self._own_colour)
         row.addWidget(own)
+        if textures_allowed():
+            yours = W.QPushButton(tr("Add your own texture…"))
+            yours.setToolTip(tr("An image from your computer. It stays in "
+                                "your textures, for every project"))
+            yours.clicked.connect(self._add_own)
+            row.addWidget(yours)
         dflt = W.QPushButton("Default")
         dflt.setToolTip("Back to ArchXQ's default for this part")
         dflt.clicked.connect(lambda: self._choose(None))
@@ -1120,20 +1459,403 @@ class MaterialTab:
         root.addLayout(right, 1)
         self._show()
 
+    # -- the size of a texture ---------------------------------------------------------
+    def _size_row(self):
+        from . import look as L
+        _c, _g, W = _qt()
+        box = W.QWidget()
+        box.setMaximumWidth(196)
+        lay = W.QVBoxLayout(box)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(3)
+        lay.addWidget(W.QLabel(tr("Texture size")))
+        self.size = L.metres(1.0, SIZE_MIN, SIZE_MAX)
+        self.size.setToolTip(tr("How wide one tile of this texture is on the "
+                                "model. Its proportion is kept"))
+        self.size.valueChanged.connect(self._size_typed)
+        lay.addWidget(self.size)
+        row = W.QHBoxLayout()
+        row.setSpacing(4)
+        half = W.QPushButton("½×")
+        half.setToolTip(tr("Half the size"))
+        half.clicked.connect(lambda: self._size_times(0.5))
+        row.addWidget(half)
+        twice = W.QPushButton("2×")
+        twice.setToolTip(tr("Twice the size"))
+        twice.clicked.connect(lambda: self._size_times(2.0))
+        row.addWidget(twice)
+        own = W.QPushButton(tr("Original"))
+        own.setToolTip(tr("The texture's own size"))
+        own.clicked.connect(self._size_original)
+        row.addWidget(own)
+        lay.addLayout(row)
+        return box
+
+    def _size_typed(self, width: float) -> None:
+        ref = self.now.get(self.part)
+        if not self._size_busy and tex_size(ref):
+            self._choose(sized(ref, width))
+
+    def _size_times(self, k: float) -> None:
+        ref = self.now.get(self.part)
+        got = tex_size(ref)
+        if got:
+            self._choose(sized(ref, min(max(got[0] * k, SIZE_MIN),
+                                        max(SIZE_MAX, got[0]))))
+
+    def _size_original(self) -> None:
+        ref = self.now.get(self.part)
+        if WT.is_ref(ref):
+            self._choose(WT.sized(ref, ref["w0"]))
+        elif tex_size(ref):
+            self._choose({"lib": ref["lib"]})
+
+    def _show_size(self, ref) -> None:
+        got = tex_size(ref) if textures_allowed() else None
+        self.size_box.setVisible(bool(got))
+        if got:
+            self._size_busy = True
+            try:
+                self.size.setRange(min(SIZE_MIN, got[0]),
+                                   max(SIZE_MAX, got[0]))
+                self.size.setValue(got[0])
+            finally:
+                self._size_busy = False
+
+    # -- Poly Haven, ambientCG, your own ------------------------------------------------
+    def _web_setup(self) -> None:
+        """Workers only fetch and write files and say so in a queue; the
+        pictures are made here, on a timer that dies with the window."""
+        QtCore, _g, W = _qt()
+        self._web_q = queue.Queue()
+        self._web_stop = threading.Event()
+        self._web_btn = {}
+        self._web_busy = 0
+        self._web_want = None
+        self._web_offline = False
+        self._web_tick = QtCore.QTimer(self.widget)
+        self._web_tick.setInterval(120)
+        self._web_tick.timeout.connect(self._web_drain)
+        self.widget.destroyed.connect(lambda *_a: self._web_stop.set())
+
+    @staticmethod
+    def _open_on_show(page, box) -> None:
+        """The first group of a tab is open when you get there (his ask,
+        09/11: the wall of colours is the «wow») — only then: the window
+        opens as fast as ever, and nothing is fetched for a tab not seen."""
+        QtCore, _g, W = _qt()
+        head = box.findChild(W.QToolButton)
+
+        class Once(QtCore.QObject):
+            def eventFilter(self, obj, ev):  # noqa: N802
+                if ev.type() == QtCore.QEvent.Show:
+                    obj.removeEventFilter(self)
+                    QtCore.QTimer.singleShot(0, page, _open)
+                return False
+
+        def _open() -> None:
+            head.setChecked(True)
+        page.installEventFilter(Once(page))
+
+    @staticmethod
+    def _page():
+        """(its scroll area, the widget to fill)."""
+        _c, _g, W = _qt()
+        scroll = W.QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = W.QWidget()
+        scroll.setWidget(inner)
+        return scroll, inner
+
+    def _make_pages(self, native, cur) -> None:
+        """Where the textures come from, one tab each (his ask, 09/11: in one
+        long list they were lost, «even knowing they are there»)."""
+        global _LAST_PAGE
+        _c, _g, W = _qt()
+        self.pages = W.QTabWidget()
+        self.pages.setDocumentMode(True)
+        # first: YOUR favourites and the recently used, for every project
+        # (his ask, 12/11: «not having to look for the ones I use»)
+        page, self._fav_box = self._page()
+        lay = W.QVBoxLayout(self._fav_box)
+        lay.setContentsMargins(8, 8, 8, 8)
+        self.pages.addTab(page, "★ " + tr("Favourites"))
+        self._fav_fill()
+        self.pages.addTab(native, "IngeTrazo")
+        for src, title in WT.SOURCES.items():
+            page, inner = self._page()
+            self._web_source(inner, src)
+            inner.layout().addStretch()
+            self.pages.addTab(page, f"{title} ({WT.count(src)})")
+        page, self._own_box = self._page()
+        self._own_page = page
+        lay = W.QVBoxLayout(self._own_box)
+        lay.setContentsMargins(8, 8, 8, 8)
+        self.pages.addTab(page, tr("Your textures"))
+        self._own_fill()
+        if WT.is_ref(cur) and not self._in_fav_page(cur):
+            # (opens where its material came from)
+            at = self.pages.indexOf(page) if "own" in cur else \
+                2 + list(WT.SOURCES).index(cur["web"].split("/")[0])
+        elif _LAST_PAGE is not None:
+            at = _LAST_PAGE
+        else:                    # the first time: your own, when there are
+            at = 0 if (MF.favs() or MF.recent()) else 1
+        self.pages.setCurrentIndex(at)
+
+        def remember(i: int) -> None:
+            global _LAST_PAGE
+            _LAST_PAGE = i
+        self.pages.currentChanged.connect(remember)
+
+    def _own_fill(self) -> None:
+        _c, _g, W = _qt()
+        lay = self._own_box.layout()
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        names = WT.own_files()
+        if names:
+            grid = W.QWidget()
+            self._grid(grid, self._own_refs(names))
+            lay.addWidget(grid)
+        else:
+            note = W.QLabel(tr("The images you add with «Add your own "
+                               "texture…» stay here, for every project"))
+            note.setWordWrap(True)
+            note.setEnabled(False)
+            lay.addWidget(note)
+        lay.addStretch()
+
+    # -- your favourites and the recently used ------------------------------------------
+    def _fav_fill(self) -> None:
+        _c, _g, W = _qt()
+        lay = self._fav_box.layout()
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        for title, rows, empty in (
+                ("★ " + tr("Favourites"), MF.favs(),
+                 tr("Click the ☆ on any texture or colour, in any tab, to "
+                    "keep it here — for every project")),
+                (tr("Recently used"), MF.recent(),
+                 tr("The last ones you apply come here by themselves"))):
+            head = W.QLabel(title)
+            head.setStyleSheet("font-weight: bold; padding: 4px 2px;")
+            lay.addWidget(head)
+            rows = [r for r in rows if _fav_shown(r)]
+            if rows:
+                grid = W.QWidget()
+                self._grid(grid, [(r, ref_label(r)) for r in rows],
+                           own=False)
+                lay.addWidget(grid)
+            else:
+                note = W.QLabel(empty)
+                note.setWordWrap(True)
+                note.setEnabled(False)
+                lay.addWidget(note)
+        lay.addStretch()
+
+    @staticmethod
+    def _in_fav_page(ref) -> bool:
+        k = MF.key_of(ref)
+        return k is not None and any(MF.key_of(r) == k
+                                     for r in MF.favs() + MF.recent())
+
+    def _on_star(self, ref) -> None:
+        QtCore, _g, _w = _qt()
+        on = MF.toggle(ref)
+        for t in self._tiles.get(MF.key_of(ref), ()):
+            try:
+                t.set_fav(on)
+            except RuntimeError:           # (a tile gone with its page)
+                pass
+        # (later: the tile clicked may be one of the page rebuilt)
+        QtCore.QTimer.singleShot(0, self.widget, self._fav_fill)
+
+    def _tile(self, ref, tip: str, own: bool = True):
+        """A gallery tile; Pro: with its star. ``own``: on the gallery's
+        tabs (its star follows a click on the favourites' page)."""
+        QtCore, _g, W = _qt()
+        if textures_allowed():
+            b = _tile_class()(ref, tip, self._on_star)
+            if own:
+                self._tiles.setdefault(MF.key_of(ref), []).append(b)
+        else:
+            b = W.QToolButton()
+            b.setToolTip(tip)
+        b.setIconSize(QtCore.QSize(THUMB, THUMB))
+        b.setAutoRaise(True)
+        return b
+
+    def _pick_any(self, ref) -> None:
+        """A tile clicked: a web texture not on this computer is fetched."""
+        if WT.is_ref(ref) and "web" in ref and WT.ref_path(ref) is None:
+            self._web_pick(_web_item(ref))
+        else:
+            self._choose(ref)
+
+    def _own_refs(self, names) -> list:
+        _c, QtGui, _w = _qt()
+        out = []
+        for n in names:
+            s = QtGui.QImageReader(WT.own_path(n)).size()
+            ref = WT.own_ref(n, s.width(), s.height())
+            out.append((ref, ref["name"]))
+        return out
+
+    def _add_own(self) -> None:
+        _c, QtGui, W = _qt()
+        path, _f = W.QFileDialog.getOpenFileName(
+            self.widget, tr("Choose a texture image"),
+            os.path.expanduser("~"),
+            "Images (" + " ".join("*" + e for e in WT.OWN_EXT) + ")")
+        if not path:
+            return
+        s = QtGui.QImageReader(path).size()
+        try:
+            if s.width() <= 0 or s.height() <= 0:
+                raise OSError("not an image")
+            ref = WT.add_own(path, s.width(), s.height())
+        except OSError:
+            self._web_say(tr("That file could not be used as a texture"))
+            return
+        self._own_fill()
+        self.pages.setCurrentIndex(self.pages.indexOf(self._own_page))
+        self._choose(ref)
+
+    def _web_source(self, body, src: str) -> None:
+        _c, _g, W = _qt()
+        lay = W.QVBoxLayout(body)
+        lay.setContentsMargins(2, 6, 2, 4)
+        lay.setSpacing(2)
+        note = W.QLabel(tr("Free CC0 textures from {name} ({site}). Each one "
+                           "comes from the internet when you click it",
+                           name=WT.SOURCES[src], site=WT.SITES[src]))
+        note.setWordWrap(True)
+        note.setEnabled(False)
+        lay.addWidget(note)
+        for n, (fam, items) in enumerate(WT.families(src)):
+            box = _section(f"{tr(fam)}  ({len(items)})",
+                           lambda b, items=items: self._web_grid(b, items))
+            lay.addWidget(box)
+            if n == 0:
+                self._open_on_show(body, box)
+
+    def _web_grid(self, body, items) -> None:
+        QtCore, QtGui, W = _qt()
+        g = W.QGridLayout(body)
+        g.setContentsMargins(4, 0, 4, 6)
+        g.setSpacing(4)
+        blank = QtGui.QPixmap(THUMB, THUMB)
+        blank.fill(QtGui.QColor("#3a4048"))
+        for n, it in enumerate(items):
+            b = self._tile(WT.ref_of(it), it["name"])
+            b.setIcon(QtGui.QIcon(blank))
+            b.clicked.connect(lambda _c=False, i=it: self._web_pick(i))
+            g.addWidget(b, n // self.COLS, n % self.COLS)
+            key = (it["src"], it["id"])
+            self._web_btn[key] = b
+            path = WT.thumb_path(*key)
+            if os.path.isfile(path):
+                self._web_icon(b, path)
+            else:
+                self._web_job("thumb", key, None)
+
+    def _web_icon(self, button, path: str) -> None:
+        QtCore, QtGui, _w = _qt()
+        img = QtGui.QPixmap(path)
+        if not img.isNull():
+            button.setIcon(QtGui.QIcon(img.scaled(
+                THUMB, THUMB, QtCore.Qt.KeepAspectRatioByExpanding,
+                QtCore.Qt.SmoothTransformation)))
+
+    def _web_job(self, what: str, key, item) -> None:
+        q, stop = self._web_q, self._web_stop
+
+        def work() -> None:
+            if what == "thumb" and stop.is_set():
+                q.put(("skip", key, None))
+                return
+            try:
+                if what == "thumb":
+                    got = WT.fetch_thumb(*key)
+                else:
+                    got = WT.fetch_file(*key, lambda pct: q.put(
+                        ("pct", key, pct)))
+                q.put((what, key, got))
+            except Exception:  # noqa: BLE001 — the window says so
+                q.put((what, key, None))
+        self._web_busy += 1
+        _POOL.submit(work)
+        self._web_tick.start()
+
+    def _web_say(self, text: str) -> None:
+        self.web_note.setText(text)
+        self.web_note.setVisible(bool(text))
+
+    def _web_pick(self, item: dict) -> None:
+        key = (item["src"], item["id"])
+        self._web_want = None
+        if os.path.isfile(WT.file_path(*key)):
+            self._web_say("")
+            self._choose(WT.ref_of(item))
+            return
+        self._web_want = item
+        self._web_say(tr("Downloading {name}…", name=item["name"]))
+        self._web_job("file", key, item)
+
+    def _web_drain(self) -> None:
+        while True:
+            try:
+                what, key, got = self._web_q.get_nowait()
+            except queue.Empty:
+                break
+            want = self._web_want
+            hot = want is not None and key == (want["src"], want["id"])
+            if what == "pct":
+                if hot:
+                    self._web_say(tr("Downloading {name}… {pct}%",
+                                     name=want["name"], pct=got))
+                continue
+            self._web_busy -= 1
+            if what == "thumb":
+                if got and key in self._web_btn:
+                    self._web_icon(self._web_btn[key], got)
+                elif not got and not self._web_offline:
+                    self._web_offline = True
+                    self._web_say(tr("The pictures could not be loaded. "
+                                     "Check your internet connection"))
+            elif what == "file" and hot:
+                self._web_want = None
+                if got:
+                    self._web_say("")
+                    self._choose(WT.ref_of(want))
+                else:
+                    self._web_say(tr("Could not download {name}. Check your "
+                                     "internet connection and try again",
+                                     name=want["name"]))
+        if self._web_busy <= 0:
+            self._web_tick.stop()
+
     # -- the gallery ----------------------------------------------------------------
-    def _grid(self, body, refs) -> None:
+    def _grid(self, body, refs, own: bool = True) -> None:
         QtCore, QtGui, W = _qt()
         g = W.QGridLayout(body)
         g.setContentsMargins(4, 0, 4, 6)
         g.setSpacing(4)
         for n, (ref, tip) in enumerate(refs):
-            b = W.QToolButton()
-            b.setIcon(QtGui.QIcon(thumb(ref)))
-            b.setIconSize(QtCore.QSize(THUMB, THUMB))
-            b.setToolTip(tip)
-            b.setAutoRaise(True)
-            b.clicked.connect(lambda _c=False, r=ref: self._choose(r))
+            b = self._tile(ref, tip, own)
+            b.setIcon(QtGui.QIcon(_icon_of(ref)))
+            b.clicked.connect(lambda _c=False, r=ref: self._pick_any(r))
             g.addWidget(b, n // self.COLS, n % self.COLS)
+        # (a short row: the tiles keep to the left, as in a full one)
+        if len(refs) < self.COLS:
+            g.setColumnStretch(self.COLS, 1)
 
     def _own_colour(self) -> None:
         _c, QtGui, W = _qt()
@@ -1161,6 +1883,7 @@ class MaterialTab:
         self.big.setPixmap(thumb(ref, 132))
         label = dict(self.parts)[self.part]
         self.name.setText(f"<b>{tr(label)}</b><br>{tr(ref_label(ref))}")
+        self._show_size(ref)
         for i, (p, _l) in enumerate(self.parts):
             self.list.item(i).setIcon(QtGui.QIcon(thumb(self.now.get(p), 28)))
 

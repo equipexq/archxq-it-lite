@@ -1138,9 +1138,19 @@ def _outline(pc):
             ring.append(_notched(pc, side, pts, cyclic=True))
         return {"outer": ring[0], "holes": [list(reversed(ring[1]))]}
 
-    def corner(end, side):
+    def raw(end, side):
         default = seg.offset(side * t / 2.0).at(0.0 if end == "A" else 1.0)
-        return _clamped(pc, end, side, pc.corners.get((end, side), default))
+        return pc.corners.get((end, side), default)
+
+    def corner(end, side):
+        # held back only when its two ends' corners on that face CROSS (the
+        # piece would turn inside out) — a short piece whose mitres lie past
+        # its middle but in order is exact (Drazen #105, 2026-11-16: a
+        # 200 mm return between two walls, as long as it is thick, overlapped
+        # its neighbour by a triangle)
+        if seg.kind == "line" and seg.project(raw("A", side))[0]                 < seg.project(raw("B", side))[0] - 1e-6:
+            return raw(end, side)
+        return _clamped(pc, end, side, raw(end, side))
 
     a_l, a_r = corner("A", +1), corner("A", -1)
     b_l, b_r = corner("B", +1), corner("B", -1)

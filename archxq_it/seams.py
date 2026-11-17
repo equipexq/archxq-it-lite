@@ -22,6 +22,11 @@ DOT_TOL = 0.9999            # normals this close are the same direction
 INSIDE_TOL = 2e-3           # m: a point this close to a face is on it
 BUCKET = 0.005              # m: the planes' index step (± one looked at:
                             # covers PLANE_TOL)
+#: a CURVED wall going on from a straight one, tangent («Round the corner»,
+#: F2b 13/11/2026): its first facet turns half a step (≤ walls.MAX_STEP)
+#: off the straight face — the upright joint between them is hidden too,
+#: the curve reads as one (as each wall's own facets, compat's soft edges)
+TANGENT_DOT = math.cos(math.radians(12.0))
 
 
 def edge_key(a, b) -> frozenset:
@@ -148,11 +153,14 @@ def _near(a, b, m=0.01) -> bool:
             and al[2] - m <= bh[2] and bl[2] - m <= ah[2])
 
 
-def hidden_edges(built: list, mat_of=None) -> dict:
+def hidden_edges(built: list, mat_of=None, curved=()) -> dict:
     """{index in ``built``: {edge key}} — the joint edges of its walls to
     hide. ``built``: ``structure.build``'s list (only its walls are read);
     ``mat_of(element, face colour)``: what a face wears (equal = same
-    material; none given: all the same)."""
+    material; none given: all the same). ``curved``: the ids of the curved
+    walls — an upright joint of one of them going on, tangent, from its
+    neighbour is hidden too (``TANGENT_DOT``)."""
+    curved = set(curved or ())
     mat_of = mat_of or (lambda el, color: None)
     walls = {}
     for i, el in enumerate(built):
@@ -221,6 +229,18 @@ def hidden_edges(built: list, mat_of=None) -> dict:
                            and g.mat == side.mat and g.holds(a)
                            and g.holds(b) and g.holds(mid)
                            for _j, g in on(lv, side.d, against)):
+                        hide.add(key)
+                        break
+                    # (tangent: a curved wall's facet going on from it)
+                    if curved and abs(side.n[2]) < 0.05 and abs(
+                            a[0] - b[0]) + abs(a[1] - b[1]) < 1e-6 and (
+                            built[i].get("id") in curved or any(
+                                built[j].get("id") in curved
+                                for j in against)) and any(
+                            TANGENT_DOT <= _dot(g.n, side.n) <= DOT_TOL
+                            and abs(g.n[2]) < 0.05 and g.mat == side.mat
+                            and g.holds(a) and g.holds(b) and g.holds(mid)
+                            for j in against for g in walls[j][1]):
                         hide.add(key)
                         break
         if hide:

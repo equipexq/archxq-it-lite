@@ -302,6 +302,27 @@ def footprints(r: dict, doc: dict, elevations) -> list:
     return [R.piece_corners(pc) for pc in ps + R.end_pieces(r, ps, zs, ze)]
 
 
+def plan_marks(r: dict, doc: dict, elevations) -> list:
+    """A stair's lines in plan past its outline, as [((x, y), (x, y))…]:
+    a line across each flight at every tread (as ``StairTool.marks``
+    draws it), its walking line and the arrow up (``R.walk_marks``) — a
+    ghost level's stair reads as a stair (his ask, 12/11)."""
+    zs, ze = R.heights(r, doc, elevations)
+    ps = layout(r, zs, ze)
+    out = []
+    for pc in ps:
+        if not pc.get("run", True) or pc.get("m", 0) < 2:
+            continue
+        (cx, cy), (dx, dy) = pc["c"], pc["d"]
+        rx, ry = dy, -dx
+        h = pc["w"] / 2
+        for k in range(1, pc["m"] - 1):
+            s = k * pc["p"]
+            out.append(((cx + dx * s + rx * h, cy + dy * s + ry * h),
+                        (cx + dx * s - rx * h, cy + dy * s - ry * h)))
+    return out + R.walk_marks(ps, ze >= zs)
+
+
 def well(r: dict, doc: dict, elevations) -> list:
     """What the slab above loses: the footprints, but never back past the
     line where the last flight lands on the upper floor. In a U with an odd

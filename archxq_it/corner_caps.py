@@ -34,7 +34,13 @@ ON = 1e-5               # m: a point this close lies on a line
 def end_height(w: dict, pieces, end: str, z0: float, under: float):
     """How high (from the level's floor) the wall stands at its end
     ("A" / "B"), as built — its own top (level on its corner piece), its
-    height, or up to the slab over the level."""
+    height, or up to the slab over the level. None: a wall with a SHAPE
+    (F2) — its corner keeps its mitre, the shape's end slice carried on
+    over it."""
+    if w.get("profile"):
+        from .wallshape import profile_of
+        if profile_of(w) is not None:
+            return None
     if W.top_of(w) is not None:
         ww = dict(w, _span=W.clear_span(w, pieces))
         return W.top_h(ww, 0.0 if end == "A" else W.drawn(w).L)

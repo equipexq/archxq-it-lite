@@ -313,6 +313,21 @@ def within(inner, outer, margin: float = 0.01) -> bool:
     return True
 
 
+def covered(inner, outer, tol: float = 0.001) -> bool:
+    """``inner`` lies inside ``outer`` — its corners and sides may lie ON
+    ``outer``'s sides (an excavation dug to the boundary, support #93),
+    never past them by more than ``tol``. Inside with room to spare:
+    ``within`` decides, as before."""
+    if within(inner, outer):
+        return True
+    try:
+        from shapely.geometry import Polygon
+        return Polygon(outer).buffer(tol, join_style=2).covers(
+            Polygon(inner))
+    except Exception:  # noqa: BLE001 — as before
+        return False
+
+
 def overlap(a, b) -> bool:
     """Two outlines share some area (crossing sides, or one inside the
     other)."""

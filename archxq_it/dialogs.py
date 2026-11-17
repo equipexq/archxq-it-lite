@@ -1863,11 +1863,13 @@ class WallDialog(QDialog):
         self._cut_refresh()
 
     def __init__(self, wall: dict, level: dict, parent=None,
-                 types=None) -> None:
+                 types=None, openings=(), joined=(), tab=None) -> None:
         from PySide6.QtWidgets import QCheckBox
         from . import look as L
         from . import walls as W
         super().__init__(parent)
+        #: the Shape tab (wallshapetab.py, F2) — none on other walls
+        self.shape = None
         #: YOUR wall types (the document's), id → type
         self.types = {t["id"]: t for t in types or ()}
         self.wall = copy.deepcopy(wall)
@@ -2040,16 +2042,47 @@ class WallDialog(QDialog):
         pl.addStretch(1)
         self.tabs.addTab(pg, "Position", "position")
         self.layers = None
-        if not wall.get("cw"):
+        # (a GRID wall — gridwall.py: no layers, no type, no stud frame;
+        # its own tabs instead — «no dead control», his rule, 12/11/2026)
+        grid = bool(wall.get("gw")) and not wall.get("cw") \
+            and kind == "line"
+        if not wall.get("cw") and not grid:
             self._layers_tab(wall)
+            if kind == "line":           # its SHAPE from the front (F2)
+                from . import wallshapetab
+                wallshapetab.add_tab(self, wall, level, openings, joined)
+                if tab == "shape":
+                    self.tabs.setCurrentIndex(self.shape_tab)
+                if self.shape.why_kind is None and wall.get("profile"):
+                    # its height and top are its shape's (that tab)
+                    why = "Set by its shape — the Shape tab"
+                    for f in (self.f_top, self.f_hmode, self.f_h):
+                        if f is not None:
+                            f.setEnabled(False)
+                            f.setToolTip(why)
         self.cw = None
+        self.gw = None
         cw_tab = None
+        if grid:
+            try:
+                from . import gridwin
+                gridwin.add_tabs(self, wall)
+                cw_tab = self.gw_tab
+                self.setWindowTitle("Grid wall")
+            except ImportError:              # (the Lite: no grid walls)
+                self.gw = None
         if wall.get("cw"):
             self._curtain_tab(wall)
             cw_tab = self.tabs.count() - 1
             # a curtain wall's window is ITS window (his ask, 2026-10-14:
             # a double-click opened it as a masonry wall's, on Geometry)
             self.setWindowTitle("Curtain wall")
+        if self.layers is None:
+            # no layers (a grid wall, a curtain wall): no «Core face» to
+            # align to — the Layers tab is what shows / hides it
+            b = self.f_align.button(self.f_align.findData("core_out"))
+            if b is not None:
+                b.setVisible(False)
         self._own = self.tabs.count()
 
         # ---- the pages + the plan beside them ------------------------------------
@@ -2747,12 +2780,19 @@ class WallDialog(QDialog):
         self.fold_pos.set_pick(compat.fmt_len(L))
         self.d_size.set(align=w["align"], base=w["base"])
         self.plan.set(w)
+        area = L * (W.top_mean(w) - w["base"] if W.top_of(w) is not None
+                    else h)
+        st = getattr(self, "shape", None)
+        if st is not None and st.why_kind is None and not st.rect and (
+                st.changed or self.wall.get("profile")):
+            # its SHAPE (F2): the exact area of its front, its height its peak
+            from . import wallshape as WS
+            area = WS.area_exact(st.prof)
+            h = WS.peak(st.prof)
         self.stats.set([(compat.fmt_len(L), "length"),
                         (compat.fmt_len(h), "height"),
                         (t_, "thickness"),
-                        (compat.fmt_area(L * (W.top_mean(w) - w["base"]
-                                              if W.top_of(w) is not None
-                                              else h)), "face area")])
+                        (compat.fmt_area(area), "face area")])
         self._cw_refresh(w, h)
 
     def _on_top_kind(self, *_a) -> None:
@@ -2824,6 +2864,15 @@ class WallDialog(QDialog):
             if top is not None:
                 w["top"] = top
                 w["height"] = W.top_peak(top)
+        if self.shape is not None:   # its shape (the Shape tab, F2)
+            from . import wallshapetab
+            if self.shape.why_kind is None and w.get("profile")                     and not self.shape.changed:
+                # (untouched: the shape stays — its height its peak)
+                from . import wallshape as WS
+                w.pop("top", None)
+                w["height"] = round(max(w["base"] + WS.peak(
+                    w["profile"]), 0.05), 4)
+            wallshapetab.values(self, w)
         if self.layers is not None:  # its layers (0.15.0): t = their sum
             if len(self.layers) > 1:
                 w["layers"] = [dict(la) for la in self.layers]
@@ -2850,6 +2899,9 @@ class WallDialog(QDialog):
             if self.new_type:
                 w["_new_type"] = dict(self.new_type)
         w.update(self._cw_values())  # a curtain wall's own (its tab)
+        if self.gw:                  # a grid wall's own (its tabs)
+            from . import gridwin
+            w["gw"] = gridwin.values(self)
         if self.f_ends:              # Start / End (Length is kept in step)
             # a coordinate counts as changed only if it differs from what
             # the field SHOWED (2 decimals): opening and pressing OK must
@@ -2995,6 +3047,9 @@ def _pic_section(shape):
             p.setBrush(L.colour("#8a8f9655"))
             p.drawEllipse(QPointF(30, 22), 15, 15)
             p.setBrush(Qt.NoBrush)
+        elif shape == "poly":                       # its own outline
+            L.poly(p, [(14, 36), (30, 8), (46, 8), (46, 36)], L.INK, 2.0,
+                   fill="#8a8f9655")
         else:
             L.poly(p, [(16, 8), (44, 8), (44, 36), (16, 36)], L.INK, 2.0,
                    fill="#8a8f9655")
@@ -3198,10 +3253,18 @@ class _ElView(QWidget):
             p.setBrush(Qt.NoBrush)
             return
         ang = math.radians(float(e.get("angle", 0.0) or 0.0)) \
-            if t == "column" else 0.0
+            if t == "column" or e.get("shape") == "poly" else 0.0
+        if e.get("shape") == "poly" and len(e.get("pts") or ()) >= 3:
+            # its own outline (C1), round its box's middle
+            loc = [(float(a[0]), float(a[1])) for a in e["pts"]]
+            mx = (max(a[0] for a in loc) + min(a[0] for a in loc)) / 2
+            my = (max(a[1] for a in loc) + min(a[1] for a in loc)) / 2
+            corners = [(a[0] - mx, a[1] - my) for a in loc]
+        else:
+            corners = ((-w / 2, -d / 2), (w / 2, -d / 2), (w / 2, d / 2),
+                       (-w / 2, d / 2))
         pts = []
-        for x, y in ((-w / 2, -d / 2), (w / 2, -d / 2), (w / 2, d / 2),
-                     (-w / 2, d / 2)):
+        for x, y in corners:
             pts.append(q(x * math.cos(ang) - y * math.sin(ang),
                          x * math.sin(ang) + y * math.cos(ang)))
         L.poly(p, pts, L.INK, 1.8, close=True, fill="#8a8f9640")
@@ -3357,11 +3420,21 @@ class ElementDialog(QDialog):
             self.f_section = L.Chips(width=92)
             self.f_section.addItem("Rectangle", "rect", pic=_pic_section("rect"))
             self.f_section.addItem("Round", "round", pic=_pic_section("round"))
-            self.f_section.setCurrentIndex(1 if el["shape"] == "round" else 0)
+            from . import structure as S
+            self._poly = S.is_poly(el)
+            if self._poly:
+                # its own outline (PLANO_CONTORNO_JUNTAS C1, 12/11/2026)
+                self.f_section.addItem("Outline", "poly",
+                                       pic=_pic_section("poly"))
+                self.f_section.setCurrentIndex(2)
+            else:
+                self.f_section.setCurrentIndex(
+                    1 if el["shape"] == "round" else 0)
             fold.box.addWidget(self.f_section)
             form = fold.form(self.d_size)
             measure(form, "w", "Width / Ø", 0.05, 2.0, hot="w", fmax=5.0)
             measure(form, "d", "Depth", 0.05, 2.0, hot="d", fmax=5.0)
+            self._outline_note(fold, form, "Back to rectangle")
             gl.addWidget(fold)
             self.fold_main = fold
             fold = L.Fold("Height", "column.height")
@@ -3401,6 +3474,13 @@ class ElementDialog(QDialog):
                 fold = L.Fold("Base & capital", "column.orders")
                 form = fold.form()
                 self._column_order_rows(form, el, LB.CATALOG["column"])
+                # (none on its own outline: they exist for the rectangle
+                # and the round one only — said, never a dead list)
+                self.n_orders = L.hint(tr("A base and a capital go on a "
+                                          "rectangular or a round column — "
+                                          "back to rectangle to give it "
+                                          "one."))
+                form.addRow(self.n_orders)
                 gl.addWidget(fold)
             if row:
                 self._row_fold(gl, row)
@@ -3464,10 +3544,15 @@ class ElementDialog(QDialog):
                 form = fold.form()
                 # each one on its own row: close just that one (his ask,
                 # 2026-10-15 — before, only all of them at once)
+                from . import curved as CV
                 for i, h in enumerate(holes):
                     cb = QCheckBox("Close it")
                     cb.toggled.connect(self._sync)
-                    form.addRow(f"{i + 1}  ·  {hole_text(h)}", cb)
+                    txt = (f"{tr('curved')} · "
+                           f"{compat.fmt_area(CV.hole_area(el, i))}"
+                           if CV.hole_entry(el, i) is not None
+                           else hole_text(h))
+                    form.addRow(f"{i + 1}  ·  {txt}", cb)
                     self.f_holes.append(cb)
                 if n > 1:
                     self.f_clear = QCheckBox(f"Close all {n}")
@@ -3478,6 +3563,37 @@ class ElementDialog(QDialog):
                     "Select the slab: each opening has grips — its corners, "
                     "sides and middle."))
                 fold.set_pick(f"{n}")
+                gl.addWidget(fold)
+            # its CURVES (rounded corners, bent sides — F1, 13/11/2026):
+            # how many, and all of them back to straight in one tick (Pro)
+            from . import curved as CV
+            from . import edition    # (a local name in this method)
+            self.f_straight = None
+            nr, na = CV.curve_count(el)
+            if nr or na:
+                from PySide6.QtWidgets import QCheckBox
+                fold = L.Fold("Curves", "slab.curves")
+                form = fold.form()
+                bits = []
+                if nr:
+                    bits.append(f"{nr} " + (tr("rounded corners") if nr > 1
+                                            else tr("rounded corner")))
+                if na:
+                    bits.append(f"{na} " + (tr("bent sides") if na > 1
+                                            else tr("bent side")))
+                form.addRow(QLabel(" · ".join(bits)))
+                if not edition.lite():
+                    self.f_straight = QCheckBox("Straighten all")
+                    self.f_straight.setToolTip(
+                        "Every arc back to a straight side, every rounded "
+                        "corner back to sharp — the corners you clicked "
+                        "stay where they are.")
+                    self.f_straight.toggled.connect(self._sync)
+                    form.addRow("", self.f_straight)
+                    form.addRow(L.hint(
+                        "Select the slab: the grips on each curve change it "
+                        "one by one."))
+                fold.set_pick(" · ".join(bits))
                 gl.addWidget(fold)
         elif t == "roof":
             from PySide6.QtWidgets import QCheckBox
@@ -3616,8 +3732,11 @@ class ElementDialog(QDialog):
         else:                                     # footing
             fold = L.Fold("Size", "footing.size")
             form = fold.form(self.d_size)
+            from . import structure as S
+            self._poly = S.is_poly(el)
             measure(form, "w", "Width", 0.1, 5.0, hot="w", fmax=10.0)
             measure(form, "d", "Depth", 0.05, 3.0, hot="d", fmax=5.0)
+            self._outline_note(fold, form, "Back to square")
             if row:            # one of a «Footing row»: no wall, no column
                 kind = (tr("Pad (along «{r}»)", r=row.get("name", ""))
                         if el.get("kind") == "pad" else
@@ -3924,6 +4043,14 @@ class ElementDialog(QDialog):
             self.fold_place.set_pick(f"{e['angle'] % 360:.0f}°")
             self.d_dial.set(a=e["angle"])
             area = math.pi * e["w"] ** 2 / 4 if rnd else e["w"] * e["d"]
+            poly = S.is_poly(e)
+            if poly:                      # its own outline: its true area
+                area = abs(S._area(S.poly_world(e)))
+            self._outline_sync(poly)
+            if hasattr(self, "f_cbase"):  # (no base / capital on an outline)
+                self.f_cbase.setEnabled(not poly)
+                self.f_ccap.setEnabled(not poly)
+                self.n_orders.setVisible(poly)
             self.stats.set([(sec_m, "section"),
                             (compat.fmt_area(area, 3), "area"),
                             (h, "height")])
@@ -3945,8 +4072,8 @@ class ElementDialog(QDialog):
             self.fold_top.set_pick(compat.fmt_len(e["zt"]) if own
                                    else "Under the slab")
         elif t == "slab":
-            area = abs(S._area(e["corners"])) - sum(
-                abs(S._area(h)) for h in e.get("holes") or [])
+            from . import curved          # exact with arcs (F1, 13/11)
+            area = curved.slab_area(e) - curved.holes_area(e)
             n = len(e.get("holes") or [])
             self.head.set_summary(["{" + compat.fmt_area(area) + "}",
                                    f"{compat.fmt_cm(e['t'], 0)} thick",
@@ -4029,6 +4156,48 @@ class ElementDialog(QDialog):
                 else compat.fmt_wh(e['w'], e['d']))
             self.stats.set([(compat.fmt_len(e['w']), "width"),
                             (compat.fmt_len(e['d']), "depth")])
+            self._outline_sync(S.is_poly(e))
+
+    # -- its own outline (PLANO_CONTORNO_JUNTAS C1, 12/11/2026) -----------------------
+    def _outline_note(self, fold, form, back: str) -> None:
+        """A column / a pad with its own outline: its width and depth read
+        only (the box round it), a word on how to change it (its corner
+        grips) and the way back to the rectangle / the square."""
+        from . import look as L
+        self.n_outline = self.b_rect = None
+        if not getattr(self, "_poly", False):
+            return
+        from . import edition        # (D2: the grips are the Pro's)
+        self.n_outline = L.hint(
+            tr("Its outline fits where the walls meet. Width and depth: the "
+               "box round it.") if edition.lite() else
+            tr("Its own outline — drag its corners and sides in the 3D view. "
+               "Width and depth: the box round it."))
+        form.addRow(self.n_outline)
+        self.b_rect = QPushButton(tr(back))
+        self.b_rect.setObjectName("axqChip")
+        self.b_rect.setToolTip(tr("The box round its outline, where it is "
+                                  "(OK keeps it; Ctrl+Z undoes it)"))
+        self.b_rect.clicked.connect(self._outline_back)
+        form.addRow(self.b_rect)
+
+    def _outline_back(self) -> None:
+        if self.el["type"] == "column":
+            self.f_section.setCurrentIndex(0)      # (its _sync follows)
+            return
+        from . import structure as S
+        self._to_rect = True
+        self.fields["w"].setValue(S.poly_to_rect(self.el)["w"])
+        self._sync()
+
+    def _outline_sync(self, poly: bool) -> None:
+        if not getattr(self, "_poly", False):
+            return
+        self.fields["w"].setEnabled(not poly)
+        if self.el["type"] == "column":
+            self.fields["d"].setEnabled(not poly)
+        self.n_outline.setVisible(poly)
+        self.b_rect.setVisible(poly)
 
     @staticmethod
     def _roof_heights(e: dict) -> str:
@@ -4074,10 +4243,27 @@ class ElementDialog(QDialog):
             self.accept()
 
     def _record(self) -> dict:
+        from . import structure as S
         e = dict(self.el)
         e["name"] = self.f_name.text().strip() or self.el["name"]
+        poly = getattr(self, "_poly", False)
+        to_rect = poly and (self.f_section.currentData() != "poly"
+                            if e["type"] == "column"
+                            else getattr(self, "_to_rect", False))
         for key, w in self.fields.items():
+            if poly and not to_rect and key == "w" or (
+                    poly and not to_rect and key == "d"
+                    and e["type"] == "column"):
+                continue                  # (its outline's box: read only)
             e[key] = round(w.value(), 3)
+        if to_rect:
+            # «Back to rectangle / square»: the box round its outline, where
+            # the outline was — its sizes from the fields from now on
+            box = S.poly_to_rect(self.el)
+            e = dict(e, x=box["x"], y=box["y"], anchor="centre")
+            e.pop("pts", None)
+            if e["type"] == "footing":
+                e.pop("shape", None)
         if e["type"] == "column":
             e["shape"] = self.f_section.currentData()
             e["height"] = "level" if self.f_hmode.currentIndex() == 0 \
@@ -4113,9 +4299,12 @@ class ElementDialog(QDialog):
                 elif was == "hidden" and e["kind"] != "flat":
                     e["slope"] = 30.0
         if e["type"] == "slab" and getattr(self, "f_holes", None):
-            e["holes"] = [h for h, cb in zip(self.el.get("holes") or [],
-                                             self.f_holes)
-                          if not cb.isChecked()]
+            from . import curved as CV     # (their curves kept in step)
+            e = CV.keep_open(e, [not cb.isChecked() for cb in self.f_holes])
+        if e["type"] == "slab" and getattr(self, "f_straight", None)                 and self.f_straight.isChecked():
+            from . import curved as CV
+            before = e
+            e = CV.straight(e, lambda r: S.holes_fit(r, before) is None)
         if getattr(self, "frame_box", None) is not None:
             fr = self.frame_box.value()  # a roof's rafters (2b), a floor's
             if fr is not None:           # joists (4b)
@@ -5737,3 +5926,57 @@ class DigDialog(QDialog):
     def result_data(self):
         self.dig["name"] = self.f_name.text().strip() or self.dig["name"]
         return self.action, self.dig
+
+
+# ---- «Round the corner» (PLANO_CURVAS F2b, 13/11/2026) ---------------------------------
+class RoundCornerDialog(QDialog):
+    """The radius of the curve two walls' corner becomes — on the line
+    drawn, at most ``r_max``. ``check(r)``: why not (None = it can) — said
+    in the window, which stays open."""
+
+    def __init__(self, names: str, r: float, r_max: float, check,
+                 parent=None) -> None:
+        from PySide6.QtWidgets import QDialogButtonBox, QLabel, QVBoxLayout
+        from . import look as L
+        super().__init__(parent)
+        self.check = check
+        self.setWindowTitle(tr("Round the corner"))
+        self.setMinimumWidth(400)
+        L.dress(self)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        lay.addWidget(QLabel(names))
+        fold = L.Fold(tr("Curve"), "round.corner")
+        form = fold.form()
+        self.f_r = L.metres(min(r, r_max), 0.01, r_max, 0.05)
+        self.f_r.setToolTip(tr("On the line you drew the walls on — the "
+                               "curve is tangent to both"))
+        form.addRow(tr("Radius"), self.f_r)
+        lay.addWidget(fold)
+        lay.addWidget(L.hint(tr(
+            "At most {r} for these walls. Each is shortened to where the "
+            "curve leaves it; the curve is a wall like them. Ctrl+Z puts "
+            "the corner back.", r=compat.fmt_len(r_max))))
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet("color: #e0a030;")
+        lay.addWidget(self.info)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        okb = bb.button(QDialogButtonBox.Ok)
+        okb.setText(tr("Round"))
+        okb.setObjectName("axqOk")
+        L.ok_button(bb)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def radius(self) -> float:
+        return round(float(self.f_r.value()), 4)
+
+    def _ok(self) -> None:
+        why = self.check(self.radius())
+        if why:
+            self.info.setText("⚠ " + tr(why))
+            return
+        self.accept()

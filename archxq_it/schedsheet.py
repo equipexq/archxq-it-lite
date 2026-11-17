@@ -199,7 +199,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     _title(pc, L, sheet, index)
     sx0, sy0, sx1, sy1 = L["side"]
     pc.rect("side:frame", sx0, sy0, sx1, sy1, 0.5)
-    cy0 = sy1 - PS.TITLE_BLOCK_MM
+    cy0 = sy1 - PS.title_block_mm(style)
     if style["show"].get("notes", True):
         PS.notes(pc, sx0, sx1, sy0 + 6.0, cy0,
                  style.get("notes_schedule") or W_["notes_schedule"])

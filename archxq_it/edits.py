@@ -30,7 +30,7 @@ from . import model
 #: the record kinds a host Move / Rotate / Copy is adopted for — a wall
 #: moved stretches the walls joined to it (wallmove.py, 2026-10-10)
 ADOPT = ("column", "beam", "footing", "slab", "roof", "ramp", "stair",
-         "wall", "guard", "glazing")
+         "wall", "guard", "glazing", "shaped")
 TOL = 0.002                     # m — a vertex «still there»
 
 
@@ -119,7 +119,8 @@ def _angle(a: float) -> float:
 def moved(rec: dict, m) -> dict:
     """The record taken by the motion ``m`` (see ``motion``) — its points
     turned and shifted, its angle turned. (The height stays: a level's
-    elements stay on it.)"""
+    elements stay on it — but a piece adopted as it is, whose height is
+    its own: it goes up / down too.)"""
     th, (tx, ty), _dz = m
     c, s = math.cos(math.radians(th)), math.sin(math.radians(th))
 
@@ -136,8 +137,9 @@ def moved(rec: dict, m) -> dict:
         r["corners"] = [pt(p) for p in r["corners"]]
     if "holes" in r:
         r["holes"] = [[pt(p) for p in h] for h in r["holes"]]
-    if "pts" in r:                       # a low wall's / guard's line
-        r["pts"] = [pt(p) for p in r["pts"]]
+    if "pts" in r and r.get("shape") != "poly":   # a low wall's line (a
+        r["pts"] = [pt(p) for p in r["pts"]]  # «poly» column's / pad's
+        # corners are its own — off x, y, before the angle: they go with it)
     if r.get("path"):                    # a profile's own path, in 3D
         r["path"] = [pt(p) + [p[2]] for p in r["path"]]
     if r.get("frame"):                   # … and how its outline stands on it
@@ -146,6 +148,13 @@ def moved(rec: dict, m) -> dict:
                       for a in r["frame"]]
     if "angle" in r:
         r["angle"] = _angle(float(r["angle"]) + th)
+    if r.get("type") == "shaped" and abs(_dz) > 1e-6:
+        # a piece adopted as it is (shaped.py) rises / sinks too: its
+        # height is its own, not a level's rule
+        r["z"] = round(float(r.get("z", 0.0)) + _dz, 4)
+    if r.get("ctrl") or r.get("hole_curves"):   # a slab with arcs: its
+        from . import curved             # clicked corners go too, the fine
+        r = curved.transformed(r, pt, before=rec)    # ones remade
     return r
 
 
@@ -206,6 +215,36 @@ def reshaped(rec: dict, group, doc: dict):
         """The new size: the old one times the stretch (the drawn one is
         ``was`` — a few mm short of the size —, now ``now``)."""
         return round(old * now / was, 4) if was > 1e-6 else old
+    if t == "column" and S.is_poly(rec):
+        # its own outline (C1, 12/11/2026): stretched along ITS axes —
+        # each corner as far, times the stretch, from the box's middle
+        ang = math.radians(float(rec.get("angle", 0.0)))
+        ext = _frame(plan, ang)
+        was = _frame(S.column_outline(rec, sh), ang)
+        if was[1] - was[0] < 1e-6 or was[3] - was[2] < 1e-6:
+            return None
+        sx = (ext[1] - ext[0]) / (was[1] - was[0])
+        sy = (ext[3] - ext[2]) / (was[3] - was[2])
+        om = ((was[0] + was[1]) / 2, (was[2] + was[3]) / 2)
+        nm = ((ext[0] + ext[1]) / 2, (ext[2] + ext[3]) / 2)
+
+        def moved(p):
+            c, s = math.cos(ang), math.sin(ang)
+            u, v = p[0] * c + p[1] * s, -p[0] * s + p[1] * c
+            return _unframe(nm[0] + (u - om[0]) * sx,
+                            nm[1] + (v - om[1]) * sy, ang)
+        drawn = [moved(p) for p in S.column_outline(rec, sh)]
+        if any(min(math.dist(q, d) for d in drawn) > TOL for q in plan):
+            return None                         # stretched askew
+        r = S.poly_record(r, [moved(p) for p in S.poly_world(rec)])
+        if lo_moved or hi_moved:
+            from . import model
+            z0 = S.levels_info(doc, model.elevations)[rec["level"]]["z0"]
+            if hi_moved:
+                r["height"] = round(z1n + S.SHRINK * fz - z0, 4)
+            if lo_moved:
+                r["base"] = round(z0n - S.SHRINK * fz - z0, 4)
+        return r
     if t == "column":
         if rec.get("shape") == "round":
             ext = _frame(plan, 0.0)
@@ -240,6 +279,25 @@ def reshaped(rec: dict, group, doc: dict):
     if t == "footing":
         if lo_moved or hi_moved:
             r["d"] = size(float(rec["d"]), zr[1] - zr[0], z1n - z0n)
+        if rec.get("kind") == "pad" and S.is_poly(rec):
+            # its own outline (C1): along its axes, as a column's
+            ang = math.radians(float(rec.get("angle", 0.0)))
+            ext = _frame(plan, ang)
+            old = S.pad_outline(rec)
+            was = _frame(old, ang)
+            if was[1] - was[0] < 1e-6 or was[3] - was[2] < 1e-6:
+                return None
+            sx = (ext[1] - ext[0]) / (was[1] - was[0])
+            sy = (ext[3] - ext[2]) / (was[3] - was[2])
+            om = ((was[0] + was[1]) / 2, (was[2] + was[3]) / 2)
+            nm = ((ext[0] + ext[1]) / 2, (ext[2] + ext[3]) / 2)
+            c_, s_ = math.cos(ang), math.sin(ang)
+            new = [_unframe(nm[0] + (p[0] * c_ + p[1] * s_ - om[0]) * sx,
+                            nm[1] + (-p[0] * s_ + p[1] * c_ - om[1]) * sy,
+                            ang) for p in old]
+            if any(min(math.dist(q, d) for d in new) > TOL for q in plan):
+                return None                     # stretched askew
+            return S.poly_record(r, new)
         if rec.get("kind") == "pad":
             ang = math.radians(float(rec.get("angle", 0.0)))
             ext = _frame(plan, ang)
@@ -285,6 +343,11 @@ def reshaped(rec: dict, group, doc: dict):
                     round(ny0 + (p[1] - oy0) * sy, 4)]
         r["corners"] = [pt(p) for p in cs]
         r["holes"] = [[pt(p) for p in h] for h in rec.get("holes") or []]
+        if r.get("ctrl") or r.get("hole_curves"):   # a slab with arcs: a
+            from . import curved         # uniform scale keeps them (radii
+            r = curved.transformed(      # scaled); a stretch can't — the
+                r, pt, sx if abs(sx - sy) < 1e-4 else None,  # fine polygon
+                before=rec)              # plain
         if lo_moved or hi_moved:
             r["t"] = size(float(rec["t"]), zr[1] - zr[0], z1n - z0n)
         return r

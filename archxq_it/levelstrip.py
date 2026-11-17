@@ -5,7 +5,7 @@ it; remembered).
 
 The building's levels top → bottom, as a section reads: floors, the ground
 floor, basements, and the Terrain at the foot. Each row: name · ✎ ·
-elevation · ghost (that level in light blue in the plan) · eye. The level you work on is lit; a click on another makes it current.
+elevation · ghost (that level in green in the plan) · eye. The level you work on is lit; a click on another makes it current.
 The ✎ or a double-click opens the level's own window (name,
 height, a new level on top / a basement, delete). «＋ New level» opens
 that window for the level you are on.
@@ -52,15 +52,15 @@ class _Row(QFrame):
             g.setToolTip("You work on the Terrain — its ghost shows when "
                          "you work on a level" if self.row["current"] else
                          "Ghost ON — the plot, its pits and the streets in "
-                         "light blue in the plan (click: off)" if on else
+                         "green in the plan (click: off)" if on else
                          "Ghost — show the plot, its pits and the streets "
-                         "in light blue in the plan of the level you work on")
+                         "in green in the plan of the level you work on")
             return
         g.setToolTip("The level you work on — its ghost shows when you "
                      "work on another one" if self.row["current"] else
-                     "Ghost ON — this level shows in light blue in the plan "
+                     "Ghost ON — this level shows in green in the plan "
                      "(click: off)" if on else
-                     "Ghost — show this level in light blue in the plan of "
+                     "Ghost — show this level in green in the plan of "
                      "the level you work on")
 
     def __init__(self, strip, row: dict) -> None:

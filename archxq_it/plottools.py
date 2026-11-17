@@ -38,7 +38,7 @@ ACTIVE = "#2f7df6"       # the plot table's current row, on the model
 #: the ghost levels' outlines drawn in the plan now (ui._draw_ghost_level
 #: keeps it): their corners and edges pull the cursor
 GHOST: dict = {"loops": []}
-GHOST_MARK = "#6fa8dc"
+GHOST_MARK = "#1f9d55"
 GUIDE_CROSS_PX = 16.0
 GUIDE_LINE_PX = 8.0
 GUIDE_MARK = "#0a84ff"   # the plan's guide blue, louder
@@ -488,7 +488,7 @@ class _PlotTool(Tool):
             w, h = fm.horizontalAdvance(text) + 12, fm.height() + 4
             r = QRectF(at[0] - w / 2, at[1] - h / 2, w, h)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(32, 35, 40, 220))
+            painter.setBrush(QColor(32, 35, 40))
             painter.drawRoundedRect(r, 4, 4)
             painter.setPen(QColor("#ffffff"))
             painter.drawText(r, Qt.AlignCenter, text)

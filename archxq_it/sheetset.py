@@ -380,5 +380,11 @@ def the_set(doc: dict, style: dict) -> list[dict]:
         if st == "ok" and rec.get("style_sig") and \
                 rec["style_sig"] != style_sig(DS.merge(style, s.get("style"))):
             st = "changed"
+        # …or its title block (no mark on the record: the Standard)
+        if st == "ok":
+            from . import titleblock as TB
+            if rec.get("tb_sig", TB.STANDARD_SIG) != TB.sig(
+                    DS.merge(style, s.get("style")), doc, s["id"]):
+                st = "changed"
         out.append(dict(s, state=st))
     return out

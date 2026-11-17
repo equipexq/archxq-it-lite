@@ -131,7 +131,7 @@ DEFAULT_DOC = {
     # the LAYERS hidden in the 3D (the eye on a layer's row — layerview.py):
     # {type or element id: [layer ids, «studs», «fill»]} — one Ctrl+Z each
     "hidden_layers": {},
-    # the levels drawn as a GHOST (light blue) under the plan of the one
+    # the levels drawn as a GHOST (green) under the plan of the one
     # worked on — the levels strip's per-level icon; view state too
     "ghosts": [],
     # the levels whose GUIDE SHEET shows in 3D (levelsheet.py — the strip's
@@ -469,6 +469,18 @@ def _walls(raw, level_ids: set, types: dict | None = None) -> list[dict]:
             if top is not None:
                 rec["top"] = top
                 rec["height"] = top_peak(top)
+            # its SHAPE seen from the front (wallshape.py, F2 2026-11-13):
+            # it holds the top (none kept beside it); its height kept at
+            # its highest point, as with a top. Kept as saved even on a
+            # wall that can't use it now (wallshape.profile_of ignores it)
+            if kind == "line" and w.get("profile") and not w.get("cw"):
+                from . import wallshape as WS
+                prof = WS.clean(w["profile"], height=rec["height"])
+                if prof is not None:
+                    rec["profile"] = prof
+                    rec.pop("top", None)
+                    rec["height"] = round(max(rec["base"] + WS.peak(prof),
+                                              0.05), 4)
             if w.get("cw"):                  # a curtain wall (curtain.py)
                 from . import curtain
                 rec["cw"] = True
@@ -494,6 +506,20 @@ def _walls(raw, level_ids: set, types: dict | None = None) -> list[dict]:
             fr = clean_frame(w.get("frame"))
             if fr is not None:
                 rec["frame"] = fr
+            # timber boards' relief (clad.py — kept only when it is one)
+            from .clad import KINDS as _CLADS
+            if w.get("clad") in _CLADS:
+                rec["clad"] = w["clad"]
+            # a GRID wall (gridwall.py, the Pro's — the Lite keeps it as
+            # it came, built as a plain wall there)
+            if isinstance(w.get("gw"), dict) and kind == "line":
+                try:
+                    from .gridwall import clean as _grid_clean
+                    g = _grid_clean(w["gw"])
+                except ImportError:
+                    g = dict(w["gw"])
+                if g:
+                    rec["gw"] = g
         rec["align"] = w.get("align") if w.get("align") in WALL_ALIGNS \
             else "centre"
         if w.get("align") == "core_out":
@@ -598,7 +624,8 @@ def _settle_owners(doc: dict) -> None:
 _ST_LABEL = {"column": "Column", "beam": "Beam", "slab": "Slab",
              "footing": "Footing", "roof": "Roof", "ramp": "Ramp",
              "stair": "Stair", "guard": "Low wall", "glazing": "Grid",
-             "street": "Street", "profile": "Profile", "copy": "Copies"}
+             "street": "Street", "profile": "Profile", "copy": "Copies",
+             "shaped": "Adopted"}
 #: a grid's choices / sizes kept (glazing.py — here, without Qt); the open
 #: kinds (a cobogó, a lattice, slats) since 2026-10-27, cells from 3 cm
 _GLAZ_CHOICES = {"place": ("void", "free", "window"),
@@ -795,6 +822,10 @@ def _docs(raw) -> dict:
                                        if isinstance(m, str)]})
     if boards:
         out["boards"] = boards
+    # the title block's own (titleblock.py): only when there is any
+    for key in ("tb_fields", "tb_revisions"):
+        if isinstance(raw.get(key), dict) and raw[key]:
+            out[key] = copy.deepcopy(raw[key])
     return out
 
 
@@ -935,6 +966,23 @@ def _slab_layers(rec: dict, e: dict, types: dict) -> None:
         rec["t"] = round(sum(L["t"] for L in ls), 4)
 
 
+def _outline_pts(e: dict) -> list | None:
+    """A column's / a pad's own outline (``shape: poly``, PLANO_CONTORNO_
+    JUNTAS C1): its corners in its own frame, 3 to 64, within 10 m —
+    None (its rectangle / square) when it has none or a broken one."""
+    if e.get("shape") != "poly":
+        return None
+    try:
+        pts = [[float(p[0]), float(p[1])] for p in e.get("pts") or ()]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    if not 3 <= len(pts) <= 64 or any(abs(v) > 10.0 for p in pts
+                                       for v in p):
+        return None
+    from . import structure as S
+    return pts if S.poly_why(pts) is None else None
+
+
 def _structure(raw, level_ids: set,
                slab_types: dict | None = None,
                profile_ids: set | None = None) -> list[dict]:
@@ -967,6 +1015,9 @@ def _structure(raw, level_ids: set,
                            # it, into the ground; his ask 2026-10-03)
                            base=min(max(float(e.get("base", 0.0)), -20.0),
                                     20.0))
+                pts = _outline_pts(e)
+                if pts:                        # its own outline (C1, 12/11)
+                    rec.update(shape="poly", pts=pts, anchor="centre")
                 h = e.get("height", "level")
                 rec["height"] = "level" if h == "level" else \
                     min(max(float(h), 0.2), 50.0)
@@ -1042,6 +1093,47 @@ def _structure(raw, level_ids: set,
                 rec["holes"] = [[_pt(p) for p in h]
                                 for h in e.get("holes") or []
                                 if isinstance(h, list) and len(h) >= 3]
+                # its ARCS and ROUNDED CORNERS (curved.py, PLANO_CURVAS F1,
+                # 13/11/2026): kept only while they still make these very
+                # corners — else (a tool that knew nothing of them changed
+                # the corners) a plain slab, its corners as they are
+                if e.get("ctrl") and isinstance(e.get("curves"), dict):
+                    from . import curved
+                    try:
+                        ctrl = [_pt(p) for p in e["ctrl"]]
+                        cv = curved.clean(e["curves"])
+                        if 3 <= len(ctrl) <= 500 \
+                                and (cv["r"] or cv["arc"]) \
+                                and curved.why_not(ctrl, cv) is None \
+                                and curved.matches(ctrl, cv, cs):
+                            rec.update(ctrl=ctrl, curves=cv)
+                    except Exception:  # noqa: BLE001 — bad data: plain
+                        pass
+                # …and its OPENINGS' (``hole_curves``, one per opening or
+                # None): each kept only where it still makes its opening
+                hcs = e.get("hole_curves")
+                if isinstance(hcs, list) and rec["holes"]:
+                    from . import curved
+                    hcs_out = []
+                    for h in rec["holes"]:
+                        got = None
+                        for ent in hcs:
+                            try:
+                                if not isinstance(ent, dict):
+                                    continue
+                                ctrl = [_pt(p) for p in ent["ctrl"]]
+                                cv = curved.clean(ent.get("curves"))
+                                if 3 <= len(ctrl) <= 500 \
+                                        and (cv["r"] or cv["arc"]) \
+                                        and curved.why_not(ctrl, cv) is None \
+                                        and curved.matches(ctrl, cv, h):
+                                    got = {"ctrl": ctrl, "curves": cv}
+                                    break
+                            except Exception:  # noqa: BLE001 — bad: plain
+                                continue
+                        hcs_out.append(got)
+                    if any(hcs_out):
+                        rec["hole_curves"] = hcs_out
                 # an automatic slab: the excavation it follows (autoslabs)
                 a = e.get("auto")
                 if isinstance(a, dict) and a.get("dig"):
@@ -1365,6 +1457,8 @@ def _structure(raw, level_ids: set,
                            off=num("off", -50.0, 50.0, 0.0),
                            base=num("base", -50.0, 100.0, 0.0),
                            cut=bool(e.get("cut", True)))
+                if e.get("split") == "total":   # «Count» in all (10/11/2026)
+                    rec["split"] = "total"
                 if how == "face":
                     faces = _wall_faces(e.get("faces"))
                     if not faces:
@@ -1397,6 +1491,16 @@ def _structure(raw, level_ids: set,
                                and len(pts) > 2,
                                side=-1 if int(e.get("side", 1) or 1) < 0
                                else 1)
+            elif t == "shaped":             # «Adopt as it is» (shaped.py, F3c)
+                from . import shaped as SP
+                mesh = SP.clean_mesh(e.get("mesh"))
+                if mesh is None:
+                    continue                 # (nothing left of it)
+                rec.update(x=float(e["x"]), y=float(e["y"]),
+                           z=min(max(float(e.get("z", 0.0)), -100.0), 500.0),
+                           angle=float(e.get("angle", 0.0)),
+                           cat=e.get("cat") if e.get("cat") in SP.CATS
+                           else "other", mesh=mesh)
             elif t == "glazing":            # a «Building element» (glazing.py)
                 for k, allowed in _GLAZ_CHOICES.items():
                     rec[k] = e.get(k) if e.get(k) in allowed else allowed[0]
@@ -1426,6 +1530,9 @@ def _structure(raw, level_ids: set,
                 if kind == "pad":
                     rec.update(x=float(e["x"]), y=float(e["y"]),
                                angle=float(e.get("angle", 0.0)))
+                    pts = _outline_pts(e)
+                    if pts:                    # its own outline (C1, 12/11)
+                        rec.update(shape="poly", pts=pts)
                 else:
                     rec.update(a=_pt(e["a"]), b=_pt(e["b"]))
                     if e.get("m"):

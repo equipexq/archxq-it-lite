@@ -22,6 +22,28 @@ RAILING_HELP = (
     "handrail (0.70 m), posts: «Sizes & levels…».")
 
 HELP: dict[str, tuple[str, str]] = {
+    # the sky behind the 3D view (skyview.py / skywin.py, 14/11/2026)
+    "sky": (
+        "Sky",
+        "A real sky picture behind the model, in the 3D view (perspective "
+        "and parallel). It never shows in the plan, the elevations, hidden "
+        "line, x-ray or the sheets, and it is not part of the "
+        "model.<br><br>"
+        "<b>Sky</b> on the view bar shows / hides it; its arrow <b>▾</b> "
+        "opens this window. The choice is saved with the project, but it is"
+        " not an undo step and it doesn't mark the file as changed. A new "
+        "project starts with the default sky on.<br><br>"
+        "<b>Pro:</b> more than 600 outdoor skies from Poly Haven (CC0), by "
+        "family, with ★ favourites; <b>Your skies</b> takes your own 2:1 "
+        "pictures (.hdr, .jpg, .png). A sky is downloaded once, when you "
+        "pick it, and kept for all your projects.<br><br>"
+        "<b>Rotation</b> turns the sky round the model, <b>Exposure</b> "
+        "makes it brighter or darker, <b>Horizon</b> moves it up or down. "
+        "<b>Ground</b>: <b>Plain</b> keeps the sky above the horizon and a "
+        "plain ground in the picture's tone below it (best with a terrain);"
+        " <b>Photo</b> shows the whole picture, its own ground too.<br><br>"
+        "The sky is only a background: it doesn't light the model, and the "
+        "sun's shadows keep their own direction."),
     "project": (
         "Project",
         "The data every drawing and sheet of the building reads: its name, "
@@ -635,7 +657,7 @@ HELP: dict[str, tuple[str, str]] = {
         "in the file; the level's eye turns dim with an open pupil while "
         "something is hidden.<br><br>"
         "<b>Ghost</b> (the two-floors icon on each level's row in the "
-        "levels strip): that level drawn in light blue in the plan of the "
+        "levels strip): that level drawn in green in the plan of the "
         "one you work on — to line walls and columns up with it. Turn on as "
         "many as you like; only seen, never picked.<br><br>"
         "<b>Guide sheet</b> (the grid icon on the row): that level's floor "
@@ -661,6 +683,49 @@ HELP: dict[str, tuple[str, str]] = {
         "Height",
         "Floor to floor: from this level's finished floor to the next "
         "one's. The levels above move with it."),
+    # the «?» by «Your types» on the library (his ask, 10/11/2026: the
+    # «+ New from a face» link said nothing of the how — now an «Add» card)
+    "yours_profile": (
+        "Your profiles",
+        "A profile of your own, from its cut:<br><br>"
+        "<b>1.</b> Draw the cut — the profile's section — as <b>one flat "
+        "face</b> with IngeTrazo's tools (lines, arcs), in its real size, "
+        "anywhere in the model.<br><br>"
+        "<b>2.</b> Click <b>Add</b>, then click the face (or select the "
+        "face first, then <b>Add</b>).<br><br>"
+        "<b>3.</b> Its window: a name, the side the wall is on, a category "
+        "— OK.<br><br>"
+        "It is kept in your library, for every project, and the next ones "
+        "are drawn with it. The face drawn stays as it is; its holes are "
+        "left out.<br><br>"
+        "Double-click its card: its name and category. Its trash: off your "
+        "library (the ones placed stay)."),
+    "yours_wall": (
+        "Your wall types",
+        "A wall type of your own — its layers (a finish, the block, the "
+        "plaster…):<br><br>"
+        "<b>1.</b> Select a wall to start from (or none: the next one's "
+        "thickness).<br><br>"
+        "<b>2.</b> Click <b>Add</b>: its window — a name and its "
+        "layers.<br><br>"
+        "<b>3.</b> OK: its card is here. Picked, the next walls are of it "
+        "and the selected ones become it.<br><br>"
+        "Double-click its card: its name and layers. <b>Import…</b> / "
+        "<b>Export…</b>: your types to a file and back — another project, "
+        "another PC."),
+    "yours_slab": (
+        "Your slab types",
+        "A slab type of your own — its layers (the floor finish, the "
+        "screed, the slab…):<br><br>"
+        "<b>1.</b> Select a slab to start from (or none: the next one's "
+        "thickness).<br><br>"
+        "<b>2.</b> Click <b>Add</b>: its window — a name and its "
+        "layers.<br><br>"
+        "<b>3.</b> OK: its card is here. Picked, the next slabs are of it "
+        "and the selected ones become it.<br><br>"
+        "Double-click its card: its name and layers. <b>Import…</b> / "
+        "<b>Export…</b>: your types to a file and back — another project, "
+        "another PC."),
 }
 
 

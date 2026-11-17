@@ -35,8 +35,53 @@ def key_of(e: dict) -> str | None:
     return None
 
 
-def _outline(corners) -> list | None:
-    """The dig's outline 1 cm in (counter-clockwise), or None."""
+def _push_out(pts, plot, d: float):
+    """The outline with its sides lying ON a side of ``plot`` moved ``d``
+    outward (each corner where two side lines meet again), the others
+    kept; None when no side lies on the boundary."""
+    import math
+
+    def near(p, a, b) -> bool:
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        L2 = ex * ex + ey * ey
+        if L2 < 1e-18:
+            return False
+        t = max(0.0, min(1.0, ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey)
+                         / L2))
+        return math.hypot(p[0] - a[0] - t * ex, p[1] - a[1] - t * ey) < 1e-4
+    n = len(pts)
+    if sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
+           for i in range(n)) < 0:
+        pts = list(reversed(pts))
+    sides = [(plot[i], plot[(i + 1) % len(plot)]) for i in range(len(plot))]
+    lines, any_out = [], False
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(ex, ey) or 1.0
+        nx, ny = ey / L, -ex / L                 # outward (counter-clockwise)
+        out = any(near(a, *s) and near(b, *s) for s in sides)
+        any_out |= out
+        k = d if out else 0.0
+        lines.append(((a[0] + nx * k, a[1] + ny * k), (ex, ey), (nx, ny), k))
+    if not any_out:
+        return None
+    res = []
+    for i in range(n):
+        (p1, e1, _n1, _k1), (p2, e2, n2, k2) = lines[i - 1], lines[i]
+        den = e1[0] * e2[1] - e1[1] * e2[0]
+        if abs(den) < 1e-12:                     # straight on: just offset
+            res.append((pts[i][0] + n2[0] * k2, pts[i][1] + n2[1] * k2))
+            continue
+        t = ((p2[0] - p1[0]) * e2[1] - (p2[1] - p1[1]) * e2[0]) / den
+        res.append((p1[0] + e1[0] * t, p1[1] + e1[1] * t))
+    return res
+
+
+def _outline(corners, plot=None) -> list | None:
+    """The dig's outline 1 cm in (counter-clockwise), or None — but on the
+    plot's boundary it reaches the boundary exactly (support #93,
+    2026-11-11): no earth face stands there to keep clear of."""
     try:
         from shapely.geometry import Polygon
     except ImportError:
@@ -44,7 +89,18 @@ def _outline(corners) -> list | None:
     p = Polygon(corners)
     if not p.is_valid:
         p = p.buffer(0)
-    q = p.buffer(-INSET, join_style=2)
+    out = None
+    if plot and len(plot) >= 3 and p.geom_type == "Polygon":
+        try:
+            # its sides ON the boundary pushed 1 cm out first: the inset
+            # below brings them back onto it, the others 1 cm in
+            grown = _push_out(list(p.exterior.coords)[:-1], plot, INSET)
+            if grown is not None:
+                g = Polygon(grown)
+                out = g if g.is_valid else None
+        except Exception:  # noqa: BLE001 — as before
+            out = None
+    q = (out if out is not None else p).buffer(-INSET, join_style=2)
     if q.is_empty or q.geom_type != "Polygon" or q.area < 0.5:
         return None
     pts = [[round(x, 4), round(y, 4)] for x, y in q.exterior.coords[:-1]]
@@ -69,7 +125,8 @@ def wanted(doc: dict, elevations) -> dict:
             bottom = min(terrain.dig_bottoms(d, doc))
         except Exception:  # noqa: BLE001 — no bottom: no floors
             continue
-        corners = _outline(terrain.snug(doc, d["corners"]))
+        corners = _outline(terrain.snug(doc, d["corners"]),
+                           doc["plot"].get("corners"))
         if corners is None:
             continue
         held = [i for i, lv in enumerate(levels)

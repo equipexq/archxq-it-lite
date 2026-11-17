@@ -46,12 +46,12 @@ FIT_SHRINK = 0.01
 TOP_GAP = 0.01
 ROUND_SEGS = 24         # a round column's sides
 TYPES = ("column", "beam", "slab", "footing", "roof", "ramp", "stair",
-         "guard", "glazing", "street", "profile", "copy")
+         "guard", "glazing", "street", "profile", "copy", "shaped")
 LABEL = {"column": "Column", "beam": "Beam", "slab": "Slab",
          "footing": "Footing", "wall": "Wall", "roof": "Roof",
          "ramp": "Ramp", "stair": "Stair", "guard": "Low wall",
          "glazing": "Grid", "street": "Street", "profile": "Profile",
-         "copy": "Copies"}
+         "copy": "Copies", "shaped": "Adopted"}
 
 
 # ---- levels ------------------------------------------------------------------------
@@ -190,8 +190,171 @@ def _rot(p, c, ang):
     return (c[0] + x * ca - y * sa, c[1] + x * sa + y * ca)
 
 
+# ---- a shaped outline: «poly» (PLANO_CONTORNO_JUNTAS C1, 12/11/2026) ----------------
+#: a column's / a pad's own outline: its corners ``pts`` in the piece's own
+#: frame — off its insertion point (x, y), before its ``angle``. Moved: only
+#: x, y; turned: only the angle; its corners go with it. ``w``, ``d`` = the
+#: box round it (labels, the bar, whoever reads them).
+POLY_MIN_AREA = 0.05 * 0.05       # m² — smaller is refused (as a slab)
+
+
+def is_poly(e: dict) -> bool:
+    return e.get("shape") == "poly" and len(e.get("pts") or ()) >= 3
+
+
+def poly_world(e: dict) -> list:
+    """A «poly» piece's corners in plan (as stored: its own winding)."""
+    x, y = float(e["x"]), float(e["y"])
+    a = math.radians(float(e.get("angle", 0.0)))
+    ca, sa = math.cos(a), math.sin(a)
+    return [(x + float(p[0]) * ca - float(p[1]) * sa,
+             y + float(p[0]) * sa + float(p[1]) * ca) for p in e["pts"]]
+
+
+def inset(loop, d: float) -> list:
+    """A counter-clockwise outline moved ``d`` in on every side (mitred
+    corners: each face exactly ``d`` off its own)."""
+    n = len(loop)
+    if d == 0.0 or n < 3:
+        return list(loop)
+    lines = []
+    for i in range(n):
+        p, q = loop[i], loop[(i + 1) % n]
+        L = math.dist(p, q) or 1.0
+        u = ((q[0] - p[0]) / L, (q[1] - p[1]) / L)
+        nl = (-u[1], u[0])                      # the inside (on the left)
+        lines.append(((p[0] + nl[0] * d, p[1] + nl[1] * d), u))
+    out = []
+    for i in range(n):
+        (p1, u1), (p2, u2) = lines[i - 1], lines[i]
+        den = u1[0] * u2[1] - u1[1] * u2[0]
+        if abs(den) < 1e-9:                     # on one line: moved across
+            out.append(p2)
+            continue
+        k = ((p2[0] - p1[0]) * u2[1] - (p2[1] - p1[1]) * u2[0]) / den
+        out.append((p1[0] + u1[0] * k, p1[1] + u1[1] * k))
+    return out
+
+
+def _segs_cross(a, b, c, d) -> bool:
+    def side(p, q, r):
+        v = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(v) < 1e-12 else (1 if v > 0 else -1)
+    s1, s2 = side(a, b, c), side(a, b, d)
+    s3, s4 = side(c, d, a), side(c, d, b)
+    if s1 * s2 < 0 and s3 * s4 < 0:
+        return True
+    return False
+
+
+def poly_why(pts) -> str | None:
+    """Why an outline can't be a column's / a pad's (None = it can): three
+    corners at least, sides that don't cross, 5 × 5 cm at least."""
+    pts = [tuple(map(float, p)) for p in pts or ()]
+    if len(pts) < 3:
+        return "An outline needs three corners at least"
+    n = len(pts)
+    for i in range(n):
+        if math.dist(pts[i], pts[(i + 1) % n]) < 0.005:
+            return "Two corners on top of each other"
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue                         # neighbours (the last one)
+            if _segs_cross(a, b, pts[j], pts[(j + 1) % n]):
+                return "The sides would cross"
+    if abs(_area(pts)) < POLY_MIN_AREA:
+        return "Too small — 5 × 5 cm at least"
+    return None
+
+
+def poly_record(e: dict, world: list, keep_xy: bool = True) -> dict:
+    """``e`` (a column / a pad) with the outline ``world`` (plan points):
+    ``shape: poly``, its corners in its own frame (its angle kept), its box
+    as ``w``, ``d``. ``keep_xy``: off its insertion point as it is; else
+    off the outline's centroid."""
+    r = dict(e)
+    if not keep_xy or "x" not in r:
+        cx, cy = centroid(world)
+        r["x"], r["y"] = round(cx, 4), round(cy, 4)
+    x, y = float(r["x"]), float(r["y"])
+    a = math.radians(float(r.get("angle", 0.0)))
+    ca, sa = math.cos(a), math.sin(a)
+    loc = []
+    for p in world:
+        dx, dy = p[0] - x, p[1] - y
+        # (to the micron: the exact corner stays exact)
+        loc.append([round(dx * ca + dy * sa, 6), round(-dx * sa + dy * ca, 6)])
+    r["pts"] = loc
+    r["shape"] = "poly"
+    r["anchor"] = "centre"
+    xs, ys = [p[0] for p in loc], [p[1] for p in loc]
+    if r.get("type") == "footing":           # (a pad's «d» is its depth)
+        r["w"] = round(max(max(xs) - min(xs), max(ys) - min(ys)), 4)
+    else:
+        r["w"] = round(max(xs) - min(xs), 4)
+        r["d"] = round(max(ys) - min(ys), 4)
+    return r
+
+
+def poly_sized(e: dict, key: str, v: float) -> dict:
+    """A «poly» piece given another width (``key`` "w") or depth ("d") —
+    the bar, the window: its corners stretched along its own axes from its
+    box's middle (the box, and so its place, stays centred)."""
+    loc = [tuple(map(float, p)) for p in e["pts"]]
+    i = 0 if key == "w" else 1
+    vs = [p[i] for p in loc]
+    lo, hi = min(vs), max(vs)
+    if hi - lo < 1e-9 or v <= 0:
+        return dict(e)
+    k, m = float(v) / (hi - lo), (hi + lo) / 2
+    pts = [[round(p[0] if i else m + (p[0] - m) * k, 6),
+            round(m + (p[1] - m) * k if i else p[1], 6)] for p in loc]
+    return dict(e, pts=pts, **{key: round(float(v), 4)})
+
+
+def poly_to_rect(e: dict) -> dict:
+    """«Back to rectangle»: the box round its outline, in its own frame —
+    where the outline was (a pad: square, its larger side)."""
+    if not is_poly(e):
+        return dict(e)
+    loc = [tuple(map(float, p)) for p in e["pts"]]
+    xs, ys = [p[0] for p in loc], [p[1] for p in loc]
+    mx, my = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
+    a = math.radians(float(e.get("angle", 0.0)))
+    r = {k: v for k, v in e.items() if k != "pts"}
+    r["x"] = round(float(e["x"]) + mx * math.cos(a) - my * math.sin(a), 4)
+    r["y"] = round(float(e["y"]) + mx * math.sin(a) + my * math.cos(a), 4)
+    r["anchor"] = "centre"
+    if e.get("type") == "footing":
+        r.pop("shape", None)
+        r["w"] = round(max(max(xs) - min(xs), max(ys) - min(ys)), 4)
+    else:
+        r["shape"] = "rect"
+        r["w"] = round(max(xs) - min(xs), 4)
+        r["d"] = round(max(ys) - min(ys), 4)
+    return r
+
+
+def centroid(pts) -> tuple:
+    """The area's centre of an outline (its corners' mean if flat)."""
+    a = _area(pts)
+    if abs(a) < 1e-12:
+        return (sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts))
+    cx = cy = 0.0
+    for p, q in zip(pts, list(pts[1:]) + [pts[0]]):
+        k = p[0] * q[1] - q[0] * p[1]
+        cx += (p[0] + q[0]) * k
+        cy += (p[1] + q[1]) * k
+    return (cx / (6 * a), cy / (6 * a))
+
+
 def column_outline(c: dict, shrink: float = SHRINK) -> list:
     """The column's section in plan, counter-clockwise."""
+    if is_poly(c):
+        return inset(_ccw(poly_world(c)), shrink)
     x, y = float(c["x"]), float(c["y"])
     w = float(c["w"]) - 2 * shrink
     if c.get("shape") == "round":
@@ -220,7 +383,9 @@ ANCHORS = {"centre": (0, 0), "sw": (-1, -1), "corner": (-1, -1),
 
 def column_centre(c: dict):
     """Where the column's axis is (off-centre insertion: the section's
-    middle)."""
+    middle; a shaped one: its outline's centroid)."""
+    if is_poly(c):
+        return centroid(poly_world(c))
     if c.get("anchor", "centre") == "centre" or c.get("shape") == "round":
         return (float(c["x"]), float(c["y"]))
     pts = column_outline(c, 0.0)
@@ -228,6 +393,8 @@ def column_centre(c: dict):
 
 
 def pad_outline(f: dict) -> list:
+    if is_poly(f):
+        return _ccw(poly_world(f))
     x, y, w = float(f["x"]), float(f["y"]), float(f["w"])
     ang = math.radians(float(f.get("angle", 0.0)))
     pts = [(x - w / 2, y - w / 2), (x + w / 2, y - w / 2),
@@ -259,6 +426,8 @@ def why_not(e: dict) -> str | None:
     t = e.get("type")
     try:
         if t == "column":
+            if e.get("shape") == "poly":
+                return poly_why(e.get("pts"))
             if float(e["w"]) < 0.05 or (e.get("shape") != "round"
                                         and float(e["d"]) < 0.05):
                 return "A column needs a section of 5 cm at least"
@@ -273,6 +442,10 @@ def why_not(e: dict) -> str | None:
             if abs(_area(e["corners"])) < 0.05:
                 return "Too small for a slab"
         elif t == "footing":
+            if e.get("kind") == "pad" and e.get("shape") == "poly":
+                why = poly_why(e.get("pts"))
+                if why:
+                    return why
             if float(e["w"]) < 0.1 or float(e["d"]) < 0.05:
                 return "A footing needs a width and a depth"
             if e.get("kind") == "strip" and math.dist(e["a"], e["b"]) < 0.1:
@@ -327,6 +500,9 @@ def why_not(e: dict) -> str | None:
             except ImportError:            # the Lite: Pro only
                 return "Copies along a path are in ArchXQ IT Pro"
             return copy_why(e)
+        elif t == "shaped":              # «Adopt as it is» (shaped.py)
+            from .shaped import why_not as shaped_why
+            return shaped_why(e)
         else:
             return "Unknown element"
     except (KeyError, TypeError, ValueError):
@@ -343,12 +519,92 @@ def _area(pts) -> float:
 FIT_TOL = 0.02          # m past a wall's face that still counts as on it
 
 
+def _gridded(w: dict) -> bool:
+    """A GRID wall (gridwall.py, 12/11/2026): it stands between the
+    columns and under the beams — they are never inside it."""
+    return bool(w.get("gw")) and not w.get("cw")
+
+
+def _grid_mod():
+    """gridwall (the Pro's) — None in the Lite: a grid wall from a Pro file
+    is built there as a plain wall."""
+    try:
+        from . import gridwall
+    except ImportError:
+        return None
+    return gridwall
+
+
+def _grid_marked(doc: dict, w: dict, lid: str, z0: float, li: dict,
+                 got: dict, info: dict | None = None) -> dict:
+    """A grid wall with what it reads (its level's columns and beams —
+    ``_gw``), read once per level into ``got``; any other wall as it is.
+    ``info``: the levels' (a column's base / capital notches the grid)."""
+    if not _gridded(w):
+        return w
+    GX = _grid_mod()
+    if GX is None:
+        return w
+    if lid not in got:
+        got[lid] = GX.context(doc, lid, z0, li, info)
+    return dict(w, _gw=got[lid])
+
+
+def grid_reads(doc: dict, elevations) -> list:
+    """Every grid wall with what ``gridwall`` reads of it, as ``build``
+    gives it: [(wall, plan pieces, z0, foot, top, its openings fitted,
+    its level's columns and beams)] — for its areas (the quantities) and
+    its windows' symbols (an elevation). The Lite: none."""
+    GX = _grid_mod()
+    if GX is None or not any(_gridded(w) for w in doc.get("walls") or []):
+        return []
+    info = levels_info(doc, elevations)
+    ops_all = doc.get("openings") or []
+    out = []
+    for lid, li in info.items():
+        mine = [w for w in doc["walls"] if w["level"] == lid]
+        if not any(_gridded(w) for w in mine):
+            continue
+        plans, _found = W.corners(mine)
+        ctx = GX.context(doc, lid, li["z0"], li, info)
+        z0 = li["z0"]
+        for w in mine:
+            pcs = plans.get(w["id"])
+            if not _gridded(w) or not pcs:
+                continue
+            b = z0 + float(w.get("base", 0.0))
+            top = li["under"] if w.get("height", "level") == "level" \
+                else z0 + float(w["height"])
+            if W.top_of(w) is not None:      # (its own top: wall_parts')
+                w = dict(w, _span=W.clear_span(w, pcs))
+                top = max(top, z0 + W.top_peak(W.top_of(w)))
+            ops = [f for f in (fitted(o, w, ops_all, top - z0)
+                               for o in ops_all if o.get("wall") == w["id"])
+                   if f is not None]
+            out.append((w, pcs, z0, b, top, ops, ctx))
+    return out
+
+
+def _drop_walls(mine: list[dict]) -> list[dict]:
+    """The walls that may go down through their slab (wall_drops) — a
+    grid wall stands ON its floor (the slab runs under it; its rows and
+    a door in it are measured from there)."""
+    if not any(_gridded(w) for w in mine):
+        return mine
+    GX = _grid_mod()
+    if GX is None:
+        return mine
+    return [w for w in mine if GX.of(w) is None]
+
+
 def _walls_at(p, walls: list[dict]) -> list[tuple]:
     """[(wall, centre seg, fraction)] of the walls whose body holds p."""
     out = []
     for w in walls:
         if W.why_not(w) is not None:
             continue
+        if _gridded(w):
+            continue      # (a grid wall stops at a column: never holds it)
         s = W.centre(w)
         f, off = s.project(p)
         if (W.is_closed(w) or -1e-6 <= f <= 1 + 1e-6) \
@@ -357,11 +613,160 @@ def _walls_at(p, walls: list[dict]) -> list[tuple]:
     return out
 
 
+def _clip_half(poly, q, n, h):
+    """The part of a convex outline with n·(p − q) ≤ h."""
+    out = []
+    k = len(poly)
+    for i in range(k):
+        a, b = poly[i], poly[(i + 1) % k]
+        da = n[0] * (a[0] - q[0]) + n[1] * (a[1] - q[1]) - h
+        db = n[0] * (b[0] - q[0]) + n[1] * (b[1] - q[1]) - h
+        if da <= 0:
+            out.append(a)
+        if (da < 0 < db) or (db < 0 < da):
+            f = da / (da - db)
+            out.append((a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f))
+    return out
+
+
+def _strips_meet(p, strips) -> list:
+    """Where the walls' bands all overlap (each: a point on its centre, its
+    way, its thickness) — a convex outline round p, counter-clockwise."""
+    R = 50.0
+    poly = [(p[0] - R, p[1] - R), (p[0] + R, p[1] - R), (p[0] + R, p[1] + R),
+            (p[0] - R, p[1] + R)]
+    for q, u, t in strips:
+        n = (-u[1], u[0])
+        poly = _clip_half(poly, q, n, t / 2)
+        poly = _clip_half(poly, q, (-n[0], -n[1]), t / 2)
+        if len(poly) < 3:
+            return []
+    return poly
+
+
+def _arms(here) -> list:
+    """The walls leaving the meeting: [(way out, a point on its centre,
+    its thickness)] — a wall running THROUGH it gives two."""
+    tmax = max(float(w["t"]) for w, _s, _f in here)
+    out = []
+    for w, s, f in here:
+        t = float(w["t"])
+        ff = min(max(f, 0.0), 1.0)
+        q, u = s.at(ff), s.tangent(ff)
+        closed = W.is_closed(w)
+        near0 = not closed and f * s.L <= tmax + W.JOIN_TOL
+        near1 = not closed and (1.0 - f) * s.L <= tmax + W.JOIN_TOL
+        if not near1:                          # it goes on, a → b
+            out.append((u, q, t))
+        if not near0:                          # it goes on, b → a
+            out.append(((-u[0], -u[1]), q, t))
+    return out
+
+
+def _y_middle(p, here) -> list:
+    """A true Y: the polygon the walls' mitres leave in the middle (as
+    walls._y — each two neighbours' faces looking at each other); [] when
+    two arms run (nearly) one way or meet too far."""
+    arms = sorted(_arms(here), key=lambda a: math.atan2(a[0][1], a[0][0]))
+    n = len(arms)
+    if n < 3:
+        return []
+    tmax = max(a[2] for a in arms)
+    pts = []
+    for k in range(n):
+        (u1, q1, t1), (u2, q2, t2) = arms[k], arms[(k + 1) % n]
+        l1 = (q1[0] - u1[1] * t1 / 2, q1[1] + u1[0] * t1 / 2)   # its left
+        r2 = (q2[0] + u2[1] * t2 / 2, q2[1] - u2[0] * t2 / 2)   # its right
+        got = W._meet(("line", l1, u1), ("line", r2, u2))
+        if not got or math.dist(got[0], p) > W.MITER_LIMIT * tmax:
+            return []
+        pts.append(tuple(got[0]))
+    return _ccw(pts)
+
+
+def joint_outline(p, here) -> list:
+    """The EXACT meeting of the walls ``here`` (``_walls_at``) at p, in
+    plan, counter-clockwise — what a column there fills (Stephan #106,
+    12/11/2026: in any angle). Two ways (an L, a T, an X): where their
+    bands overlap — a parallelogram; three ways or more (a Y): the middle
+    their mitres leave. Never past the walls (clipped by them). [] if
+    none."""
+    dirs = []
+    for w, s, f in here:
+        u = s.tangent(min(max(f, 0.0), 1.0))
+        if not any(abs(u[0] * v[1] - u[1] * v[0]) < 0.05 for v in dirs):
+            dirs.append(u)
+    if len(dirs) < 2:
+        return []
+    strips = [(s.at(min(max(f, 0.0), 1.0)), s.tangent(min(max(f, 0.0), 1.0)),
+               float(w["t"])) for w, s, f in here]
+    poly = _y_middle(p, here) if len(dirs) >= 3 else []
+    if not poly:
+        poly = _strips_meet(p, strips)
+    if len(poly) < 3:
+        return []
+    try:                                       # never past the walls
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+        plans = W.plan([w for w, _s, _f in here])
+        body = unary_union([Polygon(pc["outer"], pc.get("holes") or [])
+                            .buffer(0) for pcs in plans.values()
+                            for pc in pcs])
+        cand = Polygon(poly)
+        if cand.difference(body).area > 1e-8:
+            got = cand.intersection(body)
+            if got.geom_type != "Polygon" or got.area < POLY_MIN_AREA:
+                return []
+            poly = list(got.simplify(1e-6).exterior.coords)[:-1]
+    except Exception:  # noqa: BLE001 — (without shapely: the bands' own)
+        pass
+    out = []                                   # no point twice, no straight
+    for q in poly:
+        if not out or math.dist(out[-1], q) > 1e-7:
+            out.append(tuple(q))
+    if len(out) > 1 and math.dist(out[0], out[-1]) <= 1e-7:
+        out.pop()
+    keep = []
+    n = len(out)
+    for i in range(n):
+        a, b, c = out[i - 1], out[i], out[(i + 1) % n]
+        if abs((b[0] - a[0]) * (c[1] - b[1])
+               - (b[1] - a[1]) * (c[0] - b[0])) > 1e-10:
+            keep.append(b)
+    return _ccw(keep) if len(keep) >= 3 else []
+
+
+def _as_rect(loop, u) -> tuple | None:
+    """(w along u, d across, centre) when the outline is a rectangle turned
+    with u; else None."""
+    if len(loop) != 4:
+        return None
+    n = (-u[1], u[0])
+    for i in range(4):
+        a, b = loop[i], loop[(i + 1) % 4]
+        L = math.dist(a, b)
+        if L < 1e-9:
+            return None
+        e = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+        if min(abs(e[0] * u[1] - e[1] * u[0]),
+               abs(e[0] * n[1] - e[1] * n[0])) > 1e-7:
+            return None                        # a side not along u / across
+    su = [q[0] * u[0] + q[1] * u[1] for q in loop]
+    sn = [q[0] * n[0] + q[1] * n[1] for q in loop]
+    mu, mn = (max(su) + min(su)) / 2, (max(sn) + min(sn)) / 2
+    return (max(su) - min(su), max(sn) - min(sn),
+            (u[0] * mu + n[0] * mn, u[1] * mu + n[1] * mn))
+
+
 def fit_column(c: dict, walls: list[dict]) -> dict:
     """A column standing on a wall goes INSIDE it: as thick as the wall,
     turned with it, on its centre line (its length along the wall kept).
-    Where walls meet (a corner, a T): a square as thick as the thinnest.
-    Off the walls: as it was drawn."""
+    Where walls meet (an L, a T, an X, a Y, in any angle): the EXACT shape
+    of their meeting (``joint_outline`` — Stephan #106, 12/11/2026):
+    square walls of one thickness give the t × t square, of two
+    thicknesses a t1 × t2 rectangle (D1: new columns only — the files
+    keep theirs), any other angle a «poly». A round one: as thick as the
+    thinnest. Off the walls: as it was drawn."""
     p = column_centre(c)
     here = _walls_at(p, walls)
     if not here:
@@ -370,6 +775,9 @@ def fit_column(c: dict, walls: list[dict]) -> dict:
     # a corner — moved there: it kept the corner's place before)
     c = dict(c, anchor="centre", fit=True, x=round(p[0], 4),
              y=round(p[1], 4))
+    if c.get("shape") == "poly":               # fitted again: from scratch
+        c["shape"] = "rect"
+    c.pop("pts", None)
     dirs = []
     for w, s, f in here:
         u = s.tangent(f)
@@ -377,18 +785,29 @@ def fit_column(c: dict, walls: list[dict]) -> dict:
             dirs.append(u)
     t = min(float(w["t"]) for w, _s, _f in here)
     w0, s0, f0 = here[0]
-    if len(dirs) >= 2:                          # walls meeting: a square
-        c.update(w=t, d=t)
-    else:                                       # on one wall: in its line
-        q = s0.at(min(max(f0, 0.0), 1.0))
-        c.update(x=round(q[0], 4), y=round(q[1], 4),
-                 w=max(float(c["w"]), float(c.get("d", c["w"]))), d=t)
-        if c.get("shape") == "round":
-            c.update(w=t, d=t)
     u = s0.tangent(f0)
     c["angle"] = round(math.degrees(math.atan2(u[1], u[0])), 3)
+    if len(dirs) >= 2 and c.get("shape") != "round":   # walls meeting
+        loop = joint_outline(p, here)
+        if not loop:                           # (none found: the square)
+            c.update(w=t, d=t)
+            return c
+        a = math.radians(c["angle"])
+        rect = _as_rect(loop, (math.cos(a), math.sin(a)))
+        if rect is not None:
+            w_, d_, m = rect
+            c.update(w=round(w_, 4), d=round(d_, 4), x=round(m[0], 4),
+                     y=round(m[1], 4))
+            return c
+        return poly_record(c, loop, keep_xy=False)
+    if len(dirs) >= 2:                         # a round one where they meet
+        c.update(w=t, d=t)
+        return c
+    q = s0.at(min(max(f0, 0.0), 1.0))          # on one wall: in its line
+    c.update(x=round(q[0], 4), y=round(q[1], 4),
+             w=max(float(c["w"]), float(c.get("d", c["w"]))), d=t)
     if c.get("shape") == "round":
-        c["w"] = c["d"] = t
+        c.update(w=t, d=t)
     return c
 
 
@@ -407,6 +826,8 @@ def fit_beam(b: dict, walls: list[dict]) -> dict:
     for w in walls:
         if W.why_not(w) is not None or w.get("kind", "line") != "line":
             continue
+        if _gridded(w):
+            continue      # (a grid wall stops UNDER the beam: never in it)
         s = W.centre(w)
         if abs(u[0] * s.u[1] - u[1] * s.u[0]) > 0.01:
             continue                             # not the same way
@@ -643,7 +1064,53 @@ def level_plan_loops(doc: dict, lid: str) -> list:
             except Exception:  # noqa: BLE001 — a ghost never breaks
                 continue
             loops += [[tuple(p[:2]) for p in poly] for poly in polys]
+    # the rest of the level too (his ask, 12/11: «the ghost is there to
+    # break the rule — columns, beams, walls AND the stairs»): its low walls
+    # and railings, its roofs' outlines
+    for e in els:
+        try:
+            if e["type"] == "guard":
+                from . import guards as GD             # (Pro)
+                loops += [[tuple(p[:2]) for p in lp]
+                          for lp in GD.plan_outline(e)]
+            elif e["type"] == "roof" and len(e.get("corners") or ()) >= 3:
+                loops.append([tuple(p[:2]) for p in e["corners"]])
+        except Exception:  # noqa: BLE001 — a ghost never breaks (the Lite)
+            continue
     return loops
+
+
+def level_plan_marks(doc: dict, lid: str) -> list:
+    """The ghost's LINES of level ``lid`` past its outlines, as [((x, y),
+    (x, y))…]: a stair's treads, a stair's / ramp's walking line and arrow
+    up, the glass grids' frames and muntins, a roof's hips and ridges (his
+    ask, 12/11: a ghost stair was only rectangles — the ghost shows the
+    whole level, so the floor above lines up with it)."""
+    from . import model
+    els = [e for e in doc.get("structure") or []
+           if e["level"] == lid and why_not(e) is None]
+    out = []
+    z = None
+    for e in els:
+        try:
+            t = e["type"]
+            if t == "stair":
+                from . import stairs as ST
+                out += ST.plan_marks(e, doc, model.elevations)
+            elif t == "ramp":
+                from . import ramps as R
+                out += R.plan_marks(e, doc, model.elevations)
+            elif t == "glazing":
+                from . import glazing as GZ            # (Pro)
+                if z is None:
+                    z = levels_info(doc, model.elevations)[lid]["z0"]
+                out += GZ.plan_lines(e, doc, lambda _l, z=z: z)
+            elif t == "roof":
+                out += roof_plan_lines(e)
+        except Exception:  # noqa: BLE001 — a ghost never breaks (the Lite)
+            continue
+    return [((float(a[0]), float(a[1])), (float(b[0]), float(b[1])))
+            for a, b in out]
 
 
 def rows_of(c: dict, columns: list) -> list:
@@ -875,6 +1342,12 @@ def opening_room(o: dict, wall: dict, others: list[dict],
     # — a wall with its own top: as high as it is THERE
     if W.top_of(wall) is not None:
         wall_height = W.top_low(wall, o["pos"] - half, o["pos"] + half)
+    # — a wall with a SHAPE (F2): the room its shape leaves over the sill
+    room = _shape_room(wall, o)
+    if room is not None:
+        if room <= 0.0:
+            return "It doesn't fit in that wall"
+        wall_height = float(o.get("sill", 0)) + W.opening_lift(wall) + room
     if float(o.get("sill", 0)) + float(o["h"]) > \
             wall_height - W.opening_lift(wall) - 0.05 + 1e-6:
         return "Too tall for that wall"
@@ -909,12 +1382,141 @@ def fitted(o: dict, wall: dict, others: list[dict],
     if W.top_of(wall) is not None:      # its own top: as high as it is there
         half = float(o["w"]) / 2
         wall_height = W.top_low(wall, o["pos"] - half, o["pos"] + half)
+    room = _shape_room(wall, o)         # its shape: what is left over it
+    if room is not None:
+        if room <= 0.0:
+            return None
+        wall_height = sill + room
     h = math.floor((wall_height - TALL_GAP - sill) * 1000 + 1e-6) / 1000
     if h < 0.2:
         return None                    # its sill over the wall's top
     o2 = dict(o, h=h)
     return o2 if opening_room(o2, wall, others, wall_height) is None \
         else None
+
+
+# ---- a wall with a SHAPE (PLANO_CURVAS_E_FORMAS F2, 2026-11-13) ----------------
+def shape_now(wall: dict):
+    """The wall's shape fitted to its length now (wallshape.stretched) —
+    None: a plain wall, or a shape that no longer fits (then it is built
+    as a rectangle at its height, the shape kept in the record)."""
+    from . import wallshape as WS
+    prof = WS.profile_of(wall)
+    if prof is None:
+        return None
+    return WS.stretched(prof, W.drawn(wall).L)
+
+
+def _shape_room(wall: dict, o: dict) -> float | None:
+    """How tall a box the wall's shape leaves over the opening's sill, its
+    width and END_GAP each side — None: the wall has no shape."""
+    prof = shape_now(wall)
+    if prof is None:
+        return None
+    from . import profilecut as PC
+    from . import wallshape as WS
+    L = W.drawn(wall).L
+    half = float(o["w"]) / 2
+    # in the shape's own heights (from the wall's foot)
+    zs = float(o.get("sill", 0.0)) + W.opening_lift(wall) \
+        - float(wall.get("base", 0.0))
+    out, _arcs = WS.outline(prof, 0.0)
+    return PC.room_above(out, (0.0, L), float(o["pos"]) - half - END_GAP,
+                         float(o["pos"]) + half + END_GAP, max(zs, 0.0))
+
+
+def opening_loops(ops: list[dict], z0: float, b: float, top: float,
+                  dropped: bool = False) -> list:
+    """The openings as the holes they cut in the wall's front, (s, z)
+    loops — the same holes ``wall_with_openings`` cuts (a door 0.1 mm
+    through the foot, an arched door's arch, a shape's outline)."""
+    from shapely.geometry import Polygon, box
+    from shapely.geometry.polygon import orient
+    from . import shapes as SH
+    eps = 1e-4
+    out = []
+    for o in ops:
+        s0 = float(o["pos"]) - float(o["w"]) / 2
+        s1 = float(o["pos"]) + float(o["w"]) / 2
+        loop = SH.outline(o, z0)
+        if loop is not None:
+            g = Polygon(loop).buffer(0)
+            foot = [s for s, z in loop if z <= b + eps]
+            if len(foot) >= 2:
+                g = g.union(box(min(foot), b - eps, max(foot), b))
+        else:
+            zs = max(b, z0 + float(o.get("sill", 0.0)))
+            if dropped and float(o.get("sill", 0.0)) <= 0:
+                zs = max(b, z0 - 0.01)
+            zt = min(top, z0 + float(o.get("sill", 0.0)) + float(o["h"]))
+            arc = door_arch(o, z0, top)
+            if arc is not None:
+                zt = arc[0] + arc[1]
+            if zt - zs <= 0.01:
+                continue
+            zlo = zs - (eps if zs <= b + eps else 0)
+            if arc is not None:
+                g = Polygon([(s0, zlo), (s1, zlo)]
+                            + arch_points(*arc)).buffer(0)
+            else:
+                g = box(s0, zlo, s1, zt + (eps if zt >= top - eps else 0))
+        if g.is_empty or g.geom_type != "Polygon":
+            continue
+        out.append([(x, z) for x, z in
+                    list(orient(g, 1.0).exterior.coords)[:-1]])
+    return out
+
+
+def _shape_faces(piece: dict, seg, shape: tuple, split_c=None,
+                 joint_c=None) -> list:
+    """One plan piece of a shaped wall as its closed solid
+    (profilecut.wall_faces) — the marks the rest reads kept (``reveal``,
+    ``joint``, ``curve``: an arc's strips drawn smooth)."""
+    from . import profilecut as PC
+    outline, span, holes, arcs = shape
+    got = PC.wall_faces(piece["outer"], seg.p0, seg.u, outline, span, holes,
+                        arcs, split_c=split_c, joint_c=joint_c)
+    # («curve» k: the arc's index — 0 too; compat reads it as a flag)
+    return [dict({k: v for k, v in f.items() if k not in ("part", "hole")},
+                 **({"curve": True} if "curve" in f else {}))
+            for f in got]
+
+
+def _profile_parts(w: dict, prof: dict, pieces, openings: list, z0: float,
+                  drop: float, runs=()):
+    """wall_parts for a wall with a shape: its shape from clear end to
+    clear end, each end's slice carried on over its corner (no step);
+    its openings cut out; its layers as ever. No corner caps (the corner
+    keeps its mitre) and no top cut (the shape is its top)."""
+    from . import wallshape as WS
+    seg = W.centre(w)
+    span = W.clear_span(w, pieces)
+    zf = z0 + float(w.get("base", 0.0))
+    b = zf - drop
+    top = zf + WS.peak(prof)
+    if top - b < 0.01:
+        return None
+    ops = [W.lifted(f, w) for f in (fitted(o, w, openings, top - z0)
+                                    for o in openings
+                                    if o["wall"] == w["id"]) if f is not None]
+    ops += ramp_voids(w, pieces, runs, z0, b, top)
+    outline, arcs = WS.outline(prof, zf, b)
+    shape = (outline, span, opening_loops(ops, z0, b, top, drop > 0), arcs)
+    if len(W.layers_of(w)) > 1:
+        faces = layered_faces(w, pieces, seg, ops, z0, b, top, drop > 0,
+                              shape=shape)
+    else:
+        faces = [f for pc in pieces for f in _shape_faces(pc, seg, shape)]
+    hid = LV.indexes(W.layers_of(w), w.get("_hide"))
+    if hid and len(W.layers_of(w)) > 1:
+        faces = [f for f in faces if layer_of_color(
+            f.get("color") if isinstance(f, dict) else None) not in hid]
+    made = []
+    for o in ops:
+        parts = opening_parts(o, seg, z0, w, top)
+        if parts:
+            made.append((o, parts))
+    return faces, made
 
 
 def _clip(poly, p0, u, s, keep_more: bool) -> list:
@@ -3579,9 +4181,23 @@ def outside_walls(mine: list[dict], plans: dict):
                         for g in getattr(union, "geoms", [union])])
     edge = foot.boundary.buffer(0.003)
     t = {w["id"]: float(w["t"]) for w in mine}
-    ids = {wid for wid, ps in polys.items()
-           if sum(p.exterior.intersection(edge).length for p in ps)
-           > max(0.3, 2 * t.get(wid, 0.2))}
+
+    def long(wid):
+        # its own length (a short return: its whole face on the contour)
+        try:
+            return float(W.drawn(next(w for w in mine
+                                      if w["id"] == wid)).L)
+        except Exception:  # noqa: BLE001
+            return 1e9
+    on = {wid: sum(p.exterior.intersection(edge).length for p in ps)
+          for wid, ps in polys.items()}
+    # on the contour along more than a partition's end — or, a SHORT wall
+    # (a return between two outside walls, Drazen #105, 2026-11-16: 200 mm
+    # long, as long as it is thick), along its whole length
+    ids = {wid for wid, L in on.items()
+           if L > max(0.3, 2 * t.get(wid, 0.2))
+           or (long(wid) <= 2 * t.get(wid, 0.2) + 1e-6
+               and L >= 0.9 * long(wid) and L > t.get(wid, 0.2) * 0.5)}
     if not ids:
         return ids, None, foot
     strip = foot.difference(foot.buffer(-SLAB_IN, join_style=2))
@@ -3725,16 +4341,23 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
     under it (``below``), where no slab of its level is under it. ``build``
     and a bar dragged (``wall_live``) agree."""
     if slab_t <= 0 or not slabs:
-        return {}
+        return Drops()
     from shapely.geometry import Polygon
     ids, _cut, foot = outside_walls(mine, plans)
-    out = {}
+    out = Drops()
     for wid in partitions_over(mine, plans, ids, opened, slabs, below):
         out[wid] = slab_t
     try:
         floor = [Polygon(s["corners"]).buffer(0) for s in slabs]
     except Exception:  # noqa: BLE001
-        return {}
+        return Drops()
+    # each slab's own depth under the floor (as ``levels_info`` reads the
+    # level's deepest): a wall goes down through the slab UNDER IT — not
+    # the level's deepest one (Drazen #105, 2026-11-16: two houses on one
+    # level, a sunken terrace at -350; every wall of the other house went
+    # down 350 through its 150 slab)
+    depth = [max(float(s["t"]) - float(s.get("offset", 0) or 0), 0.0)
+             for s in slabs]
     # a slab INSIDE the walls' contour: every outside wall goes down through
     # it, standing on the slab or not — a wall dragged off the slab's edge
     # (a grip; the slab stays) lost its drop and «shrank upwards» from its
@@ -3744,16 +4367,21 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
     for w in mine:
         if w["id"] not in ids or abs(float(w.get("base", 0.0))) > 1e-9:
             continue
-        if floored:
-            out[w["id"]] = slab_t
-        for pc in () if floored else plans.get(w["id"], ()):
+        d = 0.0
+        for pc in plans.get(w["id"], ()):
             try:
                 p = Polygon(pc["outer"]).buffer(0)
             except Exception:  # noqa: BLE001
                 continue
-            if any(f.intersection(p).area > 1e-4 for f in floor):
-                out[w["id"]] = slab_t
-                break
+            d = max([d] + [t for f, t in zip(floor, depth)
+                           if f.intersection(p).area > 1e-4])
+        if d <= 0 and floored:
+            # off the slab's edge (a grip), inside the contour: the slabs
+            # the contour holds
+            d = max((t for f, t in zip(floor, depth)
+                     if f.intersection(foot).area > 1e-4), default=0.0)
+        if d > 0:
+            out[w["id"]] = d
         if w["id"] in out and ground is not None:
             # read on its centre line, inside its ends (its outer face may
             # stand on the pit's edge)
@@ -3761,7 +4389,7 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
             deep = [ground(c.at(f)) for f in (0.25, 0.5, 0.75)]
             deep = [x for x in deep if x is not None]
             if deep:
-                out[w["id"]] = max(slab_t, max(deep))
+                out[w["id"]] = max(out[w["id"]], max(deep))
     # a slab with LAYERS: every other wall on it stands on its CORE, under
     # the floor's finishes (slab layers, 2026-10-23 — the floor is laid
     # between the walls)
@@ -3780,7 +4408,18 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
                      if f.intersection(p).area > 1e-4), default=0.0)
             if d > out.get(w["id"], 0.0):
                 out[w["id"]] = d
+                out.core.add(w["id"])
     return out
+
+
+class Drops(dict):
+    """``wall_drops``: {wall id: how far below its floor}; ``core``: the
+    walls going down through a layered slab's finishes only (onto its
+    core) — not through the slab: no slot cut for them."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.core = set()
 
 
 #: m — a floor's finishes stop this far off the walls' faces (the walls go
@@ -4463,6 +5102,14 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
     if not pieces:
         return None
     caps = list(caps or ())
+    if w.get("profile"):
+        # its SHAPE seen from the front (F2): built from it — or, one that
+        # no longer fits its length, a plain wall at its height (the shape
+        # kept in the record, the Shape tab says why)
+        prof = shape_now(w)
+        if prof is not None:
+            return _profile_parts(w, prof, pieces, openings, z0, drop, runs)
+        w = {k: v for k, v in w.items() if k != "profile"}
     if W.top_of(w) is not None:
         # its top from clear end to clear end: the corner squares level at
         # the ends' heights, flush with the walls joined there (his test,
@@ -4510,9 +5157,30 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
                 if parts:
                     made.append((o, parts))
         return curtain.faces(w, pieces, z0, b, top, ops), made
+    GX = _grid_mod() if _gridded(w) else None
+    if GX is not None and GX.of(w) is not None:
+        # a GRID wall (gridwall.py, 12/11/2026): its frame and cells in the
+        # bays between the columns, each up to the beam over it; its
+        # openings cut it and are built in it (as in a curtain wall)
+        made = []
+        if ops:
+            seg = W.centre(w)
+            for o in ops:
+                parts = opening_parts(o, seg, z0, w, top)
+                if parts:
+                    made.append((o, parts))
+        return GX.faces(w, pieces, z0, b, top, ops, w.get("_gw")), made
     made = []
     seg = W.centre(w)
     from . import framing as FR
+    relief = []
+    if w.get("clad"):
+        # TIMBER BOARDS' relief (clad.py, 12/11/2026): the outer 2 cm are
+        # battens / lap siding, the rest the wall as ever — no «clad»:
+        # never here (the wall exactly as before)
+        from . import clad as CL
+        if CL.kind_of(w):
+            pieces, relief = CL.parts(w, pieces, seg, ops, z0, b, top)
     if len(W.layers_of(w)) > 1 or FR.frame_of(w) is not None:
         # its LAYERS (0.15.0) — or a LIGHT-FRAMED core (framing.py)
         faces = layered_faces(w, pieces, seg, ops, z0, b, top, drop > 0)
@@ -4522,6 +5190,14 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
                                              drop > 0)]
     else:
         faces = [f for pc in pieces for f in W.solid(pc, b, top)]
+    if relief:
+        if len(W.layers_of(w)) > 1:
+            # (a wall with layers: the relief is its OUTER layer's — its
+            # colour, so it wears that finish and hides with its eye)
+            relief = [dict(f, color=layer_color(0)) if isinstance(f, dict)
+                      else {"loop": f, "holes": [], "color": layer_color(0)}
+                      for f in relief]
+        faces = faces + relief
     if caps and seg.kind == "line":     # on over a lower wall's corner
         faces = faces + CC.cap_faces(
             w, caps, top,
@@ -4556,7 +5232,7 @@ def layer_of_color(color) -> int | None:
 
 
 def layered_faces(w: dict, pieces, seg, ops, z0: float, b: float,
-                  top: float, dropped: bool) -> list:
+                  top: float, dropped: bool, shape=None) -> list:
     """A wall with layers: each layer its own solid (cut by the openings
     like the whole wall), coloured as its layer (``layer_color``). Where
     two layers meet ONE face stays — the inner layer's: the cuts and the
@@ -4611,7 +5287,10 @@ def layered_faces(w: dict, pieces, seg, ops, z0: float, b: float,
                 continue
             if i in hid:                    # its eye off: not built
                 continue
-            if ops and seg.kind == "line":
+            if shape is not None:           # a SHAPED wall (F2): its shape
+                raw = _shape_faces(part, seg, shape, split_c=0.0,
+                                   joint_c=W.shared_edge(w, i))
+            elif ops and seg.kind == "line":
                 raw = wall_with_openings(part, seg, ops, z0, b, top, dropped,
                                          split_c=0.0,
                                          joint_c=W.shared_edge(w, i))
@@ -4750,7 +5429,7 @@ def walls_live(doc: dict, elevations, wall_ids, openings: list,
             plans, drops, caps, fix = got[1], got[2], got[3], got[4]
         else:
             plans, found = W.corners(mine)
-            drops = wall_drops(mine, plans, slabs, li["slab"],
+            drops = wall_drops(_drop_walls(mine), plans, slabs, li["slab"],
                                _depth_under(doc, info, lid), opened,
                                _has_below(info, lid))
             caps = CC.caps(mine, plans, found, li["z0"], li["under"])
@@ -4759,10 +5438,12 @@ def walls_live(doc: dict, elevations, wall_ids, openings: list,
                 cache[lid] = (sig, plans, drops, caps, fix)
         if runs is None:
             runs = ramp_runs(doc, elevations)
+        grid_ctx = {}
         for w in mine:
             if w["id"] in want:
                 if w["id"] in fix:
                     w = dict(w, _fix=fix[w["id"]])
+                w = _grid_marked(doc, w, lid, li["z0"], li, grid_ctx, info)
                 # (its layers hidden in the 3D — layerview.py)
                 out[w["id"]] = wall_parts(LV.mark(doc, "wall", w),
                                           plans.get(w["id"]), openings,
@@ -4885,15 +5566,19 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                     and e["type"] == "slab" and why_not(e) is None
                     and not e.get("block") and not e.get("ceiling")]
         opened = slab_openings(struct, lid, ramp_cuts)
-        drops = wall_drops(mine, plans, lv_slabs, li["slab"],
+        # (a grid wall «between» stands on its floor: never one of them)
+        dmine = _drop_walls(mine)
+        drops = wall_drops(dmine, plans, lv_slabs, li["slab"],
                            _depth_under(doc, info, lid), opened,
                            _has_below(info, lid))
         # (a wall standing on a layered slab's core goes down through the
         # finishes only: no slot through the slab for it)
+        # (Drazen #105: by the slab under each wall, not the level's deepest)
         through = {wid for wid, d in drops.items()
-                   if d >= li["slab"] - 1e-6}
-        _ids, cutter, foot = outside_walls(mine, plans) if through \
+                   if d > 1e-6 and wid not in getattr(drops, "core", ())}
+        _ids, cutter, foot = outside_walls(dmine, plans) if through \
             else (None, None, None)
+        grid_ctx = {}                  # (a grid wall's columns and beams)
         # a partition going down through its slab (``wall_drops``): the slab
         # gives way under it, as under an outside wall (its foot never in
         # the plane of the slab's underside)
@@ -4922,6 +5607,7 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                 w = dict(w, _treated=True)
             if w["id"] in fix:
                 w = dict(w, _fix=fix[w["id"]])
+            w = _grid_marked(doc, w, lid, z0, li, grid_ctx, info)
             # (its layers hidden in the 3D: the eye — layerview.py)
             made = wall_parts(LV.mark(doc, "wall", w), plans.get(w["id"]),
                               openings, z0, under,
@@ -4939,20 +5625,9 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
         els = [e for e in struct if e["level"] == lid and why_not(e) is None]
         # columns
         for c in (e for e in els if e["type"] == "column" and not skip(e)):
-            top = (under if c.get("height", "level") == "level"
-                   else z0 + float(c["height"])) - SHRINK
-            # a tall column reaching a floor (its top in that slab's top
-            # face): 1 cm under it, as a beam — its edges showed through
-            for f in floors:
-                if f - TOP_GAP < top <= f + 0.002:
-                    top = f - TOP_GAP
+            bot, top = column_span(doc, info, lid, c, floors)
             sh = FIT_SHRINK if c.get("fit") else SHRINK
             piece = {"outer": _ccw(column_outline(c, sh)), "holes": []}
-            bot = z0 + float(c.get("base", 0.0)) + SHRINK   # its base
-            if float(c.get("base", 0.0)) <= 0:    # (a raised base: his)
-                g = ground_under(doc, info, lid, column_centre(c))
-                if g is not None:
-                    bot = min(bot, g + SHRINK)  # down to the pit's floor
             if top - bot < 0.05:
                 continue
             out.append(dict(_el(c, lid, _column_faces(c, piece, bot, top)),
@@ -5090,7 +5765,8 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                                         t - SHRINK)]))
         # roofs: on the top of the level's walls
         wall_t = max((float(w["t"]) for w in mine), default=0.20)
-        topped = [w for w in mine if W.top_of(w) is not None]
+        topped = [w for w in mine if W.top_of(w) is not None
+                  or shape_now(w) is not None]
         for r in (e for e in els if e["type"] == "roof" and not skip(e)):
             rf = roof_faces(LV.mark(doc, "roof", r), roof_base(r, li),
                             wall_t)
@@ -5176,6 +5852,12 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
             cps = []
         for r in cps:
             out.append(_el(r, lid, CP.faces(r, doc, z0, under)))
+        # pieces adopted as they are (shaped.py — F3c): frozen, each face
+        # its own look; its category goes in its tag (IFC, «Show»)
+        from . import shaped as SP
+        for r in (e for e in els if e["type"] == "shaped" and not skip(e)):
+            out.append(dict(_el(r, lid, SP.faces(r, z0)),
+                            cat=r.get("cat", "other")))
     return [e for e in out if e["faces"]]
 
 
@@ -5405,6 +6087,66 @@ def hole_place(slabs: list[dict], hole) -> tuple:
     return None, why
 
 
+def cut_opening(slabs: list[dict], hole, prefer=()) -> tuple:
+    """(slab, its new corners, its new holes, reason) — an opening drawn
+    at ``hole`` cut FREELY out of a slab of this level (his ask,
+    2026-11-11: «a gente quer liberdade de corte»):
+
+    * touching or overlapping an opening already there, the two become
+      ONE (a second cut beside the first was refused: shapely's
+      ``intersects`` counts a shared side);
+    * running over the slab's edge, it notches the outline;
+    * the slab picked: a selected one (``prefer``: ids) first, then the
+      one the cut takes most of.
+
+    Refused (slab None, with the reason): too small, on no slab, or a cut
+    that would split the slab in two."""
+    from shapely.geometry import Polygon
+    from shapely.ops import snap
+    h = Polygon(hole)
+    if not h.is_valid:
+        h = h.buffer(0)
+    if h.is_empty or h.area < 0.01:
+        return None, None, None, "Too small for an opening"
+    best = []
+    for s in slabs:
+        try:
+            solid = Polygon(s["corners"],
+                            [list(o) for o in s.get("holes") or []])
+            if not solid.is_valid:
+                solid = solid.buffer(0)
+            took = solid.intersection(h).area
+        except Exception:  # noqa: BLE001 — a broken outline: not this one
+            continue
+        if took > 1e-6:
+            best.append((s["id"] not in prefer, -took, s, solid))
+    if not best:
+        return None, None, None, "Draw the opening on a slab of this level"
+    best.sort(key=lambda t: t[:2])
+    why = None
+    for _p, _t, s, solid in best:
+        hs = snap(h, solid, 0.005)       # a corner 2 mm off a side: on it
+        rest = solid.difference(hs)
+        if rest.geom_type == "MultiPolygon":
+            rest = [p for p in rest.geoms if p.area > 1e-4]
+            if len(rest) != 1:
+                why = "That cut would split the slab in two"
+                continue
+            rest = rest[0]
+        if rest.is_empty or rest.area < 0.01:
+            why = "That cut would take the whole slab"
+            continue
+        rest = rest.simplify(1e-4, preserve_topology=True)
+        outer = [[round(x, 4), round(y, 4)]
+                 for x, y in list(rest.exterior.coords)[:-1]]
+        if (_area(outer) > 0) != (_area(s["corners"]) > 0):
+            outer.reverse()                  # its corners turn as before
+        holes = [[[round(x, 4), round(y, 4)]
+                  for x, y in list(r.coords)[:-1]] for r in rest.interiors]
+        return s, outer, holes, None
+    return None, None, None, why
+
+
 def beam_own(e: dict) -> bool:
     """A beam at a height of its own (not under the slab above)."""
     return e.get("zmode") == "own"
@@ -5432,6 +6174,8 @@ def in_one_wall(e: dict, walls: list[dict]) -> bool:
     for w in walls:
         if W.why_not(w) is not None or w.get("kind", "line") != "line":
             continue
+        if _gridded(w):
+            continue                   # (under a grid wall: seen)
         s = W.centre(w)
         if all((-1e-6 <= f <= 1 + 1e-6) and
                abs(off) <= float(w["t"]) / 2 + FIT_TOL
@@ -5440,12 +6184,37 @@ def in_one_wall(e: dict, walls: list[dict]) -> bool:
     return False
 
 
+def column_span(doc: dict, info: dict, lid: str, c: dict,
+                floors=None) -> tuple[float, float]:
+    """(foot, top) a column of level ``lid`` is built between — ``build``'s
+    and a grid wall's (its base and capital notch the grid: gridwall.py)."""
+    li = info[lid]
+    z0, under = li["z0"], li["under"]
+    if floors is None:
+        floors = [v["z0"] for v in info.values()]
+    top = (under if c.get("height", "level") == "level"
+           else z0 + float(c["height"])) - SHRINK
+    # a tall column reaching a floor (its top in that slab's top
+    # face): 1 cm under it, as a beam — its edges showed through
+    for f in floors:
+        if f - TOP_GAP < top <= f + 0.002:
+            top = f - TOP_GAP
+    bot = z0 + float(c.get("base", 0.0)) + SHRINK   # its base
+    if float(c.get("base", 0.0)) <= 0:    # (a raised base: his)
+        g = ground_under(doc, info, lid, column_centre(c))
+        if g is not None:
+            bot = min(bot, g + SHRINK)  # down to the pit's floor
+    return bot, top
+
+
 def _column_faces(c: dict, piece: dict, bot: float, top: float) -> list:
     """A column's faces: its shaft, with its base and capital (Pro)."""
     def shaft(z0, z1):
         return W.solid(piece, z0, z1)
     if c.get("cbase", "none") == "none" and c.get("ccap", "none") == "none":
         return shaft(bot, top)
+    if is_poly(c):          # (a base / capital exists only for the rectangle
+        return shaft(bot, top)   # and the round one: its window says so)
     try:
         from . import column_orders as CO    # (the Lite has none)
     except ImportError:

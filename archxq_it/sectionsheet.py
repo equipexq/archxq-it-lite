@@ -37,7 +37,18 @@ MARK_LINE = (3.0, 22.0)           # a level mark's line, off the building
 MARK_TRI = 12.0                   # its triangle, off the building
 TRI_W, TRI_H = 2.6, 2.2
 DIM_ROWS = (30.0, 38.0)           # heights chain, overall height
+#: the openings' height chains (C3), right of the building: the first
+#: column past the level marks (or by the wall when the right has none),
+#: the next ones this far apart; their witness lines this long (mm)
+OPEN_COL = (27.0, 9.0, 6.0)
+OPEN_TICK = 3.0
+#: the widths under an elevation (C3): the openings, the overall (mm)
+WIDTH_ROWS = (6.0, 13.0)
+#: what the new chains take on paper, to choose the paper and scale (mm)
+OPEN_ROOM_R, WIDTH_ROOM_V = 9.0, 10.0
 KEY_H = 52.0                      # the key plan's box height (mm)
+SYM_CUT = 8                       # pieces an opening symbol's line is
+#                                   tested in (hidden_points)
 DASH = (3.0, 1.2)                 # a dashed line on paper (mm)
 
 
@@ -76,6 +87,78 @@ def frame_of(doc: dict, elevations, sheet: dict) -> dict | None:
             "zlo": box["z0"] - FOOT_M, "zhi": box["z1"] + TOP_M, "box": box}
 
 
+def hidden_points(doc: dict, elevations, pts, look) -> list:
+    """[True: hidden] for each (owner id, (x, y, z)) seen in an elevation
+    looking along ``look``: a face of ANOTHER element ArchXQ builds (a
+    wall, a low wall, a column, a slab…) stands between it and the viewer.
+    See-through faces (glass) hide nothing. Only what ArchXQ builds is
+    known here — a tree, a drawing of the host's own is not. Any trouble:
+    nothing hidden (as before)."""
+    try:
+        from shapely.geometry import Point, Polygon
+        lx, ly = look
+        rx, ry = -ly, lx
+        want = [(wid, p[0] * rx + p[1] * ry, p[2], p[0] * lx + p[1] * ly)
+                for wid, p in pts]
+        r0 = min(q[1] for q in want) - 0.01
+        r1 = max(q[1] for q in want) + 0.01
+        z0 = min(q[2] for q in want) - 0.01
+        z1 = max(q[2] for q in want) + 0.01
+        near = max(q[3] for q in want)
+        faces = []
+        for el in S.build(doc, elevations):
+            eid = el.get("id")
+            for f in el.get("faces") or ():
+                rec = f if isinstance(f, dict) else {"loop": f}
+                col = rec.get("color")
+                if col is not None and len(col) > 3 and col[3] < 0.999:
+                    continue                  # glass: seen through
+                loop = rec["loop"]
+                rs = [p[0] * rx + p[1] * ry for p in loop]
+                zs = [p[2] for p in loop]
+                ds = [p[0] * lx + p[1] * ly for p in loop]
+                if max(rs) < r0 or min(rs) > r1 or max(zs) < z0 \
+                        or min(zs) > z1 or min(ds) > near:
+                    continue
+                n = [0.0, 0.0, 0.0]
+                for a, b in zip(loop, list(loop[1:]) + [loop[0]]):
+                    n[0] += (a[1] - b[1]) * (a[2] + b[2])
+                    n[1] += (a[2] - b[2]) * (a[0] + b[0])
+                    n[2] += (a[0] - b[0]) * (a[1] + b[1])
+                ln = math.sqrt(sum(v * v for v in n))
+                if ln < 1e-12:
+                    continue
+                n = [v / ln for v in n]
+                nl_ = n[0] * lx + n[1] * ly
+                if abs(nl_) < 1e-3:
+                    continue                  # edge-on: hides nothing
+                d = sum(n[i] * loop[0][i] for i in range(3))
+                faces.append((eid, min(rs), max(rs), min(zs), max(zs),
+                              (d, n[0] * rx + n[1] * ry, n[2], nl_),
+                              loop, rec.get("holes") or [], [None]))
+        out = []
+        for wid, r, z, dep in want:
+            hit = False
+            for eid, a0, a1, c0, c1, (d, nr, nz, nl_), loop, holes, memo \
+                    in faces:
+                if eid == wid or not (a0 <= r <= a1 and c0 <= z <= c1):
+                    continue
+                if (d - r * nr - z * nz) / nl_ > dep - 0.02:
+                    continue                  # behind it (or in its plane)
+                if memo[0] is None:
+                    memo[0] = Polygon(
+                        [(p[0] * rx + p[1] * ry, p[2]) for p in loop],
+                        [[(p[0] * rx + p[1] * ry, p[2]) for p in h]
+                         for h in holes if len(h) >= 3]).buffer(0)
+                if memo[0].contains(Point(r, z)):
+                    hit = True
+                    break
+            out.append(hit)
+        return out
+    except Exception:  # noqa: BLE001 — every symbol shown, as before
+        return [False] * len(pts)
+
+
 def clip(poly: list, q, n) -> list:
     """The polygon's part where (p − q)·n ≤ 0."""
     def f(p):
@@ -106,6 +189,129 @@ def stops(doc: dict, elevations) -> list[tuple]:
     return out
 
 
+def opening_dims_on(style: dict, sheet: dict | None = None) -> tuple:
+    """(the openings' heights, the widths below) on a section / elevation
+    sheet — the Pro's (C3); the widths only on an elevation."""
+    from . import edition
+    if edition.lite():
+        return False, False
+    show = style.get("show") or {}
+    elev = (sheet or {}).get("kind") != "section"
+    return (bool(show.get("sec_open", True)),
+            elev and bool(show.get("sec_width", True)))
+
+
+def opening_marks(doc: dict, elevations, G: dict, info: dict) -> dict:
+    """What the C3 chains measure, from the sheet's frame ``G``:
+    {"groups": [{"lid", "ref", "col", "stops": [(z, name)], "ids"}],
+    "widths": [(along, name)]}.
+
+    An elevation: the doors and windows of the walls whose outer face looks
+    at the viewer and that nothing built hides; a section: the ones the cut
+    goes through (and the cut slab's underside joins their chain). Per
+    level, the openings with the same sill and head (to the cm) share one
+    chain — the most of them in the first column; the widths: every
+    opening's two sides seen from the elevation, and the building's ends."""
+    rx, ry = G["right"]
+    lx, ly = G["look"]
+    plane = G["plane"]
+    levels = {lv["id"]: lv for lv in doc.get("levels") or []}
+    order = [lv["id"] for lv in doc.get("levels") or []]
+    byid = {w["id"]: w for w in doc.get("walls") or []}
+    seen, probe = [], []
+    for o in doc.get("openings") or []:
+        w = byid.get(o.get("wall"))
+        if w is None or w.get("level") not in levels or \
+                w.get("kind", "line") != "line":
+            continue
+        try:
+            seg = W.centre(w)
+        except Exception:  # noqa: BLE001 — a broken wall: nothing to measure
+            continue
+        s0 = float(o["pos"]) - float(o["w"]) / 2
+        s1 = float(o["pos"]) + float(o["w"]) / 2
+        if plane:
+            (qx, qy), (nx, ny) = plane["point"][:2], plane["normal"][:2]
+            un = seg.u[0] * nx + seg.u[1] * ny
+            if abs(un) < 0.1:
+                continue                      # along the cut: not cut
+            s = ((qx - seg.p0[0]) * nx + (qy - seg.p0[1]) * ny) / un
+            if not (s0 + 0.01 < s < s1 - 0.01):
+                continue
+            pc_ = (seg.p0[0] + seg.u[0] * s, seg.p0[1] + seg.u[1] * s)
+            if not (G["lo"] - 0.01 <= pc_[0] * rx + pc_[1] * ry
+                    <= G["hi"] + 0.01):
+                continue
+        else:
+            sd = -1.0 if float(w.get("side", 1)) < 0 else 1.0
+            ox, oy = sd * seg.u[1], -sd * seg.u[0]   # its outer face
+            if ox * lx + oy * ly > -0.5:
+                continue                      # not facing the viewer
+        li = info[w["level"]]
+        z0 = li["z0"]
+        top = li["under"] if w.get("height", "level") == "level" \
+            else z0 + float(w["height"])
+        ops = [x for x in doc.get("openings") or [] if x.get("wall") == w["id"]]
+        f = S.fitted(o, w, ops, top - z0)
+        if f is None:
+            continue
+        zs = z0 + float(o.get("sill", 0.0) or 0.0) + W.opening_lift(w)
+        zh = zs + float(f["h"])
+        ends = [(seg.p0[0] + seg.u[0] * t, seg.p0[1] + seg.u[1] * t)
+                for t in (s0, s1)]
+        seen.append({"o": o, "w": w, "lid": w["level"], "zs": zs, "zh": zh,
+                     "ends": ends})
+        if not plane:                 # what is in front of it hides it
+            t = float(w["t"]) / 2
+            c = ((ends[0][0] + ends[1][0]) / 2 + ox * t,
+                 (ends[0][1] + ends[1][1]) / 2 + oy * t)
+            probe.append((w["id"], (c[0], c[1], (zs + zh) / 2)))
+    if probe:
+        hid = hidden_points(doc, elevations, probe, (lx, ly))
+        seen = [x for x, h in zip(seen, hid) if not h]
+    groups = []
+    for lid in order:
+        mine = [x for x in seen if x["lid"] == lid]
+        if not mine:
+            continue
+        li = info[lid]
+        z0, nxt = li["z0"], li["z0"] + li["height"]
+        sets: dict = {}
+        for x in mine:
+            key = (round(x["zs"] - z0, 2), round(x["zh"] - z0, 2))
+            sets.setdefault(key, []).append(x)
+        ranked = sorted(sets.items(), key=lambda kv: (-len(kv[1]), kv[0][1],
+                                                      kv[0][0]))
+        for col, ((sl, hd), xs) in enumerate(ranked):
+            zs, zh = z0 + sl, z0 + hd
+            st = [(z0, "floor")]
+            if sl > 0.005:
+                st.append((zs, "sill"))
+            st.append((zh, "head"))
+            if plane and zh + 0.005 < li["under"] < nxt - 0.005:
+                st.append((li["under"], "slab"))   # the cut slab's underside
+            if nxt > st[-1][0] + 0.005:
+                st.append((nxt, "next"))
+            groups.append({"lid": lid, "col": col,
+                           "ref": f"{round(sl * 100)}-{round(hd * 100)}",
+                           "stops": st, "ids": [x["o"]["id"] for x in xs]})
+    widths = []
+    if not plane and seen:
+        pos: list = []
+        for x in sorted(seen, key=lambda x: order.index(x["lid"])):
+            for (px, py), side in zip(x["ends"], ("lo", "hi")):
+                pos.append((px * rx + py * ry, f"o:{x['o']['id']}:{side}"))
+        pos += [(G["lo"], "end:lo"), (G["hi"], "end:hi")]
+        for v, nm in sorted(pos):
+            if widths and abs(v - widths[-1][0]) < 0.01:
+                continue                      # one place, its first name
+            widths.append((v, nm))
+    shown = [{"id": x["o"]["id"], "zs": x["zs"], "zh": x["zh"],
+              "v": sorted(px * rx + py * ry for px, py in x["ends"])}
+             for x in seen]
+    return {"groups": groups, "widths": widths, "seen": shown}
+
+
 def cut_fill(doc: dict, sheet: dict) -> str:
     """How the cut is filled: «solid» or «hatch». Auto: hatched when the
     cut goes through EARTH — the terrain shown and floors under the ground
@@ -123,11 +329,20 @@ def cut_fill(doc: dict, sheet: dict) -> str:
 
 
 # ---- paper and scale ---------------------------------------------------------------------
+def reserves(style: dict, sheet: dict | None = None) -> tuple:
+    """(left, right, top and bottom) paper kept round the building (mm):
+    the level marks and heights — and room for C3's chains when shown."""
+    oh, ow = opening_dims_on(style, sheet)
+    return (RESERVE_L, RESERVE_R + (OPEN_ROOM_R if oh else 0.0),
+            RESERVE_V + (WIDTH_ROOM_V / 2 if ow else 0.0))
+
+
 def fits(ext_w: float, ext_h: float, paper: str, n: float,
-         style: dict) -> bool:
+         style: dict, sheet: dict | None = None) -> bool:
     x0, y0, x1, y1 = PS.layout(paper, style)["area"]
-    return ext_w * 1000.0 / n + RESERVE_L + RESERVE_R <= x1 - x0 and \
-        ext_h * 1000.0 / n + 2 * RESERVE_V <= y1 - y0
+    rl, rr, rv = reserves(style, sheet)
+    return ext_w * 1000.0 / n + rl + rr <= x1 - x0 and \
+        ext_h * 1000.0 / n + 2 * rv <= y1 - y0
 
 
 # ---- the sheet -------------------------------------------------------------------------
@@ -148,12 +363,14 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     wid, hgt = G["hi"] - G["lo"], G["zhi"] - G["zlo"]
     paper, n, ok = PS.choose(wid, hgt, style,
                              sheet.get("paper", "auto") or "auto",
-                             sheet.get("scale", "auto") or "auto", fits=fits)
+                             sheet.get("scale", "auto") or "auto",
+                             fits=lambda *a: fits(*a, sheet=sheet))
     L = PS.layout(paper, style)
     ax0, ay0, ax1, ay1 = L["area"]
     k = 1000.0 / n
     # the building sits between the reserves; the frame is the whole area
-    fcx = ax0 + RESERVE_L + (ax1 - ax0 - RESERVE_L - RESERVE_R) / 2
+    res_l, res_r, _res_v = reserves(style, sheet)
+    fcx = ax0 + res_l + (ax1 - ax0 - res_l - res_r) / 2
     fcy = (ay0 + ay1) / 2
     m = (G["lo"] + G["hi"]) / 2                  # the building's middle
     tz = (G["zlo"] + G["zhi"]) / 2
@@ -280,6 +497,70 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                                       G["plane"]["normal"][:2], X, Y,
                                       (rx, ry), n <= FR.SYMBOL_SCALE))
 
+    # --- a SECTION through a grid wall (gridwall.py): its rails cut, its
+    # glass as a line — the cut's solid fill taken off
+    if G["plane"]:
+        try:
+            from . import gridwall as GX
+            cuts = S.grid_reads(doc, elevations)
+        except ImportError:                  # (the Lite: no grid walls)
+            cuts = []
+        gn = G["plane"]["normal"][:2]
+        for w, pcs, gz0, gb, gtop, gops, gctx in cuts:
+            blanks, glines = GX.section_drawing(
+                w, pcs, gz0, gb, gtop, gops, gctx, (qx, qy), gn,
+                float(pens["cut"]) / 2 * n / 1000.0 + 0.005)
+            for j, poly in enumerate(blanks):
+                pc.items.append({"kind": "fill", "key": f"gwsec:{w['id']}:b{j}",
+                                 "poly": [(X(p[0] * rx + p[1] * ry), Y(p[2]))
+                                          for p in poly],
+                                 "color": "#ffffff", "opacity": 1.0})
+            for j, (a, c) in enumerate(glines):
+                pc.line(f"gwsec:{w['id']}:l{j}",
+                        (X(a[0] * rx + a[1] * ry), Y(a[2])),
+                        (X(c[0] * rx + c[1] * ry), Y(c[2])), "symbol")
+
+    # --- an ELEVATION: how each window of a grid wall opens (gridwall.py,
+    # phase B) — on the grid walls whose outer face looks at the viewer
+    if not G["plane"]:
+        try:
+            from . import gridwall as GX
+            reads = S.grid_reads(doc, elevations)
+        except ImportError:                  # (the Lite: no grid walls)
+            reads = []
+        segs = []
+        for w, pcs, z0, b, top, ops, ctx in reads:
+            seg = W.centre(w)
+            if seg.kind != "line":
+                continue
+            sd = -1.0 if float(w.get("side", 1)) < 0 else 1.0
+            # (its outer face: −side across — clad.frame_of's frame)
+            ox, oy = sd * seg.u[1], -sd * seg.u[0]
+            if ox * lx + oy * ly > -0.5:      # not facing the viewer
+                continue
+            # (each line in SYM_CUT pieces: one half behind a wall's top
+            # is drawn down to that top, not over the wall — his rule,
+            # 12/11/2026: looked at on the sheet)
+            for j, (a, c) in enumerate(GX.symbols(w, pcs, z0, b, top, ops,
+                                                  ctx)):
+                # (``m``, never ``k``: k is this sheet's scale factor)
+                for m_ in range(SYM_CUT):
+                    segs.append((w["id"], f"{j}.{m_}", tuple(
+                        a[i] + (c[i] - a[i]) * m_ / SYM_CUT
+                        for i in range(3)), tuple(
+                        a[i] + (c[i] - a[i]) * (m_ + 1) / SYM_CUT
+                        for i in range(3))))
+        # a symbol behind something built in front of it (a boundary wall,
+        # a column, another wall) is not drawn — each piece by its middle
+        hid = hidden_points(doc, elevations, [
+            (wid, tuple((a[i] + c[i]) / 2 for i in range(3)))
+            for wid, _j, a, c in segs], (lx, ly)) if segs else []
+        for (wid, j, a, c), h in zip(segs, hid):
+            if not h:
+                pc.line(f"gwsym:{wid}:{j}",
+                        (X(a[0] * rx + a[1] * ry), Y(a[2])),
+                        (X(c[0] * rx + c[1] * ry), Y(c[2])), "symbol")
+
     # --- level marks, both sides (or the left) --------------------------------------
     marks = show.get("sec_marks", "both")
     sts = stops(doc, elevations)
@@ -315,10 +596,19 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     # --- the heights: floor to floor, and overall --------------------------------------
     if show.get("sec_heights", True):
         zs = sorted({round(z, 4) for z, _lid, _n in sts})
+        # what each stop is (C0, PLANO_COTAS_FOLHAS.md): its level, «top»
+        # for the last floor's top — the key of a height says what it
+        # measures, not its place in the row
+        znm: dict = {}
+        for z, lid, _n in sts:
+            # (``kz``, never ``k``: k is this sheet's scale factor)
+            kz, nm = round(z, 4), str(lid) if lid is not None else "top"
+            znm[kz] = min(znm.get(kz, nm), nm)
         # a roof's ridge over the last floor (not a parapet's few cm: its
         # stop sat on the roof mark's figure — the corporate building, 0,30)
         if G["box"]["z1"] > zs[-1] + TOP_STOP_M:
             zs.append(round(G["box"]["z1"], 4))
+            znm[zs[-1]] = "ridge"
         dmm = DS.text(style, "dim")["mm"]
         rows = [(1, list(zip(zs, zs[1:])))] if len(zs) > 2 else []
         rows.append((2, [(zs[0], zs[-1])]))
@@ -327,13 +617,65 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             for j, (za, zb) in enumerate(spans):
                 pa, pb = (xl, Y(za)), (xl, Y(zb))
                 label = DS.length(zb - za, style)
+                ref = "total" if row == 2 else \
+                    f"{znm.get(za, f'@{za:.2f}')}~{znm.get(zb, f'@{zb:.2f}')}"
                 pc.items.append({
-                    "kind": "dim", "key": f"dim:h:{row}:{j}",
+                    "kind": "dim", "key": f"dim:h:{row}:{ref}",
+                    "alias": f"dim:h:{row}:{j}", "run": f"dim:h:{row}",
                     "a": [tx, ty, za], "b": [tx, ty, zb], "pa": pa, "pb": pb,
                     "off": off, "out": (-1.0, 0.0), "mm": dmm,
                     "label": label,
                     "short": abs(pb[1] - pa[1]) < PS._tw(label, dmm) + 1.0,
                     "color": dimc, "pen": pens["dim"]})
+
+    # --- the openings' heights on the right, their widths below (C3,
+    # PLANO_COTAS_FOLHAS.md — the Pro's): per level, one chain for each
+    # set of heights (floor — sill — head — the floor above; a section: the
+    # cut slab's underside too); an elevation: the widths under it
+    oh_on, ow_on = opening_dims_on(style, sheet)
+    if oh_on or ow_on:
+        got = opening_marks(doc, elevations, G, info)
+        dmm = DS.text(style, "dim")["mm"]
+
+        def at(v, z):                           # «along r», z → the model
+            return [tx + rx * (v - m), ty + ry * (v - m), z]
+        col0 = OPEN_COL[0] if marks == "both" else OPEN_COL[2]
+        for g in got["groups"] if oh_on else ():
+            x = xr + col0 + OPEN_COL[1] * g["col"] - OPEN_TICK
+            run = f"dim:oh:{g['lid']}:{g['ref']}"
+            for (za, na), (zb, nb) in zip(g["stops"], g["stops"][1:]):
+                label = DS.length(zb - za, style)
+                pa, pb = (x, Y(za)), (x, Y(zb))
+                pc.items.append({
+                    "kind": "dim", "key": f"{run}:{na}~{nb}", "run": run,
+                    "a": at(G["hi"], za), "b": at(G["hi"], zb),
+                    "pa": pa, "pb": pb, "off": OPEN_TICK, "out": (1.0, 0.0),
+                    "mm": dmm, "label": label,
+                    "short": abs(pb[1] - pa[1]) < PS._tw(label, dmm) + 1.0,
+                    "color": dimc, "pen": pens["dim"]})
+        stops_w = got["widths"] if ow_on else []
+        if len(stops_w) > 2:
+            # under the ground floor's ±0,00 when the terrain is drawn (the
+            # earth below it is blank — its outline further down crossed
+            # the rows); without it, under the lowest point
+            zb_ = max(ground, G["box"]["z0"]) if sheet.get("terrain", True) \
+                else G["box"]["z0"]
+            yb = Y(zb_)
+            rows = [(1, list(zip(stops_w, stops_w[1:]))),
+                    (2, [(stops_w[0], stops_w[-1])])]
+            for row, spans in rows:
+                for (va, na), (vb, nb) in spans:
+                    label = DS.length(vb - va, style)
+                    pa, pb = (X(va), yb), (X(vb), yb)
+                    key = "total" if row == 2 else f"{na}~{nb}"
+                    pc.items.append({
+                        "kind": "dim", "key": f"dim:ow:{row}:{key}",
+                        "run": f"dim:ow:{row}", "a": at(va, zb_),
+                        "b": at(vb, zb_), "pa": pa, "pb": pb,
+                        "off": WIDTH_ROWS[row - 1], "out": (0.0, 1.0),
+                        "mm": dmm, "label": label,
+                        "short": abs(pb[0] - pa[0]) < PS._tw(label, dmm) + 1.0,
+                        "color": dimc, "pen": pens["dim"]})
 
     # --- the ground line (the terrain off: the ground floor's ±0,00) -------------------
     if not sheet.get("terrain", True):
@@ -363,7 +705,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     if sheet.get("kind") == "section":
         y = WS.legend(pc, doc, sheet["levels"], sx0 + 6.0, y,
                       sx1 - sx0 - 12.0)
-    cy0 = sy1 - PS.TITLE_BLOCK_MM
+    cy0 = sy1 - PS.title_block_mm(style)
     if show.get("notes", True):
         PS.notes(pc, sx0, sx1, y + 2.0, cy0,
                  style.get("notes_section") or W_["notes_section"])
@@ -371,7 +713,52 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     return {"paper": paper, "scale": n, "fits": ok, "page": L["page"],
             "layout": L, "view": view, "items": pc.items, "tags": {},
             "types": [], "rooms": [], "cut_rooms": rooms, "boxes": pc.boxes,
+            "anchors": anchors_of(doc, elevations, G, info, sts, X, Y, xl,
+                                  xr, n, got if (oh_on or ow_on) else None),
             "extent": (xl, Y(G["zhi"]), xr, Y(G["zlo"]))}
+
+
+def anchors_of(doc, elevations, G, info, sts, X, Y, xl, xr, n,
+               got=None) -> dict:
+    """The lines his own dimensions may be tied to on a section or an
+    elevation (C4, the Pro's), on the page: {"l": {name: ("h", y, x0, x1)
+    | ("v", x, y0, y1)}} — each level's line (as long as its marks reach),
+    the ridge, and each opening seen or cut: its sill and head across it,
+    its two sides up it; an elevation: the building's two ends."""
+    from . import edition
+    out: dict = {"p": {}, "l": {}, "scale": n}
+    if edition.lite():
+        return out
+    lines = out["l"]
+    reach = MARK_LINE[1]
+    for z, lid, _nm in sts:
+        lines[f"lvl:{lid if lid is not None else 'top'}"] = (
+            "h", round(Y(z), 4), round(xl - reach, 4), round(xr + reach, 4))
+    if G["box"]["z1"] > max(z for z, _l, _n in sts) + TOP_STOP_M:
+        lines["ridge"] = ("h", round(Y(G["box"]["z1"]), 4), round(xl, 4),
+                          round(xr, 4))
+    if not G["plane"]:
+        for nm, x in (("end:lo", xl), ("end:hi", xr)):
+            lines[nm] = ("v", round(x, 4), round(Y(G["zhi"]), 4),
+                         round(Y(G["zlo"]), 4))
+    try:
+        got = got or opening_marks(doc, elevations, G, info)
+    except Exception:  # noqa: BLE001 — the levels are still known
+        return out
+    for s in got.get("seen") or []:
+        x0, x1 = X(s["v"][0]), X(s["v"][-1])
+        if abs(x1 - x0) < 2.0:                # a cut one: seen edge-on
+            x0, x1 = x0 - 1.0, x1 + 1.0
+        for part, z in (("sill", s["zs"]), ("head", s["zh"])):
+            lines[f"o:{s['id']}:{part}"] = ("h", round(Y(z), 4),
+                                           round(min(x0, x1), 4),
+                                           round(max(x0, x1), 4))
+        if not G["plane"]:
+            for side, v in (("lo", s["v"][0]), ("hi", s["v"][-1])):
+                lines[f"o:{s['id']}:{side}"] = ("v", round(X(v), 4),
+                                                round(Y(s["zh"]), 4),
+                                                round(Y(s["zs"]), 4))
+    return out
 
 
 def cut_rooms(doc: dict, elevations, G: dict) -> list[dict]:

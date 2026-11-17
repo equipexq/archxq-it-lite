@@ -58,8 +58,10 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Inside the walls", "the first icon: one click"),
         ("Esc", "cancel")),),
     "slab_hole": ("Opening in a slab", (
-        ("Drawn (bar)", "rectangle · rotated · points · circle"),
-        ("Click", "inside the slab, its corners / centre"),
+        ("Bar", "Slab | Opening — then its shape"),
+        ("Click", "on the slab, its corners / centre"),
+        ("Beside another", "they join into one opening"),
+        ("Over the edge", "it notches the slab"),
         ("Type + Enter", "the sizes or the radius"),
         ("Click in it", "picks it: its grips · Delete closes it"),
         ("Close it", "the slab's window ▸ Openings ▸ «Close it»"),
@@ -96,6 +98,7 @@ QUICK: dict[str, tuple[str, tuple]] = {
         ("Point by point", "click at any height · Enter ends · C closes"),
         ("On a line", "click a line · Alt: only that stretch · Shift: joins "
                       "the last one"),
+        ("Closed loop", "click a line or a face · all round it at once"),
         ("Circle", "the centre on a face, then the radius · or type it"),
         ("Rectangle", "two corners on a face · or type width;height"),
         ("By room", "click inside a room — round its walls, doors skipped"),
@@ -113,6 +116,9 @@ QUICK: dict[str, tuple[str, tuple]] = {
     "copy": ("Copy along", (
         ("Point by point", "the path, at any height · Enter ends · C closes"),
         ("On a line", "click a line of the model · Alt: only that stretch"),
+        ("Closed loop", "click a line or a face · all round it at once"),
+        ("Circle", "the centre on a face, then the radius · or type it"),
+        ("Rectangle", "two corners on a face · or type width;height"),
         ("By room", "click inside a room — round its walls"),
         ("By wall face", "click a face · Shift + click: the next one joins"),
         ("Tab", "the copies on the other side of the line"),
@@ -188,7 +194,7 @@ F1_ROW = ("F1", "Hide / show this help")
 GOLD = "#e8b33c"
 KEY = "#5bc8e8"
 CARD_CSS = f"""
-QFrame#axqQuick {{ background: rgba(30, 32, 36, 235);
+QFrame#axqQuick {{ background: rgb(30, 32, 36);
                    border: 1px solid #3c4148; border-radius: 6px; }}
 QLabel {{ color: #f0f2f4; background: transparent; font-size: 13px; }}
 QLabel#axqQuickTitle {{ color: {GOLD}; font-weight: 600; font-size: 14px; }}

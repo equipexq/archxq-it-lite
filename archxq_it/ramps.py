@@ -360,6 +360,57 @@ def footprints(r: dict, zs: float, ze: float, L: float) -> list:
     return [piece_corners(p) for p in ps + end_pieces(r, ps, zs, ze)]
 
 
+def walk_marks(ps: list, up: bool) -> list:
+    """Its WALKING LINE in plan, as lines [((x, y), (x, y))…]: along the
+    middle of each run, through the landing (U: down one lane and back the
+    other; L: round the corner), and the arrow at its TOP end — the way a
+    plan says where it climbs (his ask, 12/11: a ghost level's stair was
+    only rectangles). ``up``: it climbs along its runs."""
+    runs = [p for p in ps if p.get("run", True)]
+    if not runs:
+        return []
+    pts = []
+    prev = None
+    land = None
+    for p in ps:
+        (cx, cy), (dx, dy) = p["c"], p["d"]
+        if not p.get("run", True):
+            land = p
+            continue
+        if prev is not None:
+            (ex, ey), (ux, uy) = prev
+            if dx * ux + dy * uy < -0.5:            # U: back beside it
+                ld = float(land["l"]) if land else p["w"]
+                pts += [(ex + ux * ld / 2, ey + uy * ld / 2),
+                        (cx - dx * ld / 2, cy - dy * ld / 2)]
+            else:                                   # L: round the corner
+                pts.append((cx - dx * p["w"] / 2, cy - dy * p["w"] / 2))
+        pts.append((cx, cy))
+        end = (cx + dx * p["l"], cy + dy * p["l"])
+        pts.append(end)
+        prev = (end, (dx, dy))
+        land = None
+    out = [(a, b) for a, b in zip(pts, pts[1:])
+           if math.dist(a, b) > 1e-6]
+    if up:
+        tip, (dx, dy) = pts[-1], runs[-1]["d"]
+    else:
+        tip, (dx, dy) = pts[0], (-runs[0]["d"][0], -runs[0]["d"][1])
+    a = min(0.30, float(runs[0]["w"]) * 0.25)
+    nx, ny = -dy, dx
+    for k in (1, -1):
+        out.append((tip, (tip[0] - dx * a + nx * a * 0.6 * k,
+                          tip[1] - dy * a + ny * a * 0.6 * k)))
+    return out
+
+
+def plan_marks(r: dict, doc: dict, elevations) -> list:
+    """A ramp's lines in plan past its outline: its walking line and the
+    arrow up (``walk_marks``)."""
+    zs, ze = heights(r, doc, elevations)
+    return walk_marks(pieces(r, zs, ze, length_of(r, zs, ze)), ze >= zs)
+
+
 def footprint(r: dict, L: float) -> list:
     """The first run's outline (kept for the straight case's callers)."""
     return piece_corners(pieces(r, 0.0, -1.0, L)[0])
@@ -729,18 +780,26 @@ def _anchor_box(rec: dict, chips: bool = False) -> QComboBox:
 def _repeat_button(dlg, noun: str) -> QWidget:
     """«Repeat above ▲» / «Repeat below ▼»: the same one, in the same
     place, one level up / down (both its ends) — flights stacked (a fire
-    stair, a garage's ramps). The window closes with action "repeat_up" /
-    "repeat_down" (one button guessing the way was not clear — his test,
-    2026-10-05)."""
+    stair, a garage's ramps). With ``dlg._repeat_now`` (the edit window,
+    ui._keep_repeating) the window STAYS OPEN and each click puts a copy on
+    the next free level that way (his ask, 12/11, recording the stairs: it
+    closed at every copy); without it, the window closes with action
+    "repeat_up" / "repeat_down" (one button guessing the way was not clear —
+    his test, 2026-10-05)."""
     box = QWidget()
     lay = QHBoxLayout(box)
     lay.setContentsMargins(0, 0, 0, 0)
     for way, text in (("up", "Repeat above ▲"), ("down", "Repeat below ▼")):
         b = QPushButton(text)
-        b.setToolTip(f"A copy of this {noun}, in the same place, one level "
-                     f"{'up' if way == 'up' else 'down'} — stacked flights")
+        b.setToolTip(f"A copy of this {noun}, in the same place, on the next "
+                     f"level {'up' if way == 'up' else 'down'} that has none "
+                     "— stacked flights; click again for the next one")
 
         def go(_=False, way=way) -> None:
+            now = getattr(dlg, "_repeat_now", None)
+            if now is not None:
+                now(way)
+                return
             dlg.action = f"repeat_{way}"
             dlg.accept()
         b.clicked.connect(go)

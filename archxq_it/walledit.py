@@ -662,3 +662,115 @@ class WallTrimTool(_PlotTool):
             paintlog.failed()
         painter.restore()
         super().draw_overlay(viewport, painter)
+
+
+class WallJoinTool(_PlotTool):
+    """Walls › Edit walls › Join (PLANO_CONTORNO_JUNTAS C2a, idea #11.2 —
+    12/11/2026): click a wall, then the one in line with it, end to end —
+    they become ONE (the Split's inverse); their doors and windows stay
+    where they are. Like walls only (thickness, layers, height, alignment,
+    material): otherwise it says why."""
+    name = "ArchXQ join walls"
+    icon = "wall_join"
+    vcb_label = "Distance"
+    creates = False
+    noun = "Wall"
+
+    def __init__(self, get_parts, on_change, on_cancelled, z: float,
+                 looks=None) -> None:
+        """``get_parts()`` → (this level's walls, the openings);
+        ``on_change(walls, openings, kept_id, gone_id)`` → stored, one
+        Ctrl+Z; ``looks()`` → what each wall wears painted."""
+        self.get_parts = get_parts
+        self.on_change = on_change
+        self.looks = looks or (lambda: {})
+        self.z = z
+        super().__init__(lambda _c: None, on_cancelled)
+
+    def _reset(self) -> None:
+        self.first = None             # the first wall's id
+        self.hot = None               # the wall under the cursor
+        self.why = None               # why the one under it won't join
+        self.hover = None
+        self._sync()
+
+    def _busy(self) -> bool:
+        return self.first is not None
+
+    def _sync(self) -> None:
+        self._sync_protocol([], self.hover)
+
+    def on_hover(self, ctx) -> None:
+        from . import wallops as WO
+        self.hover = [round(ctx.world.x(), 4), round(ctx.world.y(), 4)]
+        walls, ops = self.get_parts()
+        got = WO.nearest_wall(walls, self.hover, 0.05)
+        self.hot = got[0] if got else None
+        self.why = None
+        if (self.first is not None and self.hot is not None
+                and self.hot["id"] != self.first):
+            res = WO.join(walls, ops, self.first, self.hot["id"],
+                          self.looks())
+            self.why = res if isinstance(res, str) else None
+        self._sync()
+        self._show_hint()
+        self.viewport.update()
+
+    def on_click(self, ctx) -> None:
+        from . import wallops as WO
+        self.on_hover(ctx)
+        if self.hot is None:
+            compat.flash(self.viewport, "Click ON a straight wall", 3000)
+            return
+        if self.first is None or self.hot["id"] == self.first:
+            self.first = self.hot["id"]
+            self._show_hint()
+            self.viewport.update()
+            return
+        walls, ops = self.get_parts()
+        res = WO.join(walls, ops, self.first, self.hot["id"], self.looks())
+        if isinstance(res, str):
+            compat.flash(self.viewport, res, 5000)
+            return
+        names = {w["id"]: w["name"] for w in walls}
+        a, b = self.first, self.hot["id"]
+        kept = res[2]
+        gone = b if kept == a else a
+        self._reset()
+        self.on_change(res[0], res[1], kept, gone)
+        compat.flash(self.viewport, f"«{names.get(a)}» and «{names.get(b)}» "
+                     f"are one wall now · Ctrl+Z puts them back", 4000)
+
+    def on_cancel(self, viewport) -> None:
+        if self.first is not None:
+            self._reset()
+            self._show_hint()
+            viewport.update()
+            return
+        if self.on_cancelled:
+            self.on_cancelled()
+
+    def status_clause(self) -> str:
+        if self.first is None:
+            return ("Join: click a wall, then the one in line with it, end "
+                    "to end  ·  Esc = done")
+        if self.why:
+            return f"{self.why}  ·  Esc = another one"
+        return ("Now click the wall in line with it — they become one  ·  "
+                "Esc = another one")
+
+    def draw_overlay(self, viewport, painter) -> None:
+        painter.save()
+        painter.setRenderHint(painter.RenderHint.Antialiasing)
+        try:
+            walls, _o = self.get_parts()
+            if self.first is not None and any(w["id"] == self.first
+                                              for w in walls):
+                _outline(painter, viewport, walls, self.first, self.z, HOT)
+            if self.hot is not None and self.hot["id"] != self.first:
+                _outline(painter, viewport, walls, self.hot["id"], self.z,
+                         "#c0392b" if self.why else DOT)
+        except Exception:  # noqa: BLE001 — never break the host's paint
+            paintlog.failed()
+        painter.restore()
+        super().draw_overlay(viewport, painter)

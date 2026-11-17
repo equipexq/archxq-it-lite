@@ -55,7 +55,12 @@ EXECUTIVE_BW = {
                            "wet": "#d8f0ea", "stair": "#e6e6ea"}},
     # what a plan sheet carries by default
     "show": {"dims_out": 3,            # 0 none · 1 total · 2 · 3 rows
-             "dims_in": "across",      # none · across
+             # none · rooms · walls (rooms and walls: C1, the Pro's —
+             # the Lite draws «across», its one chain each way)
+             "dims_in": "walls",
+             # each opening's size by its tag (C2, the Pro's):
+             # wxh · w · h · over · off
+             "open_size": "wxh",
              "rooms": True, "room_level": True,
              "tags": True, "schedule": True, "north": True,
              "scalebar": True, "levels_key": True, "legend": True,
@@ -63,6 +68,9 @@ EXECUTIVE_BW = {
              # a section / elevation sheet
              "sec_marks": "both",      # both · left · none (level marks)
              "sec_heights": True,      # floor-to-floor dimensions
+             # the openings' heights on the right and, on an elevation,
+             # their widths below (C3, the Pro's)
+             "sec_open": True, "sec_width": True,
              "sec_rooms": True,        # the cut rooms' names (named ones)
              "key_plan": True,         # the key plan in the side column
              "auto_sections": True,    # A-A and B-B through the middle
@@ -99,7 +107,9 @@ _VARIANTS = {
         "name": "Municipal approval",
         "pens": {"cut": 0.60, "profile": 0.35, "edge": 0.13, "dim": 0.13,
                  "symbol": 0.13, "border": 0.70},
-        "show": {"dims_out": 2, "dims_in": "none", "wall_layers": "off"}},
+        "show": {"dims_out": 2, "dims_in": "rooms", "open_size": "off",
+                 "sec_open": False, "sec_width": False,
+                 "wall_layers": "off"}},
     # for the client: colour by use, the cut soft, little text
     "presentation": {
         "name": "Presentation",
@@ -108,7 +118,9 @@ _VARIANTS = {
         "colors": {"ink": "#2a2e33", "dim": "#5a6068", "cut_fill": "#4a4f57",
                    "mute": "#7a8088"},
         "room_fill": {"on": True, "opacity": 0.70},
-        "show": {"dims_out": 1, "dims_in": "none", "tags": False,
+        "show": {"dims_out": 1, "dims_in": "none", "open_size": "off",
+                 "sec_open": False, "sec_width": False,
+                 "tags": False,
                  "schedule": False, "notes": False, "wall_layers": "off",
                  "wall_legend": False}},
     # for the site: every dimension, thin lines, the layers always drawn
@@ -135,7 +147,7 @@ WORDS = {
            "graphic_scale": "ESCALA GRÁFICA", "levels": "PAVIMENTOS",
            "legend": "LEGENDA", "schedule": "QUADRO DE ESQUADRIAS",
            "notes": "NOTAS", "type": "TIPO", "size": "L × H (m)",
-           "sill": "PEITORIL", "qty": "QTD.", "desc": "DESCRIÇÃO",
+           "sill": "PEITORIL", "sill_ab": "PEI", "qty": "QTD.", "desc": "DESCRIÇÃO",
            "door": "Porta", "window": "Janela",
            "cut_wall": "Parede cortada", "glass_guard": "Guarda-corpo",
            "PROJECT": "PROJETO", "CLIENT": "CLIENTE",
@@ -162,7 +174,7 @@ WORDS = {
            "graphic_scale": "GRAPHIC SCALE", "levels": "LEVELS",
            "legend": "LEGEND", "schedule": "DOOR & WINDOW SCHEDULE",
            "notes": "NOTES", "type": "TYPE", "size": "W × H (m)",
-           "sill": "SILL", "qty": "QTY", "desc": "DESCRIPTION",
+           "sill": "SILL", "sill_ab": "SILL", "qty": "QTY", "desc": "DESCRIPTION",
            "door": "Door", "window": "Window",
            "cut_wall": "Cut wall", "glass_guard": "Guard rail",
            "PROJECT": "PROJECT", "CLIENT": "CLIENT",
@@ -188,7 +200,7 @@ WORDS = {
            "graphic_scale": "MASSSTABSLEISTE", "levels": "GESCHOSSE",
            "legend": "LEGENDE", "schedule": "TÜR- UND FENSTERLISTE",
            "notes": "HINWEISE", "type": "TYP", "size": "B × H (m)",
-           "sill": "BRÜSTUNG", "qty": "ANZ.", "desc": "BESCHREIBUNG",
+           "sill": "BRÜSTUNG", "sill_ab": "BR", "qty": "ANZ.", "desc": "BESCHREIBUNG",
            "door": "Tür", "window": "Fenster",
            "cut_wall": "Geschnittene Wand", "glass_guard": "Geländer",
            "PROJECT": "PROJEKT", "CLIENT": "BAUHERR",
@@ -276,6 +288,30 @@ _BOARD_WORDS = {
            "board": "PLANÜBERSICHT"},
 }
 for _lang, _w in _BOARD_WORDS.items():
+    WORDS[_lang].update(_w)
+
+#: the title block's other fields (PLANO_CARIMBO.md)
+_TITLE_BLOCK_WORDS = {
+    "pt": {"PROJECT_DATE": "DATA DO PROJETO", "DRAWN": "DESENHO",
+           "CHECKED": "VERIFICAÇÃO", "RESP": "RESPONSÁVEL TÉCNICO",
+           "REG": "CAU / RRT", "OWNER": "PROPRIETÁRIO",
+           "LOT": "LOTE / MATRÍCULA", "AREA": "ÁREA TOTAL",
+           "SIGN_OWNER": "ASSINATURA DO PROPRIETÁRIO",
+           "SIGN_RESP": "ASSINATURA DO RESPONSÁVEL"},
+    "en": {"PROJECT_DATE": "PROJECT DATE", "DRAWN": "DRAWN BY",
+           "CHECKED": "CHECKED BY", "RESP": "RESPONSIBLE ARCHITECT",
+           "REG": "LICENCE NO.", "OWNER": "OWNER",
+           "LOT": "LOT / DEED", "AREA": "TOTAL AREA",
+           "SIGN_OWNER": "OWNER'S SIGNATURE",
+           "SIGN_RESP": "ARCHITECT'S SIGNATURE"},
+    "de": {"PROJECT_DATE": "PROJEKTDATUM", "DRAWN": "GEZEICHNET",
+           "CHECKED": "GEPRÜFT", "RESP": "BAULEITER",
+           "REG": "KAMMER-NR.", "OWNER": "EIGENTÜMER",
+           "LOT": "FLURSTÜCK", "AREA": "GESAMTFLÄCHE",
+           "SIGN_OWNER": "UNTERSCHRIFT BAUHERR",
+           "SIGN_RESP": "UNTERSCHRIFT ARCHITEKT"},
+}
+for _lang, _w in _TITLE_BLOCK_WORDS.items():
     WORDS[_lang].update(_w)
 
 

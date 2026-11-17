@@ -109,9 +109,19 @@ SLAB_SHAPES = [
     ("rect_c", "rectangle_center", "Rectangle from its centre"),
     ("rect_r", "rotated_rect", "Rotated rectangle"),
     ("chain", "geopath", "Point by point"),
-    ("hole", "slab_hole", "Opening in a slab — draw it inside the slab "
-                          "(a stair, a lift, a void): a rectangle, rotated, "
-                          "point by point or a circle («Drawn», on the bar)"),
+]
+#: the slab bar's OTHER mode, «Opening» (his ask, 2026-11-11 — the opening
+#: was the 6th icon among the slab's shapes, its «Drawn» shown only once
+#: picked: he himself could not find it). The same shapes, a circle more;
+#: the key is the slab options' «hole_by».
+HOLE_SHAPES = [
+    # pictures of their own (icons.py «hole_*»): the slab's shapes, their
+    # ink GREEN — never the slab's own colours (his ask, 2026-11-11)
+    ("rect", "hole_rect", "Opening — rectangle, corner to corner"),
+    ("rect_c", "hole_rect_c", "Opening — rectangle from its centre"),
+    ("rect_r", "hole_rect_r", "Opening — rotated rectangle"),
+    ("chain", "hole_chain", "Opening — point by point (any shape)"),
+    ("circle", "hole_circle", "Opening — round"),
 ]
 FOOTING_SHAPES = [
     ("pads", "foot_pads", "Under the columns — one click: a pad under "
@@ -958,7 +968,14 @@ class ArchXQ:
             self._split.setSizes([380, 200, 240])
         self._split.splitterMoved.connect(lambda *_: QSettings().setValue(
             "archxq/dock_split", self._split.sizes()))
-        self._dock = app.add_panel("ArchXQ", self._split)
+        from .icons import brand
+        mark = brand()
+        try:                        # the XQ mark on its tab (IngeTrazo 0.6.2)
+            self._dock = app.add_panel("ArchXQ", self._split,
+                                       **({"icon": mark}
+                                          if not mark.isNull() else {}))
+        except TypeError:           # an IngeTrazo before 0.6.2: no icon
+            self._dock = app.add_panel("ArchXQ", self._split)
         self._dock_floatable()
         self._outline_sig = None
         self._last_pick = frozenset()     # the selection last seen
@@ -1064,7 +1081,14 @@ class ArchXQ:
                           # a curtain wall (curtain.py): glass, mullions
                           # every cw_s, a band at each floor — and its own
                           # sizes and colours (curtain.DEFAULTS)
-                          "cw": False}
+                          "cw": False,
+                          # a plain card's look (materials.WALL_LOOKS), its
+                          # boards' relief (clad.py), a grid wall's grid
+                          # (gridwall.py) and its library bars — 12/11/2026
+                          "look": None, "clad": "none", "gwm": None,
+                          "gw": None, "gw_n": 0, "gw_sill": 1.00,
+                          "gw_band": 0.60, "gw_cell": "glass",
+                          "gw_corners": "mitred"}
         from . import curtain as _CW
         self.wall_opts.update(_CW.DEFAULTS)
         # the structure's choices, the same way
@@ -1089,6 +1113,11 @@ class ArchXQ:
                           "zmode": "level", "zt": 2.50}
         self.slab_opts = {"shape": "walls", "t": 0.15, "offset": 0.0,
                           "hole_by": "rect",     # an opening: how drawn
+                          # the slab's own shape, back from «Opening»
+                          "slab_by": "rect",
+                          # every corner rounded / the Points' sides as
+                          # arcs (PLANO_CURVAS F1, 13/11/2026)
+                          "rad": 0.0, "arc": False,
                           # a CEILING (0.15.0): its underside over the floor
                           "ceiling": False, "ch": 2.60,
                           # a BLOCK (0.15.0): its bottom over the floor
@@ -1820,7 +1849,7 @@ class ArchXQ:
         elif self.element == "wall_edit" and name == "Move points":
             self.start_wall_edit_tool()      # (before the plot's Move points)
             return
-        elif self.element == "wall_edit" and name in ("Split",
+        elif self.element == "wall_edit" and name in ("Split", "Join",
                                                       "Trim / Extend"):
             self.start_wall_op_tool(name)    # (0.15.0, B1)
             return
@@ -1994,10 +2023,11 @@ class ArchXQ:
         ch = getattr(self, "_pending_mat", None)
         if ch is None:
             return doc
-        from . import materials
+        from . import materials, matfav
         self._pending_mat = None
         for one in ch if isinstance(ch, list) else [ch]:   # (in turn)
             doc = materials.merge(doc, one)
+            matfav.note_change(one)        # (the gallery's «Recently used»)
         return doc
 
     def _flush_mat(self, kind: str) -> None:
@@ -2654,7 +2684,17 @@ class ArchXQ:
         Delete point — on the current level's drawn slab under the cursor
         (slabedit.py)."""
         from .slabedit import SLAB_EDIT, SlabEditTool
+        from . import curved as CV
         from . import structure as S
+        if name == "Cut opening" and not self._pro_only("slab"):
+            # the slab bar's «Opening», reached from here too (a selected
+            # slab is the one cut first)
+            o = self.slab_opts
+            if o.get("shape") != "hole":
+                o["slab_by"] = o.get("shape", "rect")
+            o["shape"] = "hole"
+            self.start_struct_tool("slab")
+            return
         if self._pro_only("slab") or name not in SLAB_EDIT:
             return
         _i, lv, z0 = self._work_level()
@@ -2670,17 +2710,38 @@ class ArchXQ:
                         or e.get("auto"):
                     continue
                 top = info["z0"] + float(e.get("offset", 0.0))
-                out[e["id"]] = {"corners": e["corners"],
-                                "heights": [top] * len(e["corners"]),
-                                "closing": 0, "breaks": []}
+                # with arcs / rounded corners: its CLICKED corners, the
+                # curves following them (curved.py, F1 13/11/2026)
+                cs = CV.control(e)
+                out[e["id"]] = {"corners": cs,
+                                "heights": [top] * len(cs),
+                                "closing": 0, "breaks": [],
+                                "curves": e.get("curves")
+                                if CV.live(e) else None}
             return out
         if not get_slabs():
             compat.flash(self.viewport, f"No drawn slab on «{lv['name']}» — "
                          "an excavation's slab follows its excavation", 5000)
             return
 
-        def check(_sid, corners):
+        def curves_for(sid, corners):
+            """(the slab, the curves these new clicked corners keep, some
+            dropped) — a side split or joined is straight again."""
+            e = next((x for x in self.doc().get("structure") or []
+                      if x["id"] == sid), None)
+            if e is None or not CV.live(e):
+                return e, {"r": {}, "arc": {}}, False
+            cv, dropped = CV.remap(CV.control(e), corners, e["curves"])
+            return e, cv, dropped
+
+        def check(sid, corners):
             from shapely.geometry import Polygon
+            _e, cv, _d = curves_for(sid, corners)
+            if cv["r"] or cv["arc"]:
+                why = CV.why_not(corners, cv)
+                if why:
+                    return why
+                corners = CV.expand(corners, cv)
             try:
                 p = Polygon(corners)
             except Exception:  # noqa: BLE001
@@ -2692,13 +2753,18 @@ class ArchXQ:
             return None
 
         def change(sid, corners, _hs, _cl, _br):
+            e, cv, dropped = curves_for(sid, corners)
+            if tool.curves_out is not None:   # Round corner / Bend side
+                cv, dropped = tool.curves_out, False
             doc = self._live(self.doc())
-            doc["structure"] = [dict(e, corners=[[round(q[0], 4),
-                                                  round(q[1], 4)]
-                                                 for q in corners])
-                                if e["id"] == sid else e
-                                for e in doc["structure"]]
+            doc["structure"] = [CV.with_curves(x, corners, cv)
+                                if x["id"] == sid else x
+                                for x in doc["structure"]]
             self._commit_all(doc)
+            if dropped:
+                compat.flash(self.viewport, "That side is straight again "
+                             "(an arc or a rounded corner went with the "
+                             "corner) — Ctrl+Z puts it back", 5000)
 
         self.method = name
         tool = SlabEditTool(SLAB_EDIT[name], get_slabs, change,
@@ -3232,20 +3298,47 @@ class ArchXQ:
                         "width"}]
 
     def _slab_options(self) -> list[dict]:
-        from .structtools import HOLE_DRAWN
         o = self.slab_opts
-        if o.get("shape") == "hole" and self.tool_element() == "slab":
+        hole = o.get("shape") == "hole"
+        # FIRST on the bar: what the drawing makes — a slab, or an opening
+        # cut out of one (his ask, 2026-11-11: the same shapes, only the
+        # verb changes; nothing hidden behind another click)
+        mode = {"key": "mode", "label": "", "kind": "toggle",
+                "value": "hole" if hole else "slab",
+                "choices": [("slab", "Slab"), ("hole", "Opening")],
+                "tip": "Slab: draw a slab. Opening: cut an opening out of "
+                       "a slab of this level — any shape; touching another "
+                       "opening it joins it, over the slab's edge it "
+                       "notches it"}
+        how = o.get("hole_by", "rect") if hole else o.get("shape")
+        drawn = how in ("rect", "rect_c", "rect_r", "chain")
+        curves = ([{"key": "rad", "label": "Corner radius", "kind": "len",
+                    "value": float(o.get("rad") or 0.0), "min": 0.0,
+                    "max": 50.0, "step": 0.05,
+                    "tip": "Every corner drawn comes out rounded by this "
+                           "radius (0 = sharp corners). A slab already "
+                           "drawn: Edit slabs › Round corner"}]
+                  if drawn else []) + (
+            [{"key": "arc", "label": "", "kind": "segments",
+              "value": "arc" if o.get("arc") else "line",
+              "choices": [("line", "Straight"), ("arc", "Arc")],
+              "tip": "Arc (or the A key while drawing): click the side's "
+                     "end, then pull its middle out — or type its radius "
+                     "+ Enter"}]
+            if how == "chain" else [])
+        if hole:
             # an OPENING: how it is drawn — any shape (a customer's ask,
-            # 2026-10-13); the slab's own sizes don't apply to it
-            return [{"key": "shape", "label": "", "kind": "icons",
-                     "value": self._lit("slab", o), "choices": SLAB_SHAPES},
-                    {"key": "hole_by", "label": "Drawn", "kind": "segments",
-                     "value": o.get("hole_by", "rect"),
-                     "choices": list(HOLE_DRAWN),
-                     "tip": "The opening's shape: a rectangle, a rotated "
-                            "one, point by point or a circle"}]
-        return [{"key": "shape", "label": "", "kind": "icons",
+            # 2026-10-13), its corners rounded / its sides arcs too (F1);
+            # the slab's own sizes don't apply to it
+            return [mode,
+                    {"key": "hole_by", "label": "", "kind": "icons",
+                     "value": o.get("hole_by", "rect")
+                     if self.tool_element() == "slab" else None,
+                     "choices": HOLE_SHAPES}, *curves]
+        return [mode,
+                {"key": "shape", "label": "", "kind": "icons",
                  "value": self._lit("slab", o), "choices": SLAB_SHAPES},
+                *curves,
                 {"key": "t", "label": "Thickness", "kind": "len",
                  "value": o["t"], "min": 0.02, "max": 3.0, "step": 0.01},
                 # up to 10 m: a slab may be a CEILING too — its top at
@@ -4335,9 +4428,13 @@ class ArchXQ:
         the set brought up to date."""
         from . import studio
         if what == "update_all":
-            n = studio.update_all(self)
-            compat.flash(self.viewport, f"{n} sheets updated" if n else
-                         "Every sheet is up to date", 5000)
+            told: dict = {}
+            n = studio.update_all(self, told)
+            msg = f"{n} sheets updated" if n else "Every sheet is up to date"
+            notes = studio.update_notes(told)
+            for part in notes:
+                msg += " — " + part
+            compat.flash(self.viewport, msg, 8000 if notes else 5000)
             st = getattr(self, "_studio", None)
             if st is not None:
                 try:
@@ -4471,6 +4568,36 @@ class ArchXQ:
             self.library_pick("roof", {"kind": value})
             return
         o = self._struct_opts(element)
+        if element == "slab" and key == "arc":
+            # the Points' next sides as arcs (PLANO_CURVAS F1): the drawing
+            # under way goes on, the A key the same switch
+            o["arc"] = value == "arc"
+            tool = getattr(self.viewport, "active_tool", None)
+            if hasattr(tool, "_show_hint"):
+                tool._show_hint()
+            return
+        if element == "slab" and key == "rad":
+            o["rad"] = round(max(0.0, float(value or 0.0)), 4)
+            # slabs SELECTED: every corner of theirs takes it (as the bar
+            # does for the other fields) — where it fits
+            if self._lib_picked()[0] == "slab" and o.get("shape") != "hole":
+                self._round_selected_slabs(o["rad"])
+            return
+        if element == "slab" and key == "mode":
+            # «Slab | Opening»: the drawing goes on at once in that mode,
+            # with the shape last used in it (the slab's «Inside the
+            # walls» is a one-click action, not a drawing: a rectangle)
+            if value == "hole":
+                if o.get("shape") != "hole":
+                    o["slab_by"] = o.get("shape", "rect")
+                o["shape"] = "hole"
+            else:
+                back = o.get("slab_by", "rect")
+                o["shape"] = back if back not in ("hole", "walls") \
+                    else "rect"
+            QTimer.singleShot(0, self._refill_options)
+            QTimer.singleShot(0, lambda: self.start_struct_tool("slab"))
+            return
         o[key] = value
         if key in ("section", "height", "kind", "by", "slopes", "pauto",
                    "zmode", "ftype") or (
@@ -4478,6 +4605,7 @@ class ArchXQ:
                                                "footing")):
             QTimer.singleShot(0, self._refill_options)   # fields come / go
         if key == "hole_by":                 # a slab opening, drawn anew
+            QTimer.singleShot(0, self._refill_options)   # its icon lit
             QTimer.singleShot(0, lambda: self.start_struct_tool("slab"))
             return
         # columns SELECTED take it (below); else the row just placed
@@ -4726,6 +4854,20 @@ class ArchXQ:
                     opts["valign"] = rec.get("valign") or "bottom"
                 if key == "wall":                # none of YOUR types: none
                     opts["wtype"] = rec.get("type") or ""
+                    # its card's look (as it came — None: none, or its own
+                    # changed), its boards, its grid and the grid's bars
+                    from . import materials as _M
+                    gw = rec.get("gw") if isinstance(rec.get("gw"),
+                                                     dict) else None
+                    # (a grid wall wears no card look: its own card lit)
+                    opts["look"] = None if gw is not None else \
+                        _M.look_of(self.doc(), rec.get("id"))
+                    opts["clad"] = rec.get("clad") or "none"
+                    opts["gw"] = gw
+                    opts["gwm"] = (gw or {}).get("model") or None
+                    if gw is not None and not edition.lite():
+                        from . import gridwall as _GX
+                        opts.update(_GX.flat(gw))
                 if key == "slab":                # a plain slab: neither
                     opts["block"] = bool(rec.get("block"))
                     opts["ceiling"] = bool(rec.get("ceiling"))
@@ -4941,6 +5083,13 @@ class ArchXQ:
         sel_key, ids = self._lib_picked()
         if sel_key != key or not ids or edition.lite() and is_pro(key):
             return
+        if key == "copy":
+            # one redraw per pause of the mouse, not one per pixel
+            first = self._copy_live_next is None
+            self._copy_live_next = sizes
+            if first:
+                QTimer.singleShot(60, self._copies_live)
+            return
         doc = self.doc()
         walls = {w["id"]: w for w in doc["walls"]}
         ops = {o["id"]: o for o in doc["openings"]}
@@ -5038,6 +5187,37 @@ class ArchXQ:
             self._live_meshes.setdefault(g, g.mesh)   # put back before storing
             g.mesh = compat.mesh_of(faces)
         compat.touch_scene(self.viewport)
+
+    #: the last values of a bar being dragged over the copies, not yet shown
+    _copy_live_next = None
+
+    def _copies_live(self) -> None:
+        """The selected copies redrawn as a bar is dragged — no undo step,
+        nothing stored; let go, ``library_pick`` stores it."""
+        from . import copies as CP
+        from . import structure as S
+        sizes, self._copy_live_next = self._copy_live_next, None
+        if sizes is None:                    # let go meanwhile
+            return
+        doc = self._live(self.doc())
+        info = S.levels_info(doc, model.elevations)
+        recs = {e["id"]: e for e in doc["structure"] if e["type"] == "copy"}
+        drawn = False
+        for g in compat.selected_groups(self.viewport):
+            r = recs.get(compat._rec(g).get("id"))
+            if r is None or r.get("level") not in info:
+                continue
+            r = dict(r, **sizes)
+            if S.why_not(r) is not None:
+                continue
+            lv = info[r["level"]]
+            faces = CP.live_faces(r, doc, lv["z0"], lv["under"])
+            if faces:
+                self._live_meshes.setdefault(g, g.mesh)
+                g.mesh = compat.mesh_of(faces)
+                drawn = True
+        if drawn:
+            compat.touch_scene(self.viewport)
 
     @staticmethod
     def _bay_fill(doc: dict, op_id: str) -> dict:
@@ -5322,6 +5502,7 @@ class ArchXQ:
     def _live_back(self) -> None:
         """The groups a slider reshaped get their own meshes back (the
         stored rebuild replaces them — and Ctrl+Z must find them as built)."""
+        self._copy_live_next = None          # (one still waiting: too late)
         for g, m in self._live_meshes.items():
             g.mesh = m
         self._live_meshes.clear()
@@ -5550,12 +5731,21 @@ class ArchXQ:
             return None                  # (locked: no arrows to pull)
         k, rid = compat.kind_of(sel[0]), compat._rec(sel[0]).get("id")
         if k not in ("wall", "opening", "column", "beam", "slab", "stair",
-                     "ramp", "roof", "guard", "glazing", "street") \
+                     "ramp", "roof", "guard", "glazing", "street",
+                     "footing") \
                 or not rid \
                 or edition.lite() and is_pro(k):
             return None
         doc = self._grip_read()
         info = S.levels_info(doc, model.elevations)
+        if k == "footing":       # a pad: moved, its corners / sides (C1)
+            e = next((x for x in doc["structure"] if x["id"] == rid), None)
+            if e is None or e.get("kind") != "pad" or e.get("row") \
+                    or e["level"] not in info:
+                return None
+            zs = [v.position.z() for v in sel[0].mesh.vertices]
+            z = max(zs) if zs else info[e["level"]]["z0"]
+            return k, rid, G.pad_grips(e, z, edit=not edition.lite())
         if k == "glazing":                     # a glass grid (glazing.py)
             e = next((x for x in doc["structure"] if x["id"] == rid), None)
             if e is None or e["level"] not in info:
@@ -5625,7 +5815,8 @@ class ArchXQ:
                                         S.column_centre(e))
                     if gz is not None:
                         bot = min(bot, gz)
-                return k, rid, G.column_grips(e, top, li["z0"], bot)
+                return k, rid, G.column_grips(e, top, li["z0"], bot,
+                                              edit=not edition.lite())
             if k == "beam":
                 return k, rid, G.beam_grips(e, S.beam_top(e, li["z0"], li))
             return k, rid, G.slab_grips(e, li["z0"]
@@ -5673,7 +5864,7 @@ class ArchXQ:
                 return G.opening_changed(doc, o["id"], grip.key, v,
                                          self._wall_height(w))
         if kind in ("column", "beam", "slab", "stair", "ramp", "roof",
-                    "guard", "glazing", "street"):
+                    "guard", "glazing", "street", "footing"):
             return G.element_changed(doc, rid, grip.key, v, grip)
         if kind == "opening":
             o = next((x for x in doc["openings"] if x["id"] == rid), None)
@@ -5732,6 +5923,8 @@ class ArchXQ:
                                       grip.p)
         if kind == "column":
             return G.column_magnets(doc, rid, grip.key, grip.p[2])
+        if kind == "footing":                  # a pad (C1, 12/11/2026)
+            return G.pad_magnets(doc, rid, grip.key, grip.p[2])
         if kind == "beam" and grip.key in ("a", "b"):
             return G.beam_end_magnets(doc, rid, grip.key, grip.p[2])
         if kind == "beam":
@@ -5894,6 +6087,200 @@ class ArchXQ:
     def _type_opts(self, key: str) -> dict:
         return self.wall_opts if key == "wall" else self.slab_opts
 
+    #: the walls' library options that are never a wall record's own: the
+    #: card's look (it goes to the wall's materials), the grid's model and
+    #: its bars (they go into its ``gw``)
+    WALL_CARD_ONLY = ("look", "gwm", "gw_n", "gw_sill", "gw_band",
+                      "gw_cell", "gw_pat", "gw_corners", "gw_join")
+
+    def _wall_card(self, changes: dict) -> dict:
+        """The walls' library (PLANO_PAREDE_CAIXILHO.md, 12/11/2026): a
+        CARD (it sets «cw» and «wtype») is a whole wall — its look (none:
+        the material as it is), its boards' relief, its grid (none: a wall
+        without one); a grid's bar / chip tunes the grid it is about."""
+        ch = dict(changes)
+        if "cw" in ch and "wtype" in ch:              # a card
+            look = ch.get("look")
+            ch["look"] = look
+            ch["clad"] = {"boards_v": "battens",
+                          "boards_h": "lap"}.get(look, "none")
+            gwm = ch.get("gwm") if not edition.lite() else None
+            ch["gwm"] = gwm
+            gw = None
+            if gwm:
+                from . import gridwall as GX
+                gw = GX.model(gwm)
+                # (the bars as they were set: the next one keeps them)
+                keep = {k: self.wall_opts[k] for k in ("gw_n",)
+                        if k in self.wall_opts}
+                gw = GX.tune(gw, keep) if keep else gw
+                ch.update(GX.flat(gw))        # its bars show what it is
+            ch["gw"] = gw
+        elif set(ch) & {"gw_n", "gw_sill", "gw_band",
+                        "gw_corners"}:                # a grid's bar / chip
+            from . import gridwall as GX
+            ch["gw"] = GX.tune(self.wall_opts.get("gw"), ch)
+        return ch
+
+    def start_grid_cell(self) -> None:
+        """«Fill a pane» (gridcell.py): each click fills the grid wall's
+        pane under it with the library's fill — Esc: the walls' tool."""
+        if edition.lite():                   # (the grid wall: the Pro's)
+            return
+        from . import gridcell as GC
+
+        def picked(wid, point) -> None:
+            QTimer.singleShot(0, lambda: self.grid_cell_fill(
+                wid, point, self.wall_opts.get("gw_cell") or "glass"))
+        def grids() -> set:
+            # (read at each move of the mouse: kept while the walls stay)
+            walls = self.doc()["walls"]
+            got = getattr(self, "_grid_ids_cache", None)
+            if got is None or got[0] is not walls and got[1] != len(walls):
+                got = (walls, len(walls),
+                       {w["id"] for w in walls if w.get("gw")})
+                self._grid_ids_cache = got
+            return got[2]
+        self._grid_ids_cache = None
+        self._activate(GC.GridCellTool(picked, lambda: None, grids))
+
+    def start_grid_join(self) -> None:
+        """«Join panes» ▸ Join: two clicks on panes of one bay join them
+        and all between; Split: a click on a joined pane splits it."""
+        if edition.lite():
+            return
+        from . import gridcell as GC
+        self._gw_join_a = None
+
+        def picked(wid, point) -> None:
+            QTimer.singleShot(0, lambda: self.grid_cell_join(
+                wid, point, self.wall_opts.get("gw_join") or "join"))
+
+        def grids() -> set:
+            return {w["id"] for w in self.doc()["walls"] if w.get("gw")}
+        self._activate(GC.GridCellTool(picked, lambda: None, grids))
+
+    def grid_cell_join(self, wall_id: str, point, act: str = "join") -> bool:
+        """One click of «Join panes» on grid wall ``wall_id`` at ``point``
+        — True: the grid changed (one Ctrl+Z)."""
+        from . import gridcell as GC
+        from . import structure as S
+        doc = self._live(self.doc())
+        read = next((r for r in S.grid_reads(doc, model.elevations)
+                     if r[0]["id"] == wall_id), None)
+        cell = GC.cell_at(read, point) if read is not None else None
+        if cell is None:
+            compat.flash(self.viewport, tr("Click inside a pane (not on "
+                                           "the frame)"), 4000)
+            return False
+        if act == "split":
+            gw = GC.with_split(read[0]["gw"], cell)
+            if gw is None:
+                compat.flash(self.viewport, tr("That pane is not a joined "
+                                               "one"), 4000)
+                return False
+        else:
+            first = getattr(self, "_gw_join_a", None)
+            if first is None or first[0] != wall_id:
+                self._gw_join_a = (wall_id, cell)
+                compat.flash(self.viewport, tr("Now click the other pane "
+                                               "(in the same bay)"), 5000)
+                return False
+            self._gw_join_a = None
+            gw = GC.with_join(read[0]["gw"], first[1], cell)
+            if gw is None:
+                compat.flash(self.viewport, tr("Two different panes of ONE "
+                                               "bay join — click the first "
+                                               "one again"), 5000)
+                return False
+        doc["walls"] = [dict(w, gw=gw) if w["id"] == wall_id else w
+                        for w in doc["walls"]]
+        self._commit_all(doc)
+        return True
+
+    def grid_pattern(self, act: str) -> int:
+        """«Pattern» ▸ Copy: the selected grid wall's ``gw`` kept; Paste:
+        it goes onto every grid wall selected — one Ctrl+Z. Returns how
+        many walls changed."""
+        import copy
+        key, ids = self._lib_picked()
+        doc = self._live(self.doc())
+        grids = [w for w in doc["walls"] if w.get("gw")
+                 and key == "wall" and w["id"] in ids]
+        if not grids:
+            compat.flash(self.viewport, tr("Select a grid wall first"),
+                         4000)
+            return 0
+        if act == "copy":
+            self._gw_clip = copy.deepcopy(grids[0]["gw"])
+            compat.flash(self.viewport, tr("Pattern copied — select other "
+                                           "grid walls and click Paste"),
+                         5000)
+            return 0
+        clip = getattr(self, "_gw_clip", None)
+        if clip is None:
+            compat.flash(self.viewport, tr("Copy a grid wall's pattern "
+                                           "first"), 4000)
+            return 0
+        want = {w["id"] for w in grids if w["gw"] != clip}
+        if not want:
+            return 0
+        doc["walls"] = [dict(w, gw=copy.deepcopy(clip)) if w["id"] in want
+                        else w for w in doc["walls"]]
+        self._commit_all(doc)
+        return len(want)
+
+    def grid_cell_fill(self, wall_id: str, point, fill: str) -> bool:
+        """The pane of grid wall ``wall_id`` at ``point`` filled with
+        ``fill`` — one Ctrl+Z. False: no pane there / nothing to change."""
+        from . import gridcell as GC
+        from . import structure as S
+        doc = self._live(self.doc())
+        read = next((r for r in S.grid_reads(doc, model.elevations)
+                     if r[0]["id"] == wall_id), None)
+        cell = GC.cell_at(read, point) if read is not None else None
+        if cell is None:
+            compat.flash(self.viewport, tr("Click inside a pane (not on "
+                                           "the frame)"), 4000)
+            return False
+        gw = GC.with_fill(read[0]["gw"], cell, fill)
+        if gw is None:
+            return False
+        doc["walls"] = [dict(w, gw=gw) if w["id"] == wall_id else w
+                        for w in doc["walls"]]
+        self._commit_all(doc)
+        return True
+
+    def _wall_card_on(self, doc: dict, ids, changes: dict) -> dict:
+        """The selected walls ``ids`` (their records updated in ``doc``
+        already): the card's look as their own material, a grid bar into
+        EACH grid's own ``gw`` (its other sizes kept)."""
+        from . import materials as M
+        if changes.get("look"):
+            doc = M.with_wall_look(doc, ids, changes["look"])
+        elif changes.get("gwm"):
+            # a grid card: the wall's card look goes (its frame and glass
+            # wear their own colours) — else «Timber boards» stayed lit
+            doc = M.without_wall_look(doc, ids)
+        bars ={k: v for k, v in changes.items()
+                if k in ("gw_n", "gw_sill", "gw_band", "gw_corners")}
+        if bars and not ("cw" in changes and "wtype" in changes):
+            from . import gridwall as GX
+            want = set(ids)
+            doc["walls"] = [dict(w, gw=GX.tune(w["gw"], bars))
+                            if w["id"] in want and w.get("gw") else w
+                            for w in doc["walls"]]
+        return doc
+
+    @classmethod
+    def _wall_rec_changes(cls, changes: dict, ch: dict) -> dict:
+        """What of a walls' library change goes into the selected walls'
+        records: never the card-only options; the grid itself only from a
+        card (a bar tunes each grid's own — ``_wall_card_on``)."""
+        card = "cw" in changes and "wtype" in changes
+        return {k: v for k, v in ch.items()
+                if k not in cls.WALL_CARD_ONLY and (card or k != "gw")}
+
     def _wall_type_pick(self, changes: dict, key: str = "wall") -> dict | None:
         """The walls' / slabs' library and YOUR types: «+ New type» (named,
         from the one selected or the next one's thickness), a type's card
@@ -5907,6 +6294,20 @@ class ArchXQ:
             self._wall_types_act(changes["_types"], key,
                                  changes.get("_tid"))
             return None
+        if key == "wall" and set(changes) == {"gw_join"}:
+            self.wall_opts["gw_join"] = changes["gw_join"]
+            QTimer.singleShot(0, self.start_grid_join)
+            return None
+        if key == "wall" and set(changes) == {"gw_pat"}:
+            self.grid_pattern(changes["gw_pat"])
+            return None
+        if key == "wall" and set(changes) == {"gw_cell"}:
+            # «Fill a pane»: the fill for the panes clicked next
+            self.wall_opts["gw_cell"] = changes["gw_cell"]
+            QTimer.singleShot(0, self.start_grid_cell)
+            return None
+        if key == "wall":
+            changes = self._wall_card(changes)
         if changes.get("_market") and key == "wall":
             # a market card (markets.py, 2026-11-02): the type put in HIS
             # types the first time (its own Ctrl+Z), then picked as his
@@ -5931,6 +6332,8 @@ class ArchXQ:
                     "«{n}» is one of your types now — edit it as yours",
                     n=ty["name"]) + " — Ctrl+Z undoes it", 6000)
             changes = {K["opt"]: ty["id"]}
+            # (none of the plain cards' looks / relief / grid for the next)
+            opts.update(look=None, clad="none", gwm=None, gw=None)
         if changes.get("_newtype"):
             # its window (typedlg, 28/10): the name, the layers, the section
             # large — from the one selected, else a core of the next one's
@@ -5965,6 +6368,7 @@ class ArchXQ:
             opts.update({K["opt"]: tid, "t": t})
             if key == "wall":
                 opts["cw"] = False
+                opts.update(look=None, clad="none", gwm=None, gw=None)
             else:
                 opts.update(layers=None, ceiling=False, block=False)
             compat.flash(self.viewport, tr(K["next"], t=name)
@@ -6224,10 +6628,17 @@ class ArchXQ:
             # «From the model»: what is selected, taken now — nothing
             # selected: a click on it comes next
             if not self._copy_take_selection():
+                # waiting for the click: «From the model» the ONE card lit
+                # (his screen, 10/11/2026: Bollard stayed lit beside it);
+                # Esc gives the card before back
+                if opts.get("obj") != PF.COPY_MINE:
+                    self._copy_prev_obj = opts.get("obj")
+                opts["obj"] = PF.COPY_MINE
                 QTimer.singleShot(0, self._copy_pick)
                 QTimer.singleShot(0, self._library_show)
                 return
             if not self.copy_opts.get("src"):    # (too big: it was said)
+                self._lib_look = None   # the strip as it is: not «mine»
                 QTimer.singleShot(0, self._library_show)
                 return
             # (copies selected: they get the object too — never «mine»
@@ -6337,6 +6748,8 @@ class ArchXQ:
             self._convert_openings(key, ids, changes)   # window ↔ door
         elif sel_key == key and ids:
             ch = dict(LB.rec_changes(key, changes))
+            if key == "wall":       # (a card's look, a grid's bars: below)
+                ch = self._wall_rec_changes(changes, ch)
             if "pos" in moves:                  # an opening slid along
                 ch["pos"] = moves["pos"]
             doc = self._live(self.doc())
@@ -6372,6 +6785,10 @@ class ArchXQ:
                     new.append(r)
                 doc[part] = new
             wnotes = []
+            if key == "wall" and n:
+                # a card's look worn as their own, a grid bar into each grid
+                # (ONE Ctrl+Z with the change)
+                doc = self._wall_card_on(doc, ids, changes)
             if key == "wall" and moves.get("_across"):
                 doc, wnotes = self._walls_shifted(doc, ids, moves)
             bad = next((S.why_not(r) for r in doc["structure"]
@@ -6516,6 +6933,20 @@ class ArchXQ:
                 if k in rec:
                     opts[k] = rec[k]
             changed = True
+        if key == "wall" and not rec.get("cw"):
+            # its card's look, its boards, its grid: the next one's too
+            # (12/11/2026 — as its thickness)
+            from . import materials as _M
+            gw = rec.get("gw") if isinstance(rec.get("gw"), dict) \
+                and not edition.lite() else None
+            want = {"look": None if gw is not None else
+                    _M.look_of(self.doc(), rec.get("id")),
+                    "clad": rec.get("clad") or "none", "gw": gw,
+                    "gwm": (gw or {}).get("model") or None}
+            for k, v in want.items():
+                if opts.get(k) != v:
+                    opts[k] = v
+                    changed = True
         if key == "column":
             # its height: «level» (to the slab) or a number — the bar's
             # «Height» choice + its own field
@@ -6558,7 +6989,11 @@ class ArchXQ:
             new = []
             for r in doc[part]:
                 if r["id"] in ids and r.get(rk) != rv:
-                    r = dict(r, **{rk: rv}, **extra)
+                    if rk in ("w", "d") and S.is_poly(r):
+                        # its own outline (C1): stretched to that size
+                        r = S.poly_sized(r, rk, float(rv))
+                    else:
+                        r = dict(r, **{rk: rv}, **extra)
                     n += 1
                 new.append(r)
             doc[part] = new
@@ -6906,11 +7341,17 @@ class ArchXQ:
                 tool = T.SLAB_TOOLS.get(drawn, T.SLAB_TOOLS["rect"])(
                     self._slab_hole_drawn, self._wall_cancelled, z0)
                 tool.noun = "Opening"
+                if drawn != "circle":            # its arcs / rounded corners
+                    tool.curve_opts = lambda: self.slab_opts
             else:
                 cls = T.SLAB_TOOLS.get(o["shape"])
                 if cls is None:
                     return
                 tool = cls(self._slab_drawn, self._wall_cancelled, z0)
+                # its corners rounded, its sides as arcs (the bar's «Corner
+                # radius» / «Arc» — PLANO_CURVAS F1, 13/11/2026)
+                if o["shape"] != "circle":
+                    tool.curve_opts = lambda: self.slab_opts
         elif element == "roof":
             cls = T.SLAB_TOOLS.get(o["shape"])
             if cls is None:
@@ -6927,6 +7368,14 @@ class ArchXQ:
         self.method = o["shape"]
         self._activate(tool)
         QTimer.singleShot(0, self._refill_options)       # the shape lit
+        if element == "slab" and o["shape"] == "hole":
+            # what to do, said at once (he clicked the slab and nothing
+            # seemed to happen — 2026-11-11)
+            compat.flash(self.viewport, tr(
+                "Opening on «{lv}»: draw it on a slab — touching another "
+                "opening it joins it, over the edge it notches the slab",
+                lv=lv["name"]), 6000)
+            return
         compat.flash(self.viewport, f"{element.capitalize()}s on "
                      f"«{lv['name']}»", 3000)
 
@@ -7307,11 +7756,649 @@ class ArchXQ:
             return got
         return {}
 
-    def _slab_drawn(self, corners) -> None:
+    def _round_selected_slabs(self, r: float) -> None:
+        """The slabs selected: every corner between two straight sides
+        rounded by ``r`` where it fits (0: all sharp again; the arcs kept) —
+        one Ctrl+Z; how many stayed sharp, said."""
+        from . import curved as CV
+        from . import structtools as T
+        _k, ids = self._lib_picked()
+        doc = self._live(self.doc())
+        n = sharp = 0
+        new = []
+        for e in doc["structure"]:
+            if e["id"] in ids and e.get("type") == "slab" \
+                    and not e.get("auto"):
+                ctrl = CV.control(e)
+                arcs = CV.clean(e.get("curves"))["arc"] if CV.live(e) else {}
+                cv, s = T._rounded(ctrl, {int(k): v for k, v in
+                                          arcs.items()}, r)
+                e2 = CV.with_curves(e, ctrl, cv)
+                if e2 != e:
+                    n += 1
+                    sharp += s
+                    e = e2
+            new.append(e)
+        if not n:
+            return
+        doc["structure"] = new
+        self._commit_all(doc)
+        compat.select_ids(self.viewport, set(ids))
+        compat.flash(self.viewport, (tr("Corners rounded") if r else
+                                     tr("Corners sharp again"))
+                     + (f" — {sharp} " + tr("too short, left sharp")
+                        if sharp else "") + " — " + tr("Ctrl+Z puts it back"),
+                     5000)
+
+    def _slab_drawn(self, corners, curves=None) -> None:
         o = self.slab_opts
-        self._struct_done([dict({"type": "slab", "corners": corners,
-                                 "t": o["t"], "offset": o["offset"]},
-                                **self._slab_ceiling())])
+        rec = dict({"type": "slab", "corners": corners,
+                    "t": o["t"], "offset": o["offset"]},
+                   **self._slab_ceiling())
+        if curves:                       # arcs / rounded corners (curved.py)
+            from . import curved as CV
+            rec = CV.with_curves(rec, corners, curves)
+        self._struct_done([rec])
+
+    # ---- «Slab from outline» (PLANO_CURVAS F3a, 13/11/2026) --------------------------------
+    def _outline_source(self, selection):
+        """What the selection makes as slabs — (source, why); (None, None)
+        when nothing selected is an outline at all (no menu entry then).
+        source: {"loops": [(outline, [openings])] in plan, "z",
+        "erase": (edges, faces) of the loose geometry it was,
+        "groups": [plain groups it was]}."""
+        from . import fromshape as AL
+        from . import outline as OL
+        items = list(selection or ())
+        groups = [x for x in items if type(x).__name__ == "Group"]
+        if any(compat.kind_of(g) for g in groups):
+            return None, None                    # ArchXQ's own: not this
+
+        def xyz(g, p):
+            """A point in the world: (x, y, z) — a vector or a tuple (a
+            face's rings), through its group's placement when it has one."""
+            xf = getattr(g, "xform", None) if g is not None else None
+            if xf is None:
+                return tuple(float(v) for v in (
+                    p if isinstance(p, tuple) else (p.x(), p.y(), p.z())))
+            if isinstance(p, tuple):
+                from PySide6.QtGui import QVector3D
+                p = QVector3D(*p)
+            p = xf.map(p)
+            return (p.x(), p.y(), p.z())
+
+        def level_face(f) -> bool:
+            return abs(f.normal().z()) > 0.9999
+
+        faces = [x for x in items if type(x).__name__ == "Face"]
+        edges = [x for x in items if type(x).__name__ == "Edge"]
+        parts, segs, src_groups = [], [], []
+        for g in groups:
+            fs = list(g.mesh.faces)
+            if fs:
+                if not all(level_face(f) for f in fs):
+                    return None, None            # a solid: not an outline
+                for f in fs:
+                    parts.append([[xyz(g, p) for p in r]
+                                  for r in AL.face_rings(f)])
+            else:
+                es = [e for e in g.mesh.edges if not e.hidden]
+                if not es:
+                    return None, None
+                segs += [(xyz(g, e.a), xyz(g, e.b)) for e in es]
+            src_groups.append(g)
+        if not (faces or edges or src_groups):
+            return None, None
+        if any(not level_face(f) for f in faces):
+            return {}, "Not level — the outline must lie flat, at one height"
+        mine = {id(f) for f in faces}
+        for f in faces:
+            parts.append([[xyz(None, p) for p in r]
+                          for r in AL.face_rings(f)])
+        # a selected face's own lines: its outline already
+        edges_free = [e for e in edges
+                      if not any(id(f) in mine for f in e.faces or ())]
+        segs += [(xyz(None, e.a), xyz(None, e.b)) for e in edges_free]
+        loops = []
+        if segs:
+            got, why = OL.loops_from_segments(segs)
+            if why:
+                return {}, why
+            loops += got
+        z, why = OL.level_loops([r for rings in parts for r in rings]
+                                + loops)
+        if why:
+            return {}, why
+        out = []
+        for rings in parts:                       # a face: its own holes
+            _n, why = OL.nest(rings[:1])
+            if why:
+                return {}, why
+            out.append((OL.ccw([(p[0], p[1]) for p in rings[0]]),
+                        [OL.ccw([(p[0], p[1]) for p in h])
+                         for h in rings[1:]]))
+        if loops:
+            nested, why = OL.nest(loops)
+            if why:
+                return {}, why
+            out += nested
+        # the loose lines / faces it was: gone with it (one Ctrl+Z) — a
+        # face left there would flicker against the slab's top; a line
+        # another face still needs stays
+        mesh = self.viewport.scene.mesh
+        loose_e = {id(e) for e in mesh.edges}
+        loose_f = {id(f) for f in mesh.faces}
+        er_f = [f for f in faces if id(f) in loose_f]
+        used = {frozenset((OL._k(a), OL._k(b))) for a, b in segs}
+        for e in edges_free:                     # a face the lines fill
+            for f in e.faces or ():
+                if id(f) in loose_f and level_face(f) \
+                        and all(f is not x for x in er_f):
+                    rings = AL.face_rings(f)
+                    if all(frozenset((OL._k(r[i]),
+                                      OL._k(r[(i + 1) % len(r)]))) in used
+                           for r in rings for i in range(len(r))):
+                        er_f.append(f)
+        er_ids = {id(f) for f in er_f}
+        cand = edges_free + [e for f in faces for e in self._face_edges(f)]
+        er_e, seen = [], set()
+        for e in cand:
+            if id(e) in seen or id(e) not in loose_e:
+                continue
+            seen.add(id(e))
+            if all(id(f) in er_ids for f in e.faces or ()):
+                er_e.append(e)
+        return {"loops": out, "z": z, "erase": (er_e, er_f),
+                "groups": src_groups}, None
+
+    def _face_edges(self, f) -> list:
+        """The loose mesh's edges along a face's outlines."""
+        from . import fromshape as AL
+        from . import outline as OL
+        keys = set()
+        for r in AL.face_rings(f):
+            for i in range(len(r)):
+                keys.add(frozenset((OL._k(r[i]), OL._k(r[(i + 1) % len(r)]))))
+        return [e for e in self.viewport.scene.mesh.edges
+                if frozenset((OL._k(e.a.toTuple()), OL._k(e.b.toTuple())))
+                in keys]
+
+    def slab_from_outline(self, selection) -> None:
+        """Right-click › ArchXQ › Slab from outline: the lines / the flat face
+        selected become ArchXQ slabs — their arcs and rounded corners
+        editable (curved.py), the outlines inside them their openings, on
+        the level their height is on. The outline they were goes, in the
+        same Ctrl+Z (the inverse of Explode)."""
+        from . import curved as CV
+        from . import outline as OL
+        from . import structure as S
+        if self._pro_only("slab"):
+            return
+        src, why = self._outline_source(selection)
+        if why or not src:
+            compat.flash(self.viewport, tr(why or "Select the lines of a "
+                                           "closed outline"), 7000)
+            return
+        doc = self._live(self.doc())
+        elev = model.elevations(doc["levels"], doc["project"]["ground_level"]
+                                if model.has_project(doc) else 0.0)
+        i, off = OL.level_for(src["z"], list(elev))
+        lv = doc["levels"][i]
+        if not -5.0 <= off <= 10.0:
+            compat.flash(self.viewport, tr(
+                "Too far from the floor of «{name}» ({d}) — draw it nearer "
+                "its level", name=lv["name"], d=compat.fmt_len(off)), 7000)
+            return
+        recs = [self._outline_slab(outer, holes, off) for outer, holes
+                in src["loops"]]
+        for rec in recs:
+            bad = S.holes_fit(dict(rec, level=lv["id"]))
+            if bad:
+                compat.flash(self.viewport, tr(bad), 7000)
+                return
+        if lv["id"] != doc["levels"][self._work_level()[0]]["id"]:
+            self.set_floor(lv["id"], quiet=True)  # where it is: in sight
+        history = self.viewport.history
+        n = self._struct_done(recs, quiet=True)
+        if not n:
+            compat.flash(self.viewport, tr("A slab is already there — "
+                                           "nothing new made"), 6000)
+            return
+        first = history.undo_stack[-1] if history.undo_stack else None
+        er_e, er_f = src["erase"]
+        from core import history as H
+        steps = []
+        if er_e or er_f:
+            steps.append(H.EraseSelectionCommand(er_e, er_f))
+        steps += [H.DeleteGroupCommand(g) for g in src["groups"]]
+        if steps and first is not None:
+            cmd = steps[0] if len(steps) == 1 else H.CompoundCommand(steps)
+            self._adopting = True
+            try:
+                history.execute(cmd)
+            finally:
+                self._adopting = False
+            compat.join_last_steps(history, first)
+        # its level hidden by its eye: shown — made from lines in sight, it
+        # must not vanish (a view state, as the levels strip's eye)
+        name = compat.level_layer(lv["name"])
+        if not compat.layer_visible(self.viewport, name):
+            compat.set_layer_visible(self.viewport, name, True)
+            self._fill_levels(self.doc())
+            self._outline_soon()
+        compat.select_ids(self.viewport, set(self._last_made))
+        nc = sum(len(CV.clean(r.get("curves"))["r"])
+                 + len(CV.clean(r.get("curves"))["arc"]) for r in recs)
+        compat.flash(self.viewport, tr(
+            "{n} slab(s) on «{name}» from the outline", n=n, name=lv["name"])
+            + ((" · " + tr("{c} curve(s) editable", c=nc)) if nc else "")
+            + " — " + tr("Ctrl+Z gives the lines back"), 7000)
+
+    def _outline_slab(self, outer, holes, off: float) -> dict:
+        """One slab of «Slab from outline»: its arcs found (outline.py), the
+        thickness and type the slab tool has now."""
+        from . import curved as CV
+        from . import outline as OL
+        o = self.slab_opts
+        rec = {"type": "slab", "t": o["t"], "offset": off}
+        if o.get("stype"):                         # YOUR slab type, if set
+            rec["stype"] = o["stype"]
+        elif o.get("layers"):
+            rec["layers"] = [dict(la) for la in o["layers"]]
+        ctrl, cv = OL.shape(outer)
+        rec = CV.with_curves(rec, ctrl, cv)
+        shaped = [OL.shape(h) for h in holes]
+        if shaped:
+            rec["holes"] = [[list(p) for p in c] for c, _v in shaped]
+            for j, (c, v) in enumerate(shaped):
+                if CV.clean(v)["r"] or CV.clean(v)["arc"]:
+                    rec = CV.with_hole(rec, j, c, v)
+        return rec
+
+    # ---- «Wall from shape» (PLANO_CURVAS F3b, 13/11/2026) ----------------------------------
+    #: on a solid the host's Subtract / Trim / Split left of ONE of our
+    #: walls: that wall's record, its openings, its level's floor
+    WAS_KEY = "archxq_was"
+    #: a solid bigger than this is not read on a right-click (fast menu)
+    SHAPE_MAX_FACES = 4000
+
+    def _stamp_solid_op(self, cmd, doc: dict) -> None:
+        """A solid operation of the host on one of our walls: the wall it
+        was kept on its result — «Wall from shape» brings it back with its
+        line, layers, level, doors and windows (the Subtract drops the
+        record: the result is the host's own geometry)."""
+        import json
+        if type(cmd).__name__ != "SolidOperationCommand":
+            return
+        removed = list(getattr(cmd, "removed", None) or ())
+        created = list(getattr(cmd, "created", None) or ())
+        ids = [compat._rec(g).get("id") for g in removed
+               if compat.kind_of(g) == "wall"]
+        if len(ids) != 1 or not created:
+            return
+        w = next((x for x in doc.get("walls") or [] if x["id"] == ids[0]),
+                 None)
+        if w is None or w.get("kind", "line") != "line":
+            return
+        ops = [o for o in doc.get("openings") or [] if o["wall"] == w["id"]]
+        was = json.loads(json.dumps({"wall": w, "openings": ops}))
+        for g in created:
+            ext = dict(getattr(g, "ext", None) or {})
+            ext[self.WAS_KEY] = was
+            g.ext = ext
+
+    def _solid_faces(self, g) -> list:
+        """A group's faces as rings of world points (its placement in)."""
+        from . import fromshape as AL
+        xf = getattr(g, "xform", None)
+        out = []
+        for f in g.mesh.faces:
+            rings = []
+            for r in AL.face_rings(f):
+                if xf is None:
+                    rings.append([tuple(float(c) for c in p) for p in r])
+                else:
+                    from PySide6.QtGui import QVector3D
+                    rings.append([(q.x(), q.y(), q.z()) for q in
+                                  (xf.map(QVector3D(*p)) for p in r)])
+            out.append(rings)
+        return out
+
+    def _shape_source(self, selection):
+        """What a solid selected makes as a wall — (source, why); (None,
+        None) when it isn't one to ask about (no menu entry then)."""
+        from . import fromshape as FS
+        from . import outline as OL
+        from . import structure as S
+        from . import walls as W
+        from . import wallshape as WS
+        items = list(selection or ())
+        groups = [x for x in items if type(x).__name__ == "Group"]
+        if len(groups) != 1 or len(items) != 1 \
+                or compat.kind_of(groups[0]):
+            return None, None
+        g = groups[0]
+        fs = list(g.mesh.faces) if g.mesh is not None else []
+        if len(fs) < 4 or len(fs) > self.SHAPE_MAX_FACES \
+                or getattr(g, "children", None):
+            return None, None
+        if all(abs(f.normal().z()) > 0.9999 for f in fs):
+            return None, None                    # flat: an outline (F3a)
+        faces = self._solid_faces(g)
+        doc = self._live(self.doc())
+        elev = model.elevations(doc["levels"], doc["project"]["ground_level"]
+                                if model.has_project(doc) else 0.0)
+        was = (getattr(g, "ext", None) or {}).get(self.WAS_KEY) or {}
+        old = was.get("wall")
+        lv_i = next((i for i, lv in enumerate(doc["levels"])
+                     if old and lv["id"] == old.get("level")), None)
+        if lv_i is None:
+            old = None
+        got, why = FS.read(faces, old, elev[lv_i] if old else None,
+                           was.get("openings") or [] if old else [])
+        if why:
+            return {}, why
+        if not got["known"]:
+            lv_i, off = OL.level_for(got["z_foot"], list(elev))
+            if not -5.0 <= off <= 10.0:
+                return {}, ("Too far from its level's floor — move it "
+                            "nearer a level")
+            got, why = FS.on_level(got, elev[lv_i])
+            if why:
+                return {}, why
+        lv = doc["levels"][lv_i]
+        rec = dict(old) if got["known"] else {"align": "centre", "side": 1}
+        rec.pop("top", None)
+        rec.update(got["wall"], level=lv["id"])
+        if not rec.get("profile"):
+            rec.pop("profile", None)
+        rec.setdefault("id", "_new")
+        rec.setdefault("name", "Wall")
+        why = W.why_not(rec)
+        if why:
+            return {}, why
+        prof = rec.get("profile")
+        if prof:
+            joined = self._joined_ends(
+                dict(doc, walls=[w for w in doc["walls"]
+                                 if w["id"] != rec["id"]] + [rec]), rec)
+            for end, s in (("a", 0.0), ("b", prof["L"])):
+                sl = WS.slice_at(prof, s) if end in joined else [(0.0, 1.0)]
+                if len(sl) != 1 or sl[0][0] > 1e-6:
+                    return {}, FS.WHY_JOINED
+        # (a new one: a passing id, so they are checked against each other)
+        ops = [dict(o, wall=rec["id"], id=o.get("id") or f"_new{k}")
+               for k, o in enumerate(got["openings"])]
+        for o in ops:
+            bad = S.opening_room(o, rec, ops, self._wall_height(rec))
+            if bad:
+                return {}, bad
+        return {"group": g, "wall": rec, "openings": ops, "got": got,
+                "level": lv, "elev": elev}, None
+
+    def wall_from_shape(self, selection) -> None:
+        """Right-click › ArchXQ › Wall from shape: a solid cut straight
+        through a straight wall (the host's «Difference») becomes an
+        ArchXQ wall with that shape (F2) — the wall it was, when known,
+        with its layers, level, doors and windows; its new holes
+        Openings. The solid goes, in the same Ctrl+Z."""
+        import uuid
+        from . import edition
+        from . import fromshape as FS
+        from . import structure as S
+        if edition.lite():
+            compat.flash(self.viewport, PRO_NOTE
+                         + " — www.xq.com.br/archxq-it", 5000)
+            return
+        src, why = self._shape_source(selection)
+        if why or not src:
+            compat.flash(self.viewport, tr(why or "Select one solid — the "
+                                           "shape of a wall"), 7000)
+            return
+        doc = self._live(self.doc())
+        rec = dict(src["wall"])
+        known = src["got"]["known"]
+        if not known or any(w["id"] == rec["id"] for w in doc["walls"]):
+            rec = model.new_walls(doc["walls"], [rec])[0] if not known \
+                else dict(rec, id=uuid.uuid4().hex[:8])
+        taken = {o["id"] for o in doc.get("openings") or []}
+        back, new = [], []
+        for o in src["openings"]:
+            o = dict(o, wall=rec["id"])
+            if not o["id"].startswith("_new") and o["id"] not in taken:
+                back.append(o)
+            else:
+                new.append({k: v for k, v in o.items()
+                            if k not in ("id", "name")})
+        ops = back + model.new_openings(
+            list(doc.get("openings") or []) + back, new)
+        doc2 = dict(doc, walls=list(doc["walls"]) + [rec],
+                    openings=list(doc.get("openings") or []) + ops)
+        if known:
+            # the wall it makes must BE this solid (its joins as before) —
+            # never a guess (his rule: the measure is sovereign)
+            try:
+                made = S.wall_live(doc2, model.elevations, rec["id"], ops)
+                vol = FS.volume([[f["loop"]] + list(f.get("holes") or [])
+                                 if isinstance(f, dict) else [f]
+                                 for f in (made[0] if made else [])])
+            except Exception:  # noqa: BLE001 — measured below as unbuilt
+                compat.log_error("wall_from_shape: measure")
+                vol = 0.0
+            want = src["got"]["volume"]
+            if abs(vol - want) > max(0.002, 0.01 * want):
+                compat.flash(self.viewport, tr(
+                    "The wall wouldn't come out as this shape ({a} m³ "
+                    "against {b} m³) — not made",
+                    a=f"{vol:.3f}", b=f"{want:.3f}"), 8000)
+                return
+        history = self.viewport.history
+        lv = src["level"]
+        if lv["id"] != doc["levels"][self._work_level()[0]]["id"]:
+            self.set_floor(lv["id"], quiet=True)  # where it is: in sight
+        n0 = len(history.undo_stack)
+        self._commit_all(doc2)
+        if len(history.undo_stack) == n0:
+            return                               # (locked: said so)
+        first = history.undo_stack[-1]
+        from core import history as H
+        self._adopting = True
+        try:
+            history.execute(H.DeleteGroupCommand(src["group"]))
+        finally:
+            self._adopting = False
+        compat.join_last_steps(history, first)
+        name = compat.level_layer(lv["name"])
+        if not compat.layer_visible(self.viewport, name):
+            compat.set_layer_visible(self.viewport, name, True)
+            self._fill_levels(self.doc())
+            self._outline_soon()
+        compat.select_ids(self.viewport, {rec["id"]})
+        kept = src["got"].get("kept", 0)
+        msg = tr("«{name}» is an ArchXQ wall", name=rec["name"])
+        if kept:
+            msg += " · " + tr("{n} door(s) / window(s) back", n=kept)
+        if new:
+            msg += " · " + tr("{n} opening(s)", n=len(new))
+        compat.flash(self.viewport, msg + " — " + tr(
+            "Ctrl+Z gives the solid back"), 7000)
+
+    # ---- «Adopt as it is» (PLANO_CURVAS F3c, 13/11/2026) -----------------------------------
+    def _adopt_entry(self, menu, sub, selection) -> None:
+        """«Adopt as it is…» (F3c) in ArchXQ's submenu ``sub`` (made here
+        when None) — greyed, with why, when it can't."""
+        try:
+            src, why = self._adopt_source(selection, quick=True)
+        except Exception:  # noqa: BLE001 — never break the menu
+            compat.log_error("adopt_shape: menu")
+            return
+        if src is None:
+            return
+        if sub is None:
+            sub = menu.addMenu("ArchXQ")
+        a = sub.addAction("Adopt as it is…")
+        if why:
+            a.setEnabled(False)
+            w = sub.addAction(why)              # why not, said where seen
+            w.setEnabled(False)
+            return
+        a.setStatusTip("It becomes an ArchXQ element just as it is — its "
+                       "look kept; it counts, goes to the IFC, follows its "
+                       "level")
+        sel = list(selection)
+        a.triggered.connect(lambda _=False, s=sel: QTimer.singleShot(
+            0, lambda: self.adopt_shape(s)))
+
+    def _adopt_source(self, selection, quick: bool = False):
+        """What «Adopt as it is» makes of the selection — (source, why);
+        (None, None): nothing to offer it for (not ONE plain group with
+        faces). Its faces with their look (a face with none: its group's
+        material), its edges drawn otherwise, in the model's metres."""
+        from . import outline as OL
+        from . import shaped as SP
+        items = list(selection or ())
+        groups = [x for x in items if type(x).__name__ == "Group"]
+        if len(groups) != 1 or len(items) != 1 \
+                or compat.kind_of(groups[0]):
+            return None, None
+        g = groups[0]
+        parts = compat.group_meshes(g)
+        n = sum(len(m.faces) for m, _x, _g in parts)
+        if n == 0:
+            return None, None               # (lines only: F3a's)
+        if any(compat.kind_of(sub) for _m, _x, sub in parts[1:]):
+            return {}, SP.WHY_OURS
+        if n > SP.MAX_FACES:
+            return {}, SP.WHY_BIG
+        if quick:                           # (the menu: no reading yet)
+            return {"group": g}, None
+        loops, edges = [], []
+        for mesh, xf, sub in parts:
+            mat = getattr(sub, "material", None)
+            if not isinstance(mat, dict):
+                mat = getattr(g, "material", None)
+            base = SP.clean_attrs(mat) if isinstance(mat, dict) else {}
+
+            def pt(v, xf=xf):
+                q = getattr(v, "position", v)
+                q = xf.map(q) if xf is not None else q
+                return (q.x(), q.y(), q.z())
+            for f in mesh.faces:
+                outer = [pt(v) for v in f.vertices]
+                if len(outer) < 3:
+                    continue
+                holes = [[pt(v) for v in h] for h in (f.holes or ())]
+                look = SP.clean_attrs(dict(getattr(f, "attrs", None) or {}))
+                if not any(k in look for k in ("color", "texture", "mat")):
+                    look = dict(base, **look)
+                loops.append((outer, holes, look))
+            for e in mesh.edges:
+                fl = ("s" if getattr(e, "soft", False) else "") \
+                    + ("h" if getattr(e, "hidden", False) else "") \
+                    + ("c" if getattr(e, "curve", False) else "")
+                if fl:
+                    edges.append((pt(e.v0), pt(e.v1), fl))
+        got = SP.from_loops(loops, edges)
+        if got is None:
+            return {}, SP.WHY_EMPTY
+        doc = self._live(self.doc())
+        elev = model.elevations(doc["levels"], doc["project"]["ground_level"]
+                                if model.has_project(doc) else 0.0)
+        lv_i, off = OL.level_for(got["z"], list(elev))
+        rec = {"type": "shaped", "level": doc["levels"][lv_i]["id"],
+               "x": got["x"], "y": got["y"], "z": off, "angle": 0.0,
+               "mesh": got["mesh"]}
+        rec["cat"] = SP.guess_cat(rec)
+        return {"group": g, "rec": rec, "elev": elev,
+                "name": str(g.name or "").strip()[:60]}, None
+
+    def _shaped_levels(self, doc: dict, elev=None) -> list:
+        if elev is None:
+            elev = model.elevations(doc["levels"],
+                                    doc["project"]["ground_level"]
+                                    if model.has_project(doc) else 0.0)
+        return [(lv["id"], lv["name"], z)
+                for lv, z in zip(doc["levels"], elev)]
+
+    def adopt_shape(self, selection) -> None:
+        """Right-click › ArchXQ › Adopt as it is…: the group becomes an
+        ArchXQ element just as it is (shaped.py) — its window first (its
+        name, what it is, its level); the group goes, in the same Ctrl+Z."""
+        from . import edition
+        from . import structure as S
+        from .shapeddlg import ShapedDialog
+        if edition.lite():
+            compat.flash(self.viewport, PRO_NOTE
+                         + " — www.xq.com.br/archxq-it", 5000)
+            return
+        src, why = self._adopt_source(selection)
+        if why or not src:
+            compat.flash(self.viewport, tr(why or "Select one group — the "
+                                           "piece to adopt"), 7000)
+            return
+        doc = self._live(self.doc())
+        rec = model.new_elements(doc["structure"], [src["rec"]])[0]
+        if src["name"]:
+            rec["name"] = src["name"]
+        dlg = ShapedDialog(rec, self._shaped_levels(doc, src["elev"]),
+                           new=True, parent=self.window)
+        if not dlg.exec():
+            return
+        _act, rec = dlg.result_data()
+        why = S.why_not(rec)
+        if why:
+            compat.flash(self.viewport, tr(why), 6000)
+            return
+        g = src["group"]
+        if g not in self.viewport.scene.groups:
+            return                         # (gone meanwhile: nothing)
+        history = self.viewport.history
+        lv = next(v for v in doc["levels"] if v["id"] == rec["level"])
+        if lv["id"] != doc["levels"][self._work_level()[0]]["id"]:
+            self.set_floor(lv["id"], quiet=True)   # where it is: in sight
+        n0 = len(history.undo_stack)
+        self._commit_all(dict(doc, structure=list(doc["structure"]) + [rec]))
+        if len(history.undo_stack) == n0:
+            return                               # (locked: said so)
+        first = history.undo_stack[-1]
+        from core import history as H
+        self._adopting = True
+        try:
+            history.execute(H.DeleteGroupCommand(g))
+        finally:
+            self._adopting = False
+        compat.join_last_steps(history, first)
+        name = compat.level_layer(lv["name"])
+        if not compat.layer_visible(self.viewport, name):
+            compat.set_layer_visible(self.viewport, name, True)
+            self._fill_levels(self.doc())
+            self._outline_soon()
+        compat.select_ids(self.viewport, {rec["id"]})
+        compat.flash(self.viewport, tr(
+            "«{name}» adopted as it is — Ctrl+Z gives the group back",
+            name=rec["name"]), 7000)
+
+    def edit_shaped(self, el: dict) -> None:
+        """A piece adopted as it is: its window (shapeddlg.py)."""
+        from .shapeddlg import ShapedDialog
+        doc = self.doc()
+        if not any(lv["id"] == el["level"] for lv in doc["levels"]):
+            return
+        dlg = ShapedDialog(el, self._shaped_levels(doc), parent=self.window)
+        self._mat_tab(dlg, "shaped", el["id"])
+        self._in_place(dlg, self.apply_element)
+        if not dlg.exec():
+            return
+        action, new = dlg.result_data()
+        self._mat_take(dlg, action)
+        if action == "delete":
+            self.delete_element(el["id"])
+            return
+        if action == "hide":
+            self.hide_element(el["id"], el["name"])
+            return
+        self.apply_element(new)
+        self._again(dlg, lambda: self.edit_element(el["id"]))
 
     def _roof_lplan(self) -> None:
         """The library's «L / T / U plan» card: a hip roof over this
@@ -7346,24 +8433,54 @@ class ArchXQ:
     def _roof_drawn(self, corners) -> None:
         self._struct_done([self._roof_rec(corners)])
 
-    def _slab_hole_drawn(self, corners) -> None:
-        """An opening drawn: through the slab of this level that holds
-        it (refused, with the reason, anywhere else)."""
+    def _slab_hole_drawn(self, corners, curves=None) -> None:
+        """An opening drawn: cut out of a slab of this level, FREELY
+        (structure.cut_opening — his ask, 2026-11-11): touching another
+        opening it joins it, over the slab's edge it notches it; a
+        selected slab is cut first. Refused only when there is no slab
+        there, or the cut would split it — said for long enough to read."""
+        from . import curved as CV
         from . import structure as S
         _i, lv, _z0 = self._work_level()
         doc = self._live(self.doc())
-        slab, why = S.hole_place(self._level_struct(doc, lv["id"], "slab"),
-                                 corners)
+        key, ids = self._lib_picked()
+        ctrl = [list(p) for p in corners]
+        if curves:                       # drawn with arcs (PLANO_CURVAS F1)
+            corners = CV.expand(ctrl, curves)
+        slab, outer, holes, why = S.cut_opening(
+            self._level_struct(doc, lv["id"], "slab"), corners,
+            set(ids) if key == "slab" else set())
+        # its OUTLINE cut (not only an opening inside): the outline lost area
+        notched = slab is not None and abs(S._area(outer)) < abs(
+            S._area(slab["corners"])) - 1e-4
+        if slab is not None and notched and slab.get("auto"):
+            # an excavation's slab follows its excavation: its outline is
+            # not ours to notch (an opening INSIDE it is)
+            slab, why = None, "An excavation's slab follows its excavation"
         if slab is None:
-            compat.flash(self.viewport, f"{why} — draw it again", 5000)
+            compat.flash(self.viewport, tr(why) + " — " + tr("draw it again"),
+                         8000)
             return
-        new = dict(slab, holes=list(slab.get("holes") or [])
-                   + [[list(p) for p in corners]])
+        old = slab.get("holes") or []
+        joined = bool(old) and len(holes) <= len(old)
+        if not notched and CV.same_loop(outer, slab["corners"]):
+            outer = slab["corners"]      # its outline as it was (its arcs')
+        # its curved openings — and the new one, drawn with arcs — exact
+        # again after the cut (shapely gives the rings back from anywhere)
+        holes, hcs = CV.kept_holes(slab, holes, (corners, ctrl, curves)
+                                   if curves else None)
+        new = CV._tidy_holes(dict(slab, corners=outer, holes=holes), hcs)
+        if notched:                      # its arcs no longer its outline:
+            new.pop("ctrl", None)        # the cut outline, exact, plain
+            new.pop("curves", None)
         doc["structure"] = [new if e["id"] == slab["id"] else e
                             for e in doc["structure"]]
         self._commit_all(doc)
-        compat.flash(self.viewport, f"Opening in «{slab['name']}» — Ctrl+Z "
-                     "closes it", 5000)
+        how = tr("its edge notched") if notched else \
+            tr("joined to the one beside it") if joined else ""
+        compat.flash(self.viewport, tr("Opening in «{n}»", n=slab["name"])
+                     + (f" ({how})" if how else "")
+                     + " — " + tr("Ctrl+Z closes it"), 6000)
 
     def _struct_done(self, recs: list[dict], quiet: bool = False) -> int:
         """New structural elements on the current level — one Ctrl+Z.
@@ -7916,7 +9033,8 @@ class ArchXQ:
                       "ProfileTool": "profile", "RoomPickTool": "profile",
                       "CopyTool": "copy", "CopyRoomTool": "copy",
                       "CopyPathTool": "copy", "CopyLineTool": "copy",
-                      "CopyPickTool": "copy",
+                      "CopyPickTool": "copy", "CopyLoopTool": "copy",
+                      "CopyShapeTool": "copy", "LoopPickTool": "profile",
                       "FacePickTool": "profile", "CopyFaceTool": "copy",
                       "ElementPickTool": "profile",
                       "ProfileFacePickTool": "profile", "PathTool": "profile",
@@ -8274,6 +9392,13 @@ class ArchXQ:
                 from . import curtain as _CW
                 r.update(cw=True, **{k: o.get(k, v)
                                      for k, v in _CW.DEFAULTS.items()})
+            else:
+                # a card's boards' relief, its grid (12/11/2026)
+                from .clad import KINDS as _CLADS
+                if o.get("clad") in _CLADS:
+                    r["clad"] = o["clad"]
+                if isinstance(o.get("gw"), dict) and not edition.lite():
+                    r["gw"] = copy.deepcopy(o["gw"])
             out.append(dict(r, level=lv["id"], height=height, base=0.0))
         # touching a wall's face by its corner = joining that corner
         out = W._to_corner(mine + out)[len(mine):]
@@ -8289,6 +9414,11 @@ class ArchXQ:
         made = model.new_walls(doc["walls"], out)
         # (a wall deleted with the host's tools leaves the document too)
         doc["walls"] = doc["walls"] + made
+        if o.get("look") and not o.get("cw"):
+            # the card's look: what they are made of from the start (their
+            # own — the Material tab shows it; one Ctrl+Z with them)
+            from . import materials as M
+            doc = M.with_wall_look(doc, [w["id"] for w in made], o["look"])
         self._commit_all(doc)
         self._wall_cache = self._live_walls(self.doc(), lv["id"])
         n = len(made)
@@ -8390,6 +9520,16 @@ class ArchXQ:
                 self._commit_all(doc)
                 self._wall_cache = self._live_walls(self.doc(), lid)
             tool = WallSplitTool(parts, store, self._wall_cancelled, z0)
+        elif name == "Join":                 # (C2a, the Split's inverse)
+            from .walledit import WallJoinTool
+
+            def parts():
+                return walls(), list(self.doc().get("openings") or [])
+
+            def store(new_walls, new_ops, kept, gone):
+                self._join_store(lid, new_walls, new_ops, kept, gone)
+            tool = WallJoinTool(parts, store, self._wall_cancelled, z0,
+                                looks=self._wall_looks)
         else:
             tool = WallTrimTool(
                 walls, lambda new: self._commit_level_walls(lid, new),
@@ -8397,6 +9537,111 @@ class ArchXQ:
         tool.level_id = lid
         self.method = name
         self._activate(tool)
+
+    def _wall_looks(self) -> dict:
+        """id → what each element wears painted (Join: like walls only)."""
+        return dict(((self.doc().get("materials") or {}).get("el")) or {})
+
+    def _join_store(self, lid: str, new_walls: list, new_ops: list,
+                    kept: str, gone: str) -> None:
+        """Two walls joined (wallops.join): the level's walls and the
+        openings stored — one Ctrl+Z; the wall gone leaves no paint
+        behind; the one made stays selected."""
+        doc = self._live(self.doc())
+        doc["walls"] = [w for w in doc["walls"] if w["level"] != lid] \
+            + new_walls
+        doc["openings"] = new_ops
+        m = doc.get("materials") or {}
+        if gone in (m.get("el") or {}):
+            doc["materials"] = dict(m, el={k: v for k, v in m["el"].items()
+                                           if k != gone})
+        self._commit_all(doc)
+        self._wall_cache = self._live_walls(self.doc(), lid)
+        compat.select_ids(self.viewport, {kept})
+
+    def join_selected_walls(self, ids) -> None:
+        """The right click's «Join walls» (two walls selected): made one
+        — or why not, said."""
+        from . import wallops as WO
+        doc = self._live(self.doc())
+        ids = list(ids)
+        ws = [w for w in doc["walls"] if w["id"] in ids]
+        if len(ws) != 2:
+            compat.flash(self.viewport, "Select two walls to join", 4000)
+            return
+        lid = ws[0]["level"]
+        mine = [w for w in doc["walls"] if w["level"] == lid]
+        res = WO.join(mine, list(doc.get("openings") or []), ws[0]["id"],
+                      ws[1]["id"], self._wall_looks())
+        if isinstance(res, str):
+            compat.flash(self.viewport, res, 5000)
+            return
+        kept = res[2]
+        gone = ws[1]["id"] if kept == ws[0]["id"] else ws[0]["id"]
+        self._join_store(lid, res[0], res[1], kept, gone)
+        compat.flash(self.viewport, f"«{ws[0]['name']}» and «{ws[1]['name']}»"
+                     " are one wall now · Ctrl+Z puts them back", 4000)
+
+    def round_corner_walls(self, ids) -> None:
+        """The right click's «Round the corner…» (two walls in an L): the
+        radius asked, the corner made a curve — each wall shortened, an
+        arc wall like them between (wallops.round_corner); one Ctrl+Z."""
+        from . import edition
+        from . import wallops as WO
+        from .dialogs import RoundCornerDialog
+        if edition.lite():
+            compat.flash(self.viewport, PRO_NOTE
+                         + " — www.xq.com.br/archxq-it", 5000)
+            return
+        doc = self._live(self.doc())
+        ids = list(ids)
+        ws = [w for w in doc["walls"] if w["id"] in ids]
+        if len(ws) != 2:
+            compat.flash(self.viewport, "Select the two walls of a corner",
+                         4000)
+            return
+        lid = ws[0]["level"]
+        mine = [w for w in doc["walls"] if w["level"] == lid]
+        ops = list(doc.get("openings") or [])
+        looks = self._wall_looks()
+        cn = WO.corner(mine, ids[0], ids[1])
+        if isinstance(cn, str):
+            compat.flash(self.viewport, tr(cn), 5000)
+            return
+
+        names = [w["name"] for w in doc["walls"]]   # (every level's)
+
+        def check(r):
+            res = WO.round_corner(mine, ops, ids[0], ids[1], r, looks,
+                                  names)
+            return res if isinstance(res, str) else None
+        r0 = float(getattr(self, "_round_r", 1.0) or 1.0)
+        dlg = RoundCornerDialog(f"«{ws[0]['name']}» · «{ws[1]['name']}»",
+                                r0, cn["r_max"], check, self.window)
+        if not dlg.exec():
+            return
+        r = dlg.radius()
+        res = WO.round_corner(mine, ops, ids[0], ids[1], r, looks, names)
+        if isinstance(res, str):
+            compat.flash(self.viewport, tr(res), 5000)
+            return
+        self._round_r = r
+        new_walls, new_ops, arc_id = res
+        doc["walls"] = [w for w in doc["walls"] if w["level"] != lid] \
+            + new_walls
+        doc["openings"] = new_ops
+        m = doc.get("materials") or {}
+        first = cn["w1"]["id"]
+        if first in (m.get("el") or {}):    # (its material: theirs)
+            import copy as _copy
+            doc["materials"] = dict(m, el=dict(
+                m["el"], **{arc_id: _copy.deepcopy(m["el"][first])}))
+        self._commit_all(doc)
+        self._wall_cache = self._live_walls(self.doc(), lid)
+        compat.select_ids(self.viewport, {arc_id})
+        compat.flash(self.viewport, tr(
+            "The corner is a curve of {r} — Ctrl+Z puts it back",
+            r=compat.fmt_len(r)), 5000)
 
     def start_wall_edit_tool(self) -> None:
         """Walls › Edit walls › Move points: a straight wall's ends on the
@@ -8424,7 +9669,7 @@ class ArchXQ:
         if compat.kind_of(group) not in ("column", "beam", "slab",
                                          "footing", "roof", "ramp", "stair",
                                          "guard", "glazing", "street",
-                                         "profile", "copy"):
+                                         "profile", "copy", "shaped"):
             return None
         rec = (getattr(group, "ext", None) or {}).get(compat.EXT_KEY) or {}
         # a room's floor on a layered slab: its own window (its material)
@@ -8753,9 +9998,10 @@ class ArchXQ:
                 done.append(r["id"])
             doc[key] = out
         if mat is not None and done:
-            from . import materials
+            from . import materials, matfav
             for i in ([new["id"]] if mat.get("all") else done):
                 doc = materials.merge(doc, dict(mat, id=i))
+            matfav.note_change(mat)        # (the gallery's «Recently used»)
         if done:
             self._commit_all(doc)
             if family == "wall":
@@ -8818,6 +10064,9 @@ class ArchXQ:
             return
         if el["type"] == "copy":             # its own window (along.py)
             self.edit_copy(el)
+            return
+        if el["type"] == "shaped":           # its own window (shapeddlg.py)
+            self.edit_shaped(el)
             return
         picks = self._select_picks(el_id)
         from . import colrows
@@ -9004,6 +10253,8 @@ class ArchXQ:
             room = box["room"] = dict(room, rec=doc["rooms"][-1])
             box["fid"] = S.floor_id(S.parse_floor_id(box["fid"])[0], room)
         doc = materials.merge(doc, dict(ch, id=box["fid"]))
+        from . import matfav
+        matfav.note_change(ch)             # (the gallery's «Recently used»)
         self._commit_all(doc)
         compat.flash(self.viewport, tr("{n}: material applied — Ctrl+Z "
                                        "undoes it", n=f"Floor · "
@@ -9271,6 +10522,11 @@ class ArchXQ:
                                    lambda: o)
             say = ("click a line — the profile runs along it (Alt + click: "
                    "only that stretch, Tab: the other side)")
+        elif o.get("how") == "loop":
+            tool = AL.LoopPickTool(self._profile_loop, self._wall_cancelled,
+                                   lambda: o)
+            say = ("click a line or a face — the profile runs all round it "
+                   "(Tab: the other side)")
         elif o.get("how") == "face":
             tool = self._face_tool(AL.FacePickTool, self._profile_face, lid,
                                    z0)
@@ -9342,6 +10598,9 @@ class ArchXQ:
         so the library stays on this tool for the next one."""
         self._profile_new_path("points", path, closed, frame)
         compat.select_ids(self.viewport, set())
+
+    def _profile_loop(self, path, closed, frame, _add: bool = False) -> None:
+        self._profile_shape(path, closed, frame)
 
     def _profile_line(self, path, closed, frame, add: bool = False) -> None:
         """A line clicked: the profile along it; Shift: it joins the one made
@@ -9556,7 +10815,9 @@ class ArchXQ:
         self.element = "along"
         self.method = "Copy along"
         if o.get("obj") == PF.COPY_MINE and not o.get("src"):
-            o["obj"] = "bollard"                 # (none taken yet)
+            # (none taken yet: the card before it, else the first)
+            prev = self.__dict__.pop("_copy_prev_obj", None)
+            o["obj"] = prev if prev in PF.COPY_OBJECTS else "bollard"
         walls = self._reader(lambda d: [w for w in d["walls"]
                                         if w["level"] == lid])
         if o.get("how") == "face":
@@ -9581,6 +10842,17 @@ class ArchXQ:
                                    lambda: o)
             say = ("click a line — they stand along it (Alt + click: only "
                    "that stretch, Tab: the other side)")
+        elif o.get("how") == "loop":
+            tool = AL.CopyLoopTool(self._copy_loop, self._wall_cancelled,
+                                   lambda: o)
+            say = ("click a line or a face — the copies stand all round it "
+                   "(Tab: the other side)")
+        elif o.get("how") in ("circle", "rect"):
+            tool = AL.CopyShapeTool(self._copy_shape, self._wall_cancelled,
+                                    z0, lambda: o, o["how"])
+            say = ("click the centre on a face, then the radius"
+                   if o["how"] == "circle" else
+                   "click two opposite corners on a face")
         else:
             tool = AL.CopyPathTool(self._copy_drawn, self._wall_cancelled, z0,
                                    lambda: o)
@@ -9594,8 +10866,10 @@ class ArchXQ:
         QTimer.singleShot(0, lambda: compat.fresh_frame(self.viewport))
 
     def _copy_rec(self) -> dict:
-        return {k: v for k, v in self.copy_opts.items()
-                if k not in PF.COPY_TOOL_KEYS}
+        # (split «total»: «Count» is that many in all, a door's two sides
+        # sharing them — his test, 10/11/2026; older records keep theirs)
+        return dict({k: v for k, v in self.copy_opts.items()
+                     if k not in PF.COPY_TOOL_KEYS}, split="total")
 
     def _copy_room_rec(self) -> dict:
         """What the room's outline is read with (copies.runs_of's)."""
@@ -9669,24 +10943,45 @@ class ArchXQ:
     def _copy_line(self, path, closed, side, _add: bool = False) -> None:
         self._copy_path("line", path, closed, side)
 
-    def _copy_path(self, how: str, path, closed, side) -> None:
+    def _copy_loop(self, path, closed, side, _add: bool = False) -> None:
+        self._copy_shape(path, closed, side)
+
+    def _copy_shape(self, path, closed, side) -> None:
+        """A closed path like any other — not selected, so the library stays
+        on this tool for the next one. A circle's many short sides are no
+        «each segment» or «corners»."""
+        round_one = self.copy_opts.get("how") == "circle"
+        self._copy_path("points", path, closed, side,
+                        **({"mode": "path"} if round_one else {}))
+        compat.select_ids(self.viewport, set())
+
+    def _copy_path(self, how: str, path, closed, side, **over) -> None:
         """Copies along a path of their own — heights kept over the level."""
         _i, _lv, z0 = self._work_level()
         self._copy_finish(dict(
             self._copy_rec(), type="copy", how=how,
             path=[[round(p[0], 4), round(p[1], 4), round(p[2] - z0, 4)]
                   for p in path],
-            closed=bool(closed), side=side))
+            closed=bool(closed), side=side, **over))
 
     def _copy_pick(self) -> None:
         """«From the model», nothing selected: the next click takes it."""
         from . import along as AL
-        tool = AL.CopyPickTool(self._copy_picked, self._wall_cancelled)
+        tool = AL.CopyPickTool(self._copy_picked, self._copy_pick_cancelled)
         tool.level_id = self._work_level()[1]["id"]
         self._activate(tool)
         self.strip.fill(self.element, self.method)
         compat.flash(self.viewport, "Click the object to copy — a column, a "
                      "footing, any group", 6000)
+
+    def _copy_pick_cancelled(self) -> None:
+        """Esc before the object was clicked: the card lit before it."""
+        o = self.copy_opts
+        if o.get("obj") == PF.COPY_MINE and not o.get("src"):
+            prev = self.__dict__.pop("_copy_prev_obj", None)
+            o["obj"] = prev if prev in PF.COPY_OBJECTS else "bollard"
+        self._wall_cancelled()
+        QTimer.singleShot(0, self._library_show)
 
     def _copy_picked(self, g) -> None:
         if not self._copy_take_selection([g]):
@@ -9729,28 +11024,35 @@ class ArchXQ:
         if not gs:
             return False
         loops = []
-        for g in gs:
-            xf = getattr(g, "xform", None)   # a component's instance
-            mat = getattr(g, "material", None)
-            base = tuple((mat or {}).get("color") or CP.CONCRETE) \
-                if isinstance(mat, dict) else CP.CONCRETE
+        for top in gs:
+            # the group and the groups inside it (a component's faces are in
+            # its children — his wall lantern, 10/11/2026)
+            for mesh, xf, g in compat.group_meshes(top):
+                mat = getattr(g, "material", None) or getattr(
+                    top, "material", None)
+                base = tuple((mat or {}).get("color") or CP.CONCRETE) \
+                    if isinstance(mat, dict) else CP.CONCRETE
 
-            def pt(v, xf=xf):
-                v = xf.map(v) if xf is not None else v
-                return (v.x(), v.y(), v.z())
-            for f in g.mesh.faces:
-                outer = [pt(v) for v in f.vertices]
-                if len(outer) < 3:
-                    continue
-                holes = [[pt(v) for v in h] for h in (f.holes or ())]
-                col = (getattr(f, "attrs", None) or {}).get("color") or base
-                col = tuple(col)[:4]
-                loops.append((outer, holes, col + (1.0,) * (4 - len(col))))
+                def pt(v, xf=xf):
+                    v = xf.map(v) if xf is not None else v
+                    return (v.x(), v.y(), v.z())
+                for f in mesh.faces:
+                    outer = [pt(v) for v in f.vertices]
+                    if len(outer) < 3:
+                        continue
+                    holes = [[pt(v) for v in h] for h in (f.holes or ())]
+                    col = (getattr(f, "attrs", None) or {}).get("color") \
+                        or base
+                    col = tuple(col)[:4]
+                    loops.append((outer, holes,
+                                  col + (1.0,) * (4 - len(col))))
         name = str(gs[0].name or "Object")[:40]
         src = CP.from_group(loops)
         if not src:
-            compat.flash(self.viewport, f"«{name}»: nothing to copy (too big "
-                         f"— at most {CP.MAX_SRC_FACES} faces)", 6000)
+            compat.flash(self.viewport, (
+                f"«{name}»: nothing to copy (too big — at most "
+                f"{CP.MAX_SRC_FACES} faces, it has {len(loops)})")
+                if loops else f"«{name}»: no faces to copy in it", 6000)
             # (said: not asked to click another as if nothing were selected)
             return True
         src["name"] = name
@@ -9763,8 +11065,9 @@ class ArchXQ:
             cx, cy = src["at"][:2]
             els = []
             for r in recs:
+                # (a «poly» one: its corners hang off its insertion point)
                 x, y = S.column_centre(r) if r["type"] == "column" \
-                    else (r["x"], r["y"])
+                    and not S.is_poly(r) else (r["x"], r["y"])
                 at = (0.0, 0.0) if len(recs) == 1 \
                     else (round(x - cx, 4), round(y - cy, 4))
                 els.append(dict(r, _at=at))
@@ -9803,8 +11106,73 @@ class ArchXQ:
         if action == "hide":
             self.hide_element(el["id"], el["name"])
             return
+        if action == "separate":
+            self._copy_separate(el["id"], new)
+            return
         self.apply_element(new)
         self._again(dlg, lambda: self.edit_element(el["id"]))
+
+    def _copy_separate(self, el_id: str, rec: dict) -> None:
+        """«Separate them» (his ask, 10/11/2026): each copy a plain group of
+        its own — moved, turned, painted or deleted alone with the host's
+        tools; the record goes. ONE Ctrl+Z brings the copies back as one."""
+        from core.group import Group
+        from core.history import Command
+        from . import copies as CP
+        from . import materials
+        from . import structure as S
+        doc = self._live(self.doc())
+        if not any(e["id"] == el_id for e in doc["structure"]):
+            return
+        info = S.levels_info(doc, model.elevations).get(rec["level"])
+        if not info:
+            return
+        parts = CP.each(rec, doc, info["z0"], info["under"])
+        if len(parts) < 2:
+            compat.flash(self.viewport, "Only one copy — nothing to "
+                         "separate", 4000)
+            return
+        scene = self.viewport.scene
+        old = [g for g in scene.groups if compat.kind_of(g) == "copy"
+               and compat._rec(g).get("id") == el_id]
+        obj = CP.opt(rec, "obj")
+        base = ((rec.get("src") or {}).get("name") or tr("Object")) \
+            if obj == PF.COPY_MINE else tr(PF.COPY_OBJECTS.get(
+                obj, ("Copy",))[0])
+        mdoc = dict(doc, structure=[r if r["id"] != el_id else rec
+                                    for r in doc["structure"]])
+        new = []
+        for i, fs in enumerate(parts, 1):
+            g = Group(compat.mesh_of(fs), name=f"{base} {i}"[:40])
+            if old:
+                if isinstance(getattr(old[0], "material", None), dict):
+                    g.material = dict(old[0].material)
+                g.layer = old[0].layer
+            materials.paint(scene, g, "copy", el_id, mdoc)   # its textures
+            new.append(g)
+
+        class _Separate(Command):
+            def do(self, scene) -> None:
+                scene.groups.extend(new)
+
+            def undo(self, scene) -> None:
+                for g in new:
+                    if g in scene.groups:
+                        scene.groups.remove(g)
+        cmd = _Separate()
+        history = self.viewport.history
+        self._adopting = True              # (nothing of ours moved)
+        try:
+            history.execute(cmd)
+        finally:
+            self._adopting = False
+        doc["structure"] = [e for e in doc["structure"] if e["id"] != el_id]
+        self._commit_all(doc)              # the copies' group goes
+        compat.join_last_steps(history, cmd)
+        compat.select_ids(self.viewport, set())
+        compat.flash(self.viewport, tr(
+            "{n} copies, each a group of its own — Ctrl+Z undoes it",
+            n=len(new)), 6000)
 
     # ---- YOUR profiles (D6): made from a face, kept in his library -------------------------
     def _profile_types(self) -> list:
@@ -10810,6 +12178,7 @@ class ArchXQ:
                            parent=self.window)
         self._mat_tab(dlg, "ramp", el["id"])
         self._in_place(dlg, self.apply_element)
+        self._keep_repeating(dlg)
         if not dlg.exec():
             return
         action, new = dlg.result_data()
@@ -10837,6 +12206,7 @@ class ArchXQ:
                              parent=self.window)
         self._mat_tab(dlg, "stair", el["id"])
         self._in_place(dlg, self.apply_element)
+        self._keep_repeating(dlg)
         if not dlg.exec():
             return
         action, new = dlg.result_data()
@@ -10853,11 +12223,26 @@ class ArchXQ:
         self.apply_element(new)
         self._again(dlg, lambda: self.edit_element(el["id"]))
 
-    def repeat_element(self, el: dict, up: bool) -> None:
+    def _keep_repeating(self, dlg) -> None:
+        """«Repeat above / below» with the window OPEN (his ask, 12/11,
+        recording the stairs: it closed at every copy — reopen, click,
+        again; tiring, and bad on video): each click, a copy with the
+        window's values on the next free level that way. OK / Cancel close
+        it as before (OK applies its changes to THIS one)."""
+        def now(way: str) -> None:
+            _a, new = dlg.result_data()
+            self.repeat_element(new, way == "up", next_free=True)
+        dlg._repeat_now = now
+
+    def repeat_element(self, el: dict, up: bool,
+                       next_free: bool = False) -> bool:
         """The same ramp / stair, in the same place, ONE LEVEL up (or down)
         — both its ends move a level, its way (going up or down) kept:
         stacked flights. Its changes in the window come along. When it
-        can't, a window says why (a status line went unseen)."""
+        can't, a window says why (a status line went unseen).
+        ``next_free``: a level that has it already is passed over — the
+        next one that way gets it (the window kept open, click after
+        click). True: one was made."""
         from PySide6.QtWidgets import QMessageBox
         from . import ramps as R
         doc = self._live(self.doc())
@@ -10874,23 +12259,39 @@ class ArchXQ:
         if el.get("start") in ("terrain", "z") or el.get("to") not in order:
             say(f"Repeat works between levels — this {noun.lower()} starts "
                 "on the terrain, or one of its ends is an elevation.")
-            return
+            return False
         k = 1 if up else -1
-        a, b = order.index(R.from_level(el)) + k, order.index(el["to"]) + k
-        if not (0 <= a < len(order) and 0 <= b < len(order)):
-            names = {lv["id"]: lv["name"] for lv in doc["levels"]}
-            edge = names[order[-2] if up else order[0]]
-            say(f"There is no level {'above' if up else 'below'} to repeat "
-                f"it on — «{edge}» is the {'top' if up else 'lowest'} one"
-                + (" and it already reaches its top" if up else "")
-                + ". Add a level first (Project › Levels).")
-            return
-        rec = {k_: v for k_, v in el.items() if k_ not in ("id", "name")}
-        rec.update({"from": order[a], "to": order[b], "start": "level"})
-        rec["level"] = R.owner(rec, doc, model.elevations)
+        a0, b0 = order.index(R.from_level(el)), order.index(el["to"])
+        names = {lv["id"]: lv["name"] for lv in doc["levels"]}
+        step = 1
+        while True:
+            a, b = a0 + k * step, b0 + k * step
+            if not (0 <= a < len(order) and 0 <= b < len(order)):
+                if step > 1:
+                    say(f"Every level {'above' if up else 'below'} has this "
+                        f"{noun.lower()} already. Add a level first "
+                        "(Project › Levels).")
+                    return False
+                edge = names[order[-2] if up else order[0]]
+                say(f"There is no level {'above' if up else 'below'} to "
+                    f"repeat it on — «{edge}» is the "
+                    f"{'top' if up else 'lowest'} one"
+                    + (" and it already reaches its top" if up else "")
+                    + ". Add a level first (Project › Levels).")
+                return False
+            rec = {k_: v for k_, v in el.items() if k_ not in ("id", "name")}
+            rec.update({"from": order[a], "to": order[b], "start": "level"})
+            rec["level"] = R.owner(rec, doc, model.elevations)
+            there = self._level_struct(doc, rec["level"])
+            if next_free and any(self._same(dict(rec), e) for e in there):
+                step += 1                       # it has one: the next level
+                continue
+            break
         self.set_floor(rec["level"], quiet=True)
         if not self._struct_done([rec]):
             say(f"There is already a {noun.lower()} like it there.")
+            return False
+        return True
 
     # ---- Walls: their own window ----------------------------------------------------
     @staticmethod
@@ -10901,9 +12302,10 @@ class ArchXQ:
         rec = (getattr(group, "ext", None) or {}).get(compat.EXT_KEY) or {}
         return rec.get("id")
 
-    def edit_wall(self, wall_id: str) -> None:
+    def edit_wall(self, wall_id: str, tab: str | None = None) -> None:
         """A wall's own window (modal): name, thickness, alignment, side,
-        height, base, length; delete. Apply = one Ctrl+Z."""
+        height, base, length; delete. Apply = one Ctrl+Z. ``tab``:
+        "shape" opens it on its Shape tab (right-click › Edit shape…)."""
         from .dialogs import WallDialog
         doc = self.doc()
         wall = next((w for w in doc["walls"] if w["id"] == wall_id), None)
@@ -10918,7 +12320,10 @@ class ArchXQ:
         # slab above; a new sloped top starts from it)
         dlg = WallDialog(wall, dict(lv, _under=self._wall_height(
             dict(wall, height="level"))), self.window,
-                         types=doc.get("wall_types") or [])
+                         types=doc.get("wall_types") or [],
+                         openings=[o for o in doc.get("openings") or []
+                                   if o.get("wall") == wall_id],
+                         joined=self._joined_ends(doc, wall), tab=tab)
         self._mat_tab(dlg, "wall", wall_id)
         self._layer_eyes(dlg, wall_id)
         apply = self._batch_window(dlg, "wall", wall_id, self.apply_wall,
@@ -10937,6 +12342,28 @@ class ArchXQ:
             apply(new)
             self._again(dlg, lambda: self.edit_wall(wall_id))
 
+    def _joined_ends(self, doc: dict, wall: dict) -> set:
+        """Its ends ("a" / "b") joined to another wall — at a corner or
+        butting into one (its Shape tab keeps them whole up to one
+        height)."""
+        from . import grips
+        from . import walls as W
+        if wall.get("kind", "line") != "line":
+            return set()
+        out = {e for e in ("a", "b") if grips.joined_end(doc, wall, e)}
+        try:
+            mine = [w for w in doc["walls"] if w["level"] == wall["level"]]
+            pcs = W.plan(mine).get(wall["id"]) or ()
+            sa, sb = W.clear_span(wall, pcs)
+            L = W.drawn(wall).L
+            if sa > 1e-4:
+                out.add("a")
+            if sb < L - 1e-4:
+                out.add("b")
+        except Exception:  # noqa: BLE001 — the corners alone
+            pass
+        return out
+
     def _commit_level_walls(self, level_id: str, mine: list[dict]) -> None:
         """Store this level's walls as ``mine`` and rebuild the building
         (joins and all) — one Ctrl+Z."""
@@ -10954,6 +12381,16 @@ class ArchXQ:
             compat.flash(self.viewport, f"«{new['name']}» not changed — "
                          f"{why}", 6000)
             return
+        if new.get("clad") and not new.get("gw"):
+            # its boards' relief can't be made any more (an outer layer
+            # too thin for it, bare studs): SAID, never dropped in silence
+            from . import clad as CL
+            if not CL.kind_of(new):
+                compat.flash(self.viewport, tr(
+                    "«{name}»: the boards' relief is not drawn — it needs "
+                    "an outer layer of {t} or more (or a wall without "
+                    "layers)", name=new.get("name", ""),
+                    t=compat.fmt_cm(CL.OUTER_MIN, 0)), 9000)
         if new.get("cw"):
             # the LAST edit of a curtain wall = the hidden preset: the next
             # ones drawn (and «More…») take it (his ask, 2026-10-14)
@@ -11203,12 +12640,57 @@ class ArchXQ:
             a.setStatusTip("Its thickness, alignment, side, height, length")
             a.triggered.connect(lambda _=False, w=walls[0]: QTimer.singleShot(
                 0, lambda: self.edit_wall(w)))
+            rec = next((x for x in self.doc().get("walls") or []
+                        if x["id"] == walls[0]), None)
+            if rec is not None and rec.get("kind", "line") == "line"                     and not rec.get("cw") and not rec.get("gw"):
+                # its shape from the front (F2): the window on that tab
+                c = sub.addAction("Edit shape…")
+                c.setStatusTip("Round a corner, cut a notch, bend a side — "
+                               "the wall seen from the front")
+                c.triggered.connect(
+                    lambda _=False, w=walls[0]: QTimer.singleShot(
+                        0, lambda: self.edit_wall(w, tab="shape")))
             b = sub.addAction("Delete wall")
             b.setStatusTip("Take it away — the walls it met join again "
                            "without it")
             b.triggered.connect(lambda _=False, w=walls[0]: QTimer.singleShot(
                 0, lambda: self.delete_wall(w)))
             self._add_picks(sub, walls[0])
+            return
+        two = list(dict.fromkeys(walls))
+        if len(two) == 2:                        # two walls: join them
+            from . import wallops as WO          # (C2a, 12/11/2026)
+            doc = self._live(self.doc())
+            ws = [w for w in doc["walls"] if w["id"] in two]
+            mine = [w for w in doc["walls"]
+                    if ws and w["level"] == ws[0]["level"]]
+            res = (WO.join(mine, list(doc.get("openings") or []), two[0],
+                           two[1], self._wall_looks())
+                   if len(ws) == 2 else "Pick two walls")
+            # an L of them: its corner rounded (F2b, 13/11/2026)
+            rc = (WO.corner(mine, two[0], two[1]) if len(ws) == 2
+                  else "Pick two walls")
+            sub = menu.addMenu("ArchXQ")
+            if isinstance(res, str) and isinstance(rc, dict):
+                pass                        # (an L: never «join» them)
+            else:
+                a = sub.addAction("Join walls")
+                if isinstance(res, str):
+                    a.setEnabled(False)
+                    why = sub.addAction(res)    # why not, said where seen
+                    why.setEnabled(False)
+                else:
+                    a.setStatusTip("The two become one wall — their doors "
+                                   "and windows stay where they are")
+                    a.triggered.connect(
+                        lambda _=False, i=two: QTimer.singleShot(
+                            0, lambda: self.join_selected_walls(i)))
+            if isinstance(rc, dict):
+                b = sub.addAction("Round the corner…")
+                b.setStatusTip("Their corner becomes a curve — a wall like "
+                               "them, tangent to both")
+                b.triggered.connect(lambda _=False, i=two: QTimer.singleShot(
+                    0, lambda: self.round_corner_walls(i)))
             return
         ops = [o for o in (self.opening_of(g) for g in groups) if o]
         if len(ops) == 1:                        # a door, a window
@@ -11268,6 +12750,51 @@ class ArchXQ:
                 b = sub.addAction(text)
                 b.triggered.connect(lambda _=False, t=text: QTimer.singleShot(
                     0, lambda: self._dig_edit_from_menu(t)))
+            return
+        if not any(compat.kind_of(g) for g in groups):
+            # lines / a flat face of IngeTrazo's: an ArchXQ slab (F3a)
+            src, why = self._outline_source(selection)
+            if src is None:
+                # a solid (the host's «Difference» of a wall): a wall (F3b)
+                try:
+                    src, why = self._shape_source(selection)
+                except Exception:  # noqa: BLE001 — never break the menu
+                    compat.log_error("wall_from_shape: menu")
+                    src = None
+                if src is None:
+                    # any other piece: adopted as it is (F3c)
+                    self._adopt_entry(menu, None, selection)
+                    return
+                sub = menu.addMenu("ArchXQ")
+                a = sub.addAction("Wall from shape")
+                if why:
+                    a.setEnabled(False)
+                    w = sub.addAction(why)      # why not, said where seen
+                    w.setEnabled(False)
+                else:
+                    a.setStatusTip("It becomes an ArchXQ wall with this "
+                                   "shape — its doors and windows work "
+                                   "again, its holes are openings")
+                    sel = list(selection)
+                    a.triggered.connect(
+                        lambda _=False, s=sel: QTimer.singleShot(
+                            0, lambda: self.wall_from_shape(s)))
+                self._adopt_entry(menu, sub, selection)
+                return
+            sub = menu.addMenu("ArchXQ")
+            a = sub.addAction("Slab from outline")
+            if why:
+                a.setEnabled(False)
+                w = sub.addAction(why)          # why not, said where seen
+                w.setEnabled(False)
+            else:
+                a.setStatusTip("It becomes an ArchXQ slab — its arcs and "
+                               "rounded corners editable, the outlines "
+                               "inside it its openings")
+                sel = list(selection)
+                a.triggered.connect(lambda _=False, s=sel: QTimer.singleShot(
+                    0, lambda: self.slab_from_outline(s)))
+            self._adopt_entry(menu, sub, selection)
             return
         if not any(compat.kind_of(g) == "plot" for g in groups):
             return
@@ -11960,6 +13487,8 @@ class ArchXQ:
             return "Low walls", g.name or "Low wall"
         if kind == "glazing":
             return "Grids", g.name or "Grid"
+        if kind == "shaped":                # adopted as it is (shaped.py)
+            return "Adopted pieces", g.name or "Piece"
         if kind == "opening":
             ok = compat._rec(g).get("okind", "door")
             return ("Windows" if ok == "window" else "Doors"), g.name or ok
@@ -12283,7 +13812,7 @@ class ArchXQ:
             a.blockSignals(False)
 
     def toggle_ghost(self, key: str) -> None:
-        """A level row's ghost icon: that level drawn in light blue in the
+        """A level row's ghost icon: that level drawn in green in the
         plan of the one worked on — to line this one up with it. Any
         number of them; a view change (no undo), kept in the file."""
         doc = self.doc()
@@ -12397,7 +13926,10 @@ class ArchXQ:
                   # THIS chip decides them: «Structure» off with «Slabs» on
                   # showed none (his report, 2026-10-22: «at least the slab
                   # should be there»)
-                  "slabs": ("slab",)}
+                  "slabs": ("slab",),
+                  # the stairs and ramps on their own (his ask, 12/11:
+                  # «Structure» off hid the stairs too) — THIS chip decides
+                  "stairs": ("stair", "ramp")}
 
     def on_view_option(self, what: str, value) -> None:
         """«Show: Terrain · Structure · Walls…» — a part of the building
@@ -12440,8 +13972,16 @@ class ArchXQ:
         for g in self.viewport.scene.groups:
             k = compat.kind_of(g)
             parts = [p for p, kinds in self.SHOW_KINDS.items() if k in kinds]
+            if k == "shaped":
+                # a piece adopted as it is: the chip of what it is (a wall
+                # goes with the walls, a slab with the slabs…)
+                from .shaped import SHOW_PART
+                parts = [SHOW_PART.get(compat._rec(g).get("cat"),
+                                       "structure")]
             if "slabs" in parts:
                 parts = ["slabs"]            # its own chip decides a slab
+            elif "stairs" in parts:
+                parts = ["stairs"]           # …and a stair / ramp
             if parts:
                 # (a BOOL: «.get» gave None, None != False was always
                 # true — every refresh re-showed 44 groups, the view
@@ -13854,6 +15394,10 @@ class ArchXQ:
                 or not history.undo_stack or history.undo_stack[-1] is not cmd:
             return
         self._guides_to_level(cmd)
+        try:                                   # (F3b: the wall it was)
+            self._stamp_solid_op(cmd, self.doc())
+        except Exception:  # noqa: BLE001 — never block the host's command
+            compat.log_error("stamp_solid_op")
         groups = [g for g in self.viewport.scene.groups
                   if compat.kind_of(g) in edits.ADOPT]
         was = self.doc()
@@ -14021,6 +15565,11 @@ class ArchXQ:
         if not self.alive:
             return
         self._follow_tab()
+        try:                      # the sky behind the view (skyview.py)
+            from . import skyview
+            skyview.apply(self)
+        except Exception:  # noqa: BLE001 — never in the way
+            compat.log_error("sky")
         self._stamp_old()
         self._paint_old()
         _ifc = _pro_module("ifctags")
@@ -14258,6 +15807,11 @@ class ArchXQ:
         """A project tab closes: its state goes; if ArchXQ's pieces were on
         its 3D view, they leave it first (they would go with it)."""
         self._tab_state.pop(id(scene), None)
+        try:
+            from . import skyview
+            skyview.closed(scene)
+        except Exception:  # noqa: BLE001 — never in the host's way
+            compat.log_error("sky closed")
         home = self._home
         if not self.alive or home is None or \
                 getattr(home, "scene", None) is not scene:
@@ -14526,11 +16080,14 @@ class ArchXQ:
         except Exception:  # noqa: BLE001 — never break the host's paint
             paintlog.failed()
 
-    GHOST_INK = "#6fa8dc"       # the level below, faint
+    GHOST_INK = "#1f9d55"       # the level below: green, apart from the
+                                # guides' blue (his pick, 2026-11-11)
+    GHOST_WIDTH = 2.0           # (1.2 was too thin to read under the guides)
+    GHOST_ALPHA = 230
 
     def _draw_ghost_level(self, viewport, painter) -> None:
         """In the plan: the levels whose ghost is on (not the one worked
-        on), their outlines in light blue — seen, never picked."""
+        on), their outlines in green — seen, never picked."""
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QColor, QPen
         from . import structure as S
@@ -14571,8 +16128,11 @@ class ArchXQ:
                        repr([e for e in doc.get("structure") or []
                              if e["level"] == lid]), repr(ops))
                 if cache.get(lid, (None,))[0] != key:
+                    # (+ its stairs' treads and arrow, its grids, its
+                    # roofs' ridges — his ask, 12/11)
                     cache[lid] = (key, S.level_plan_loops(doc, lid),
-                                  self._ghost_marks(walls, ops))
+                                  self._ghost_marks(walls, ops)
+                                  + S.level_plan_marks(doc, lid))
                 loops += cache[lid][1]
                 marks += cache[lid][2]
             self._ghost_cache = cache
@@ -14585,8 +16145,8 @@ class ArchXQ:
             painter.save()
             painter.setRenderHint(painter.RenderHint.Antialiasing)
             ink = QColor(self.GHOST_INK)
-            ink.setAlpha(190)
-            painter.setPen(QPen(ink, 1.2))
+            ink.setAlpha(self.GHOST_ALPHA)
+            painter.setPen(QPen(ink, self.GHOST_WIDTH))
             for loop in loops:
                 px = [compat.to_pixel(viewport, p[0], p[1], z) for p in loop]
                 for a, b in zip(px, px[1:] + px[:1]):
@@ -14780,6 +16340,36 @@ class ArchXQ:
         except Exception:  # noqa: BLE001 — never break the host's paint
             paintlog.failed()
 
+    def _grid_plan_lines(self, doc: dict, lid: str, z: float) -> list:
+        """The plan lines of level ``lid``'s grid walls — kept while the
+        walls, columns and beams of the level stay as they are (the paint
+        runs at every frame)."""
+        from . import gridwall as GX
+        from . import structure as S
+        from . import walls as W
+        mine = [w for w in doc["walls"] if w["level"] == lid]
+        st = [e for e in doc.get("structure") or []
+              if e.get("level") == lid and e.get("type") in ("column",
+                                                             "beam")]
+        sig = (lid, z, repr(mine), repr(st), repr(doc["levels"]))
+        got = getattr(self, "_grid_plan_cache", None)
+        if got is not None and got[0] == sig:
+            return got[1]
+        info = S.levels_info(doc, model.elevations)
+        li = info[lid]
+        plans, _found = W.corners(mine)
+        ctx = GX.context(doc, lid, li["z0"], li)
+        lines = []
+        for w in mine:
+            if GX.of(w) is None:
+                continue
+            top = li["under"] if w.get("height", "level") == "level" \
+                else li["z0"] + float(w["height"])
+            lines += GX.plan_lines(w, plans.get(w["id"]), li["z0"], top,
+                                   ctx)
+        self._grid_plan_cache = (sig, lines)
+        return lines
+
     def _draw_opening_symbols(self, viewport, painter) -> None:
         """In the plan, the current level's openings as a plan draws them
         (jambs, glass, a door's leaf and swing) — the walls' tops hide the
@@ -14816,6 +16406,14 @@ class ArchXQ:
                     from . import glazing as GZ
                     for e in grids:
                         lines += GZ.plan_lines(e, doc, lambda _l: z)
+                except ImportError:
+                    pass
+            # the GRID walls (gridwall.py): each bay's frame, its glass line
+            # and mullions — from above only the head rail is seen
+            if not edition.lite() and any(w.get("gw") and not w.get("cw")
+                                          for w in walls.values()):
+                try:
+                    lines += self._grid_plan_lines(doc, lid, z)
                 except ImportError:
                     pass
             # the gates in the low walls / the plot's wall: leaf and swing,
@@ -15147,6 +16745,11 @@ class ArchXQ:
             _docs.full_geometry(self.viewport, False)  # host's fast path back
         compat.lock_orbit(self.viewport, False)    # the host's orbit back
         compat.plan_style(self.viewport, False)    # and the file's style
+        try:
+            from . import skyview
+            skyview.teardown()                     # the host's own sky
+        except Exception:  # noqa: BLE001
+            compat.log_error("sky teardown")
         compat.remove_ext_menu(getattr(self, "menu", None))
         compat.remove_overlay(self.viewport, self._overlay)
         compat.restore_snap_reach(self.viewport)
