@@ -51,6 +51,7 @@ QPushButton[axq="skytab"] {{ color: #d6d9dd; background: rgba(255,255,255,18);
     border: none; border-radius: 4px; padding: 3px 9px; }}
 QPushButton[axq="skytab"]:hover {{ background: rgba(255,255,255,40); }}
 QPushButton[axq="skytab"]:checked {{ background: {BLUE}; color: white; }}
+QPushButton[axq="skytab"]:disabled {{ color: #5f6773; background: rgba(255,255,255,6); }}
 QToolButton[axq="skycard"] {{ color: #cfd6de; background: transparent;
     border: 2px solid transparent; border-radius: 5px; padding: 2px; }}
 QToolButton[axq="skycard"]:hover {{ background: rgba(255,255,255,22); }}
@@ -199,6 +200,17 @@ class SkyWindow(QFrame):
         self.ground.idClicked.connect(
             lambda i: skyview.write(self.ui, ground=("host", "photo")[i]))
         grid.addLayout(gl, 3, 1, 1, 2)
+        # why «Photo» cannot be clicked, said where it is seen (his screen,
+        # 18/11: a disabled button looked like a broken one; its tooltip
+        # does not come on a disabled button)
+        # (its room always kept: the window does not jump as skies change)
+        self.ground_why = QLabel("")
+        self.ground_why.setObjectName("axq_skynote")
+        self.ground_why.setWordWrap(True)
+        self.ground_why.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.ground_why.setFixedHeight(2 * self.ground_why.fontMetrics()
+                                       .lineSpacing() + 2)
+        grid.addWidget(self.ground_why, 4, 0, 1, 3)
         lay.addLayout(grid)
         # the tab that has the sky in use
         want = "default" if st["sky"] == skyview.BUILTIN else (
@@ -320,6 +332,10 @@ class SkyWindow(QFrame):
             photo_ok = st["sky"].startswith("own/") or (it is not None and it["photo"])
             pb = self.ground.button(1)
             pb.setEnabled(photo_ok or st["ground"] == "photo")
+            self.ground_why.setText("" if pb.isEnabled() else tr(
+                "This sky has no ground in its picture: pick one from "
+                "Clear, Partly cloudy, Overcast, Sunrise & sunset, "
+                "City or Nature"))
             pb.setToolTip(tr("The whole picture, its own ground too") if photo_ok else
                           tr("This sky has no ground in its picture: pick one from "
                              "Clear, Partly cloudy, Overcast, Sunrise & sunset, "

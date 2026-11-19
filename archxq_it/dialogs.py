@@ -1168,6 +1168,12 @@ class _LevelStack(QWidget):
             p.drawLine(QPointF(x0 - 4, y(g)), QPointF(x1 + 10, y(g)))
 
 
+def _esc(text: str) -> str:
+    """A file's name in a rich-text label: as written (no tags)."""
+    import html
+    return html.escape(str(text))
+
+
 class LevelDialog(QDialog):
     """One level's own window: its name and height (elevation worked out),
     what it shows, a level above / below it, repeating or copying it, and
@@ -1180,7 +1186,8 @@ class LevelDialog(QDialog):
     height on a bar, the building's levels stacked beside (this one lit)."""
 
     def __init__(self, doc: dict, index: int, content: int,
-                 parent=None, on_show=None, on_add=None) -> None:
+                 parent=None, on_show=None, on_add=None, refs=None,
+                 tab: str | None = None) -> None:
         from PySide6.QtWidgets import QSpinBox
         from . import look as L
         super().__init__(parent)
@@ -1320,6 +1327,14 @@ class LevelDialog(QDialog):
         rl_.addWidget(fold)
         rl_.addStretch(1)
         self._rep_tab = self.tabs.addTab(pg, "Repeat & copy", "build")
+
+        # ---- References: the images / PDF pages lying on it (refs.py) ----------
+        self.ref_changes: dict = {}
+        self._ref_rows: dict = {}          # name: its row's widgets
+        self._ref_tab = None
+        if refs is not None:
+            self._ref_tab = self.tabs.addTab(self._refs_page(refs),
+                                             "References", "reference")
         # what the user touched last on that tab — the orange OK there
         # then does it (his trap, 2026-10-18: a level picked, OK pressed,
         # nothing copied — only the «Copy» chip copied)
@@ -1365,6 +1380,165 @@ class LevelDialog(QDialog):
         acts.addWidget(bb)
         lay.addLayout(acts)
         self._refresh()
+        if tab == "references" and self._ref_tab is not None:
+            self.tabs.setCurrentIndex(self._ref_tab)
+
+    def tab_key(self) -> str | None:
+        """The tab shown (the window opened again on it)."""
+        if self._ref_tab is not None \
+                and self.tabs.currentIndex() == self._ref_tab:
+            return "references"
+        return None
+
+    # ---- the «References» tab (PLANO_REFERENCIAS_NIVEL.md) -----------------------
+    def _refs_page(self, refs: dict):
+        """Each reference of the level: its name, what it is and its size,
+        its opacity, a PDF's paper scale, «Remove» — seen in the model as
+        they change, stored by OK / Apply (one Ctrl+Z), put back by Cancel.
+        «Show» is the level's view (as the «Show» tab: at once). Load /
+        Measure / Place: the window closes (as OK) and the tool comes out
+        in the view — they are clicks in the model."""
+        from PySide6.QtWidgets import QCheckBox, QSpinBox
+        from . import look as L
+        from . import refimage as R
+        pg, rl = L.page()
+        items = refs.get("items") or []
+        preview = refs.get("preview")
+        fold = L.Fold("References on this level", "level.refs")
+        if not items:
+            fold.box.addWidget(L.hint(
+                "No reference on this level yet — load an image (PNG, JPG) "
+                "or a PDF page to draw over. It lies on the level's floor and "
+                "shows only while you work on this level."))
+        else:
+            fold.set_pick(tr("{k} on it", k=len(items)))
+            # «Show» FIRST (his ask, 18/11: it has to be seen) — the same
+            # switch as the picture icon on the level's row
+            self.f_ref_show = QCheckBox(
+                "Show this level's references (only while you work on it)")
+            self.f_ref_show.setChecked(not refs.get("off"))
+            self.f_ref_show.setToolTip(
+                "The same as the picture icon on the level's row: changes "
+                "the view right away (no undo, Cancel keeps it — like the "
+                "levels' eye)")
+            on_show = refs.get("on_show")
+            if on_show is not None:
+                self.f_ref_show.toggled.connect(on_show)
+            fold.box.addWidget(self.f_ref_show)
+            fold.box.addWidget(L.rule())
+            # each one: its name and what it is, then its controls under
+            # it (side by side they did not fit — «Remove» cut, 18/11)
+            for n_it, it in enumerate(items):
+                name = it["name"]
+                if n_it:
+                    fold.box.addWidget(L.rule())
+                text = QLabel(f"<b>{_esc(it['label'])}</b><br>"
+                              f"<span style='color:#8a8f96'>"
+                              f"{_esc(it['info'])}</span>")
+                text.setToolTip(name)
+                text.setWordWrap(True)
+                fold.box.addWidget(text)
+                line = QHBoxLayout()
+                line.setContentsMargins(0, 2, 0, 6)
+                line.setSpacing(8)
+                line.addWidget(QLabel("Opacity"))
+                op = QSpinBox()
+                op.setRange(10, 100)
+                op.setSingleStep(5)
+                op.setSuffix(" %")
+                op.setValue(int(round(it["opacity"] * 100)))
+                op.setToolTip("How strong the picture is (%). It always "
+                              "covers the floor under it, and what you draw "
+                              "stands over it; under 100 % it is lighter, so "
+                              "your lines read clearly over it")
+                op.valueChanged.connect(
+                    lambda v, n=name: self._ref_set(n, "opacity", v / 100.0,
+                                                    preview))
+                line.addWidget(op)
+                if it.get("scale"):
+                    sc = QComboBox()
+                    now = float(it["scale"])
+                    near = min(R.SCALES, key=lambda n: abs(n - now))
+                    if abs(near - now) > 1e-3 * near:
+                        sc.addItem(f"1:{now:.4g} (measured)", now)
+                    for n in R.SCALES:
+                        sc.addItem(f"1:{n}", float(n))
+                    k = sc.findData(float(near) if abs(near - now)
+                                    <= 1e-3 * near else now)
+                    sc.setCurrentIndex(max(k, 0))
+                    sc.setToolTip("The scale the PDF was drawn at: its page "
+                                  "laid at its real size (its lower-left "
+                                  "corner stays)")
+                    sc.currentIndexChanged.connect(
+                        lambda _i, n=name, w=sc: self._ref_set(
+                            n, "scale", float(w.currentData()), preview))
+                    line.addSpacing(6)
+                    line.addWidget(QLabel("Paper scale"))
+                    line.addWidget(sc)
+                rm = QPushButton("Remove")
+                rm.setObjectName("axqChip")
+                rm.setCheckable(True)
+                rm.setToolTip("Off this level on OK (with a PDF's lines) — "
+                              "one Ctrl+Z brings it back")
+                rm.toggled.connect(
+                    lambda on, n=name, b=rm, t=text: self._ref_remove(
+                        n, on, b, t, preview))
+                self._ref_rows[name] = [text, op, rm] + (
+                    [sc] if it.get("scale") else [])
+                line.addStretch(1)
+                line.addWidget(rm)
+                fold.box.addLayout(line)
+        rl.addWidget(fold)
+        fold = L.Fold("In the model", "level.refs.tools")
+        row = QHBoxLayout()
+        for act, label, tip, need in (
+                ("ref_load", "Load image or PDF…",
+                 "An image (PNG, JPG) or a PDF page onto this level", False),
+                ("ref_measure", "Measure",
+                 "Click two points of something whose length you know, type "
+                 "its real length: the picture takes its scale", True),
+                ("ref_place", "Place",
+                 "Click a point of the picture, then where it goes", True)):
+            b = QPushButton(label)
+            b.setObjectName("axqChip")
+            b.setToolTip(tip)
+            b.setEnabled(bool(items) or not need)
+            b.clicked.connect(lambda _=False, a=act: self._done(a))
+            row.addWidget(b)
+        row.addStretch(1)
+        fold.box.addLayout(row)
+        fold.box.addWidget(L.hint(
+            "The window closes (what you changed here is kept, as with OK) "
+            "and the tool comes out in the view."))
+        rl.addWidget(fold)
+        rl.addStretch(1)
+        return pg
+
+    def applied(self) -> None:
+        """«Apply» stored what the window had (ui.edit_level, 19/11/2026 —
+        the window stays open): that is its starting point now. A picture
+        removed is gone: its row greyed out."""
+        for name, ch in self.ref_changes.items():
+            if ch.get("remove"):
+                for w in self._ref_rows.get(name, ()):
+                    w.setEnabled(False)
+        self.ref_changes = {}
+        lv = self.levels[self.index]
+        _a, lv["name"], lv["height"] = self.result_data()
+        for lid, v in self.slabs().items():
+            self._slab0[lid] = v
+
+    def _ref_set(self, name: str, key: str, value, preview) -> None:
+        self.ref_changes.setdefault(name, {})[key] = value
+        if preview is not None:
+            preview(name, self.ref_changes[name])
+
+    def _ref_remove(self, name, on, button, label, preview) -> None:
+        button.setText("Keep" if on else "Remove")
+        f = label.font()
+        f.setStrikeOut(bool(on))
+        label.setFont(f)
+        self._ref_set(name, "remove", bool(on), preview)
 
     def _ok(self) -> None:
         """OK. On the «Repeat & copy» tab it asks whether to do what is
@@ -2048,7 +2222,10 @@ class WallDialog(QDialog):
             and kind == "line"
         if not wall.get("cw") and not grid:
             self._layers_tab(wall)
-            if kind == "line":           # its SHAPE from the front (F2)
+        # its SHAPE from the front (F2) — a grid wall's too, its top only
+        # (the shape editor, phase 3, 17/11/2026)
+        if not wall.get("cw"):
+            if kind == "line":
                 from . import wallshapetab
                 wallshapetab.add_tab(self, wall, level, openings, joined)
                 if tab == "shape":
@@ -2126,7 +2303,7 @@ class WallDialog(QDialog):
         self.f_align.currentIndexChanged.connect(self._refresh)
         self.f_flip.toggled.connect(self._refresh)
         self._refresh()
-        if cw_tab is not None:
+        if cw_tab is not None and not (tab == "shape" and grid):
             self.tabs.setCurrentIndex(cw_tab)   # it opens on its own tab
 
     # ---- Layers (0.15.0 — MAQUETAS/parede_camadas_tipos_v1.html) ------------------
@@ -3230,10 +3407,28 @@ class _ElView(QWidget):
         if t == "beam":
             a, b = e["a"], e["b"]
             ln = math.dist(a, b)
-            q = self._fit([(0, -0.6), (ln, 0.6)])
-            L.poly(p, [q(0, -float(e["w"]) / 2), q(ln, -float(e["w"]) / 2),
-                       q(ln, float(e["w"]) / 2), q(0, float(e["w"]) / 2)],
-                   L.INK, 1.8, close=True, fill="#8a8f9640")
+            hw = float(e["w"]) / 2
+            from . import beamshape as BS
+            if e.get("m") and ln > 1e-9 and BS.why_curve(e) is None:
+                # CURVED (phase 2): along its arc, a → b left to right
+                ux, uy = (b[0] - a[0]) / ln, (b[1] - a[1]) / ln
+                seg = BS.centre(e)
+
+                def loc(pt):
+                    dx, dy = pt[0] - a[0], pt[1] - a[1]
+                    return (dx * ux + dy * uy, ux * dy - uy * dx)
+                fs = [i / 32 for i in range(33)]
+                ring = [loc(seg.offset(hw).at(f)) for f in fs] + \
+                    [loc(seg.offset(-hw).at(f)) for f in reversed(fs)]
+                ys = [y for _x, y in ring]
+                q = self._fit([(0, min(ys) - 0.3), (ln, max(ys) + 0.3)])
+                L.poly(p, [q(x, y) for x, y in ring], L.INK, 1.8,
+                       close=True, fill="#8a8f9640")
+            else:
+                q = self._fit([(0, -0.6), (ln, 0.6)])
+                L.poly(p, [q(0, -hw), q(ln, -hw), q(ln, hw), q(0, hw)],
+                       L.INK, 1.8, close=True, fill="#8a8f9640")
+            ln = BS.length3d(e)            # (along its curve, its slope)
             L.text(p, self.width() / 2, self.height() - 10,
                    compat.fmt_len(ln),
                    L.BLUE, 9, True, align=Qt.AlignHCenter)
@@ -3256,7 +3451,7 @@ class _ElView(QWidget):
             if t == "column" or e.get("shape") == "poly" else 0.0
         if e.get("shape") == "poly" and len(e.get("pts") or ()) >= 3:
             # its own outline (C1), round its box's middle
-            loc = [(float(a[0]), float(a[1])) for a in e["pts"]]
+            loc = S.poly_local(e)         # (its curves in fine steps)
             mx = (max(a[0] for a in loc) + min(a[0] for a in loc)) / 2
             my = (max(a[1] for a in loc) + min(a[1] for a in loc)) / 2
             corners = [(a[0] - mx, a[1] - my) for a in loc]
@@ -3493,8 +3688,11 @@ class ElementDialog(QDialog):
             form = fold.form(self.d_size)
             measure(form, "w", "Width", 0.05, 1.5, hot="w", fmax=3.0)
             measure(form, "h", "Height", 0.05, 2.5, hot="h", fmax=5.0)
-            form.addRow("Length", QLabel(
-                compat.fmt_len(math.dist(el['a'], el['b']))))
+            # (along its curve, along its slope — the shape editor, phase
+            # 2, 17/11/2026: its curve, section, side in the Shape tab)
+            from . import beamshape as BS
+            self.l_blen = QLabel(compat.fmt_len(BS.length3d(el)))
+            form.addRow("Length", self.l_blen)
             gl.addWidget(fold)
             self.fold_main = fold
             # its TOP (Badis, 2026-10-18: a lean-to's beams on 2.50 m
@@ -3513,6 +3711,15 @@ class ElementDialog(QDialog):
             form.addRow("Top", self.f_zmode)
             el.setdefault("zt", 2.50)
             measure(form, "zt", "Top at", 0.2, 6.0, fmax=50.0)
+            # INCLINED (phase 2): end B's top of its own — a rafter, a
+            # stringer, a lean-to's beam on posts of two heights
+            el.setdefault("ztb", el["zt"])
+            zb = measure(form, "ztb", "Top at end B", 0.2, 6.0, fmax=50.0)
+            zb.field.setMinimum(-20.0)
+            self.fields["zt"].field.setMinimum(-20.0)
+            zb.setToolTip(tr("Its top at its end B — the top runs straight "
+                             "from end A's to it (the same as «Top at»: "
+                             "level)"))
             self.f_zmode.currentIndexChanged.connect(self._sync)
             gl.addWidget(fold)
             self.fold_top = fold
@@ -3752,6 +3959,17 @@ class ElementDialog(QDialog):
         gl.addWidget(L.hint(tr("Level: {name}", name=level['name'])))
         gl.addStretch(1)
         self.tabs.addTab(pg, "Geometry", "geometry")
+        if t == "column" or (t == "footing" and el.get("kind") == "pad"):
+            # its section's SHAPE (the shape editor, phase 1, 17/11/2026):
+            # rounded corners, chamfers, notches, bent sides
+            from . import sectionshapetab
+            sectionshapetab.add_tab(self, el, row)
+            self.tabs.currentChanged.connect(self._shape_tab_shown)
+        elif t == "beam":
+            # its SHAPE (the shape editor, phase 2, 17/11/2026): section,
+            # seen from the side, its curve in plan
+            from . import beamshapetab
+            beamshapetab.add_tab(self, el, row)
         if t == "slab" and not el.get("ceiling") and not el.get("block"):
             # its LAYERS (slab layers, 2026-10-23): the wall's tab
             self._layers_tab(el)
@@ -4017,6 +4235,11 @@ class ElementDialog(QDialog):
         from . import structure as S
         if not hasattr(self, "view"):        # (while the window is made)
             return
+        st = getattr(self, "sshape", None)
+        if st is not None and self._shape_held() and not st._busy \
+                and self.t == "column" \
+                and self.f_section.currentData() != "poly":
+            self._shape_bake()             # (Rectangle / Round chosen again)
         e = self._record()
         t = e["type"]
         self.view.set(e)
@@ -4045,8 +4268,12 @@ class ElementDialog(QDialog):
             area = math.pi * e["w"] ** 2 / 4 if rnd else e["w"] * e["d"]
             poly = S.is_poly(e)
             if poly:                      # its own outline: its true area
-                area = abs(S._area(S.poly_world(e)))
-            self._outline_sync(poly)
+                area = S.poly_area(e)     # (exact: its arcs too)
+            from . import sectionlib as SL
+            if SL.hollow(e) > 0:          # a tube: less its inside (ph. 4)
+                area = SL.section_area(
+                    e, area, S.poly_local(e) if poly else None)
+            self._outline_sync(poly, e)
             if hasattr(self, "f_cbase"):  # (no base / capital on an outline)
                 self.f_cbase.setEnabled(not poly)
                 self.f_ccap.setEnabled(not poly)
@@ -4055,7 +4282,13 @@ class ElementDialog(QDialog):
                             (compat.fmt_area(area, 3), "area"),
                             (h, "height")])
         elif t == "beam":
-            ln = math.dist(e["a"], e["b"])
+            from . import beamshape as BS   # along its curve / its slope
+            ln = BS.length3d(e)
+            bt = getattr(self, "bshape", None)
+            if bt is not None and hasattr(bt, "status"):
+                bt.show(e)
+            self.l_blen.setText(compat.fmt_len(ln) + (
+                f"  ({BS.slope_deg(e):+.1f}°)" if BS.is_sloped(e) else ""))
             self.head.set_summary(["{" + compat.fmt_wh(e['w'], e['h']) + "}",
                                    "{" + compat.fmt_len(ln) + "} long"])
             self.fold_main.set_pick(
@@ -4065,12 +4298,17 @@ class ElementDialog(QDialog):
             self.stats.set([(compat.fmt_len(e['w']), "width"),
                             (compat.fmt_len(e['h']), "height"),
                             (compat.fmt_len(ln), "length"),
-                            (compat.fmt_volume(e['w'] * e['h'] * ln, 2,
-                                               group=False), "concrete")])
+                            (compat.fmt_volume(
+                                BS.volume(e) if BS.why_shape(e) is None
+                                else e['w'] * e['h'] * ln, 2,
+                                group=False), "concrete")])
             own = e.get("zmode") == "own"
             self.fields["zt"].setEnabled(own)
-            self.fold_top.set_pick(compat.fmt_len(e["zt"]) if own
-                                   else "Under the slab")
+            self.fields["ztb"].setEnabled(own)
+            self.fold_top.set_pick(
+                (compat.fmt_len(e["zt"]) + (" → " + compat.fmt_len(e["ztb"])
+                                            if BS.is_sloped(e) else ""))
+                if own else "Under the slab")
         elif t == "slab":
             from . import curved          # exact with arcs (F1, 13/11)
             area = curved.slab_area(e) - curved.holes_area(e)
@@ -4156,7 +4394,7 @@ class ElementDialog(QDialog):
                 else compat.fmt_wh(e['w'], e['d']))
             self.stats.set([(compat.fmt_len(e['w']), "width"),
                             (compat.fmt_len(e['d']), "depth")])
-            self._outline_sync(S.is_poly(e))
+            self._outline_sync(S.is_poly(e), e)
 
     # -- its own outline (PLANO_CONTORNO_JUNTAS C1, 12/11/2026) -----------------------
     def _outline_note(self, fold, form, back: str) -> None:
@@ -4186,18 +4424,76 @@ class ElementDialog(QDialog):
             self.f_section.setCurrentIndex(0)      # (its _sync follows)
             return
         from . import structure as S
+        if self._shape_held():                     # (what the tab made first)
+            self._shape_bake()
         self._to_rect = True
         self.fields["w"].setValue(S.poly_to_rect(self.el)["w"])
         self._sync()
 
-    def _outline_sync(self, poly: bool) -> None:
-        if not getattr(self, "_poly", False):
+    def _outline_sync(self, poly: bool, e: dict | None = None) -> None:
+        held = self._shape_held()
+        col = self.el["type"] == "column"
+        if not getattr(self, "_poly", False) and not held:
+            self.fields["w"].setEnabled(True)      # (its sizes its own)
+            if col:
+                self.fields["d"].setEnabled(True)
             return
-        self.fields["w"].setEnabled(not poly)
-        if self.el["type"] == "column":
-            self.fields["d"].setEnabled(not poly)
-        self.n_outline.setVisible(poly)
-        self.b_rect.setVisible(poly)
+        self.fields["w"].setEnabled(not (poly or held))
+        if col:
+            self.fields["d"].setEnabled(not (poly or held))
+        if held and e is not None:      # the Shape tab's: its box, read only
+            for k in ("w", "d") if col else ("w",):
+                f = self.fields[k]
+                f.blockSignals(True)
+                f.setValue(float(e[k]))
+                f.blockSignals(False)
+        if getattr(self, "n_outline", None) is not None:
+            self.n_outline.setVisible(poly)
+            self.b_rect.setVisible(poly)
+
+    # -- the Shape tab (sectionshapetab.py, the shape editor 17/11/2026) ----------------
+    def _shape_held(self) -> bool:
+        """The Shape tab holds a shape made there (it rules the section)."""
+        st = getattr(self, "sshape", None)
+        return st is not None and st.changed and st.editable
+
+    def _shape_edited(self, st) -> None:
+        """A shape made in the tab: the section chip says «Outline» while
+        the tab holds it; its sizes show its box; the view follows."""
+        if self.t == "column":
+            i = self.f_section.findData("poly")
+            if i < 0:
+                self.f_section.addItem("Outline", "poly",
+                                       pic=_pic_section("poly"))
+                i = self.f_section.count() - 1
+            self.f_section.blockSignals(True)
+            self.f_section.setCurrentIndex(i)
+            self.f_section.blockSignals(False)
+        self._sync()
+
+    def _shape_tab_shown(self, i: int) -> None:
+        st = getattr(self, "sshape", None)
+        if st is not None and i == getattr(self, "sshape_tab", -1):
+            st.follow(self._record())
+
+    def _shape_bake(self) -> None:
+        """The window's own section chosen again while the tab holds a
+        shape: what it made becomes the starting point — as if it had been
+        there when the window opened —, then the chosen section's rule
+        (its box, where it was)."""
+        from . import structure as S
+        st = self.sshape
+        e = self._record()                         # (with what it made)
+        el = {k: v for k, v in self.el.items() if k not in ("pts", "curves")}
+        for k in ("x", "y", "anchor", "shape", "w", "d", "pts", "curves"):
+            if k in e:
+                el[k] = e[k]
+        if el.get("type") == "footing" and e.get("shape") != "poly":
+            el.pop("shape", None)
+        self.el = el
+        self._poly = S.is_poly(el)
+        st.changed = False
+        st.follow(el)
 
     @staticmethod
     def _roof_heights(e: dict) -> str:
@@ -4262,6 +4558,7 @@ class ElementDialog(QDialog):
             box = S.poly_to_rect(self.el)
             e = dict(e, x=box["x"], y=box["y"], anchor="centre")
             e.pop("pts", None)
+            e.pop("curves", None)
             if e["type"] == "footing":
                 e.pop("shape", None)
         if e["type"] == "column":
@@ -4271,8 +4568,19 @@ class ElementDialog(QDialog):
             if hasattr(self, "f_cbase"):
                 e["cbase"] = self.f_cbase.currentData()
                 e["ccap"] = self.f_ccap.currentData()
+        st = getattr(self, "sshape", None)
+        if st is not None:               # the Shape tab's, when it made one
+            e = st.apply(e)
         if e["type"] == "beam":
             e["zmode"] = self.f_zmode.currentData()
+            # (phase 2: the Shape tab's section, side, curve; end B's top
+            # kept only at its own height and not level)
+            bt = getattr(self, "bshape", None)
+            if bt is not None and hasattr(bt, "f_bulge"):
+                e = bt.apply(e)
+            if e["zmode"] != "own" or e.get("ztb") is None or \
+                    abs(float(e["ztb"]) - float(e.get("zt", 2.5))) < 1e-4:
+                e.pop("ztb", None)
         if e["type"] == "roof":
             was = self.el["kind"]
             e["kind"] = self.f_kind.currentData()
@@ -4467,6 +4775,33 @@ class FloorDialog(QDialog):
         tabs = self.findChild(QTabWidget)
         if tabs is not None and tabs.count() > 1:
             tabs.setCurrentIndex(tabs.count() - 1)
+
+    def slab_bar(self, slab_name: str) -> QPushButton:
+        """On top, over the tabs: what this floor lies ON, and the way to
+        its slab's window (his ask, 18/11/2026: a room's floor finish looks
+        like the slab — months later nobody remembers which is which; the
+        word «Slab» at the top is where the hand goes). Closes the window
+        (its changes kept, as OK) with action "slab"."""
+        from . import library as LB
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(2, 0, 2, 4)
+        note = QLabel(tr("This room's floor finish lies on:"))
+        note.setEnabled(False)
+        b = QPushButton(tr("Slab «{s}»…", s=slab_name))
+        b.setStyleSheet(LB.ACTION_CSS)
+        b.setToolTip(tr("The slab's own window: its sizes, layers, "
+                        "material — Hide, Delete"))
+
+        def go() -> None:
+            self.action = "slab"
+            self.accept()
+        b.clicked.connect(go)
+        lay.addWidget(note)
+        lay.addWidget(b)
+        lay.addStretch(1)
+        self.layout().insertWidget(0, row)
+        return b
 
 
 def _shape_pic(s):
@@ -4894,7 +5229,8 @@ class OpeningDialog(QDialog):
             self.f_out.addItem("Out", True)
             self.f_out.setCurrentIndex(1 if op.get("out") else 0)
             self.f_out.setToolTip("The side it opens to: the wall's inside "
-                                  "or its outside")
+                                  "or its outside — a sliding door: the side "
+                                  "its leaf runs on")
             self.r_out = QLabel("Opens")
             form.addRow(self.r_out, self.f_out)
             # a garage door's kind (Badis, 2026-10-18)
@@ -5341,7 +5677,11 @@ class OpeningDialog(QDialog):
             ok_n = (1, 2)
             swing = not shop and not garage and (t == "sliding"
                                                  or o["leaves"] == 1)
-            out = t == "swing"
+            # a sliding one with ONE leaf too (support #113, 19/11/2026):
+            # its leaf (a barn's, a glass one's moving pane) on the wall's
+            # inside or outside — two leaves run inside the wall: no side
+            from .structure import door_opens_sides
+            out = door_opens_sides(o)
             opn = t in ("swing", "sliding", "garage")
             self.r_swing.setText("Slides to" if t == "sliding" else "Hinge")
         else:

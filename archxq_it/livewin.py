@@ -14,12 +14,17 @@ a few times a second and, once what it says has stood still for a tick
 """
 from __future__ import annotations
 
+import time
 import traceback
 from contextlib import contextmanager
 
 from PySide6.QtCore import QObject, Qt, QTimer
 
 TICK_MS = 120           # read the window this often; redrawn once it stands
+#: a redraw this quick (s) follows a drag at every tick, without waiting for
+#: it to stand still (his test, 18/11/2026: a beam's shape dragged showed
+#: only once let go); a slower one still waits (a number being typed)
+FOLLOW_S = 0.09
 
 
 class Live(QObject):
@@ -33,6 +38,7 @@ class Live(QObject):
         super().__init__(dlg)
         self.dlg, self.read, self.draw, self.back = dlg, read, draw, back
         self.on = True
+        self.cost = None                          # the last redraw's (s)
         self.shown = self.seen = self._sig()      # as built
         self.timer = QTimer(self)
         self.timer.setInterval(TICK_MS)
@@ -60,14 +66,18 @@ class Live(QObject):
         s = self._sig()
         if s is None:
             return
-        if s != self.seen:                # still changing: wait a tick
-            self.seen = s
-            return
+        quick = self.cost is not None and self.cost < FOLLOW_S
+        if s != self.seen:                # still changing: wait a tick —
+            self.seen = s                 # unless its redraw is quick
+            if not quick:
+                return
         if s == self.shown:
             return
         self.shown = s
         try:
+            t = time.perf_counter()
             self.draw(*self.read())
+            self.cost = time.perf_counter() - t
         except Exception:  # noqa: BLE001 — a preview never breaks the window
             traceback.print_exc()
             self.on = False

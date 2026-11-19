@@ -112,7 +112,9 @@ DEFAULT_DOC = {
     "separators": [],
     # 2D drawings imported (DXF) as a reference, per level id: {"name",
     # "layers": [names], "segs": [[x0, y0, x1, y1, layer]…], "layer":
-    # the one walls are made from ("" = all)} — importdxf.py
+    # the one walls are made from ("" = all)} — importdxf.py. A PDF's
+    # (refs.py): "segs" empty, "ref" = its picture's name — its lines kept
+    # apart (compat.LINES_KEY) and placed with that picture
     "underlays": {},
     # ids of walls / structure / openings built at least once (ui._commit_all)
     # — one built and now without its object was DELETED with the host's
@@ -137,6 +139,9 @@ DEFAULT_DOC = {
     # the levels whose GUIDE SHEET shows in 3D (levelsheet.py — the strip's
     # grid icon, 2026-10-31); view state too
     "sheets": [],
+    # the levels whose REFERENCE (an image / a PDF page on the floor —
+    # refs.py, 18/11/2026) is switched off («Show» in its bar); view state
+    "ref_off": [],
     # a level's GUIDE LINES while its «Guide lines» is off: {level id:
     # [the host's guide dicts]} — out of the scene, back when shown
     "guides_off": {},
@@ -266,6 +271,14 @@ def load(raw) -> dict:
     if isinstance(raw.get("sheets"), list):
         lv_ids = {r["id"] for r in doc["levels"]}
         doc["sheets"] = sorted({str(x) for x in raw["sheets"]} & lv_ids)
+    if isinstance(raw.get("ref_off"), list):
+        lv_ids = {r["id"] for r in doc["levels"]}
+        doc["ref_off"] = sorted({str(x) for x in raw["ref_off"]} & lv_ids)
+    # how strong the ghost levels' references are (%, refs.ghost_opacity);
+    # view state, kept only once set — a file without it stays as it was
+    if isinstance(raw.get("ref_ghost"), (int, float)) \
+            and not isinstance(raw.get("ref_ghost"), bool):
+        doc["ref_ghost"] = max(0, min(100, int(raw["ref_ghost"])))
     if isinstance(raw.get("hidden_parts"), dict):
         lv_ids = {r["id"] for r in doc["levels"]}
         known = {k for k, _l, _kinds in LEVEL_PARTS}
@@ -636,7 +649,9 @@ _GLAZ_CHOICES = {"place": ("void", "free", "window"),
                            "wood"),
                  "bead_c": ("black", "dark", "silver", "white", "bronze"),
                  "glass": ("clear", "blue", "green", "grey", "bronze"),
-                 "outside": ("right", "left")}
+                 "outside": ("right", "left"),
+                 # a free one's line drawn (16/11): centre first (old files)
+                 "galign": ("centre", "outside", "inside")}
 _GLAZ_SIZES = {"pw": (0.03, 9.0, 0.50), "ph": (0.03, 9.0, 0.50),
                "fw": (0.01, 0.30, 0.03), "fd": (0.01, 0.50, 0.05),
                "mw": (0.005, 0.20, 0.025), "md": (0.005, 0.50, 0.04),
@@ -917,6 +932,10 @@ def _underlays(raw, level_ids: set) -> dict:
                              "text", "x", "y", "layer")),
                          "loops": _drawing_list(u.get("loops"), (
                              "pts", "layer"))}
+        # a PDF page's lines (refs.py): kept apart (refs.LINES_KEY), as
+        # fractions of the page's picture — the reference image named here
+        if isinstance(u.get("ref"), str) and u["ref"]:
+            out[str(lid)]["ref"] = u["ref"][:200]
     return out
 
 
@@ -980,7 +999,30 @@ def _outline_pts(e: dict) -> list | None:
                                        for v in p):
         return None
     from . import structure as S
+    cv = _outline_curves(e)
+    if cv:                                 # (its curves: anti-clockwise)
+        return pts if S.poly_why(pts, cv) is None else None
     return pts if S.poly_why(pts) is None else None
+
+
+def _outline_curves(e: dict) -> dict | None:
+    """Its outline's curves (the shape editor, 17/11/2026) — None when it
+    has none, or broken ones (its corners stay, straight)."""
+    raw = e.get("curves")
+    if not isinstance(raw, dict):
+        return None
+    from . import curved as CV
+    from . import structure as S
+    try:
+        cv = CV.clean(raw)
+        pts = [[float(p[0]), float(p[1])] for p in e.get("pts") or ()]
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError):
+        return None
+    if not (cv["r"] or cv["arc"]):
+        return None
+    if any(not 0 <= int(k) < len(pts) for part in cv.values() for k in part):
+        return None
+    return cv if S.poly_why(pts, cv) is None else None
 
 
 def _structure(raw, level_ids: set,
@@ -1018,6 +1060,9 @@ def _structure(raw, level_ids: set,
                 pts = _outline_pts(e)
                 if pts:                        # its own outline (C1, 12/11)
                     rec.update(shape="poly", pts=pts, anchor="centre")
+                    cv = _outline_curves(e)    # …and its curves (17/11)
+                    if cv:
+                        rec["curves"] = cv
                 h = e.get("height", "level")
                 rec["height"] = "level" if h == "level" else \
                     min(max(float(h), 0.2), 50.0)
@@ -1027,6 +1072,14 @@ def _structure(raw, level_ids: set,
                     rec["cbase"] = e["cbase"]
                 if e.get("ccap") in PF.COLUMN_CAPS[1:]:
                     rec["ccap"] = e["ccap"]
+                # its FORM — a tube, narrowing, entasis (sectionlib.py, the
+                # shape editor phase 4): kept only whole and buildable
+                if any(k in e for k in ("hollow", "tp", "ent")):
+                    from . import sectionlib as SL
+                    from . import structure as S
+                    f = SL.clean_form(rec, e)
+                    if SL.why_form(f, S.column_outline(f, 0.0)) is None:
+                        rec = f
                 # one of a «Column row» (colrows.py): the row, its station
                 if e.get("row") and isinstance(e.get("st"), int):
                     rec["row"], rec["st"] = str(e["row"]), int(e["st"])
@@ -1040,6 +1093,36 @@ def _structure(raw, level_ids: set,
                 if e.get("zmode") == "own":
                     rec.update(zmode="own", zt=min(max(float(
                         e.get("zt", 2.5)), -20.0), 50.0))
+                    # INCLINED (the shape editor, phase 2, 17/11/2026):
+                    # its top at end B (no key: level)
+                    if e.get("ztb") is not None:
+                        ztb = min(max(float(e["ztb"]), -20.0), 50.0)
+                        if abs(ztb - rec["zt"]) > 1e-4:
+                            rec["ztb"] = ztb
+                # its SECTION and its shape SEEN FROM THE SIDE (phase 2,
+                # beamshape.py): kept only whole and buildable
+                from . import beamshape as BS
+                shp = {}
+                if e.get("sec") in BS.SECTIONS[1:]:
+                    shp.update(sec=e["sec"], tf=min(max(float(e.get(
+                        "tf", 0.1)), 0.01), 2.0), tw=min(max(float(e.get(
+                            "tw", 0.1)), 0.01), 3.0))
+                if e.get("elev") in BS.ELEVS[1:]:
+                    shp.update(elev=e["elev"], el=min(max(float(e.get(
+                        "el", 0.5)), 0.0), 50.0), ed=min(max(float(e.get(
+                            "ed", 0.2)), 0.0), 3.0))
+                    if e["elev"] != "arch":
+                        shp["eends"] = e.get("eends") if e.get("eends") \
+                            in BS.ENDS else "both"
+                if shp and BS.why_shape(dict(rec, **shp)) is None:
+                    rec.update(shp)
+                # CURVED in plan (phase 2): a point on its arc, halfway
+                if e.get("m"):
+                    from . import beamshape as BS
+                    bent = dict(rec, m=_pt(e["m"]))
+                    if abs(BS.bulge(bent)) >= BS.MIN_BULGE and \
+                            BS.why_curve(bent) is None:
+                        rec["m"] = bent["m"]
                 # one of a «Column row»'s beams (colrows.py): the row, which
                 # beam (top / foot / mid), its stretch
                 if e.get("row") and e.get("part") in ("top", "foot", "mid") \
@@ -1533,6 +1616,9 @@ def _structure(raw, level_ids: set,
                     pts = _outline_pts(e)
                     if pts:                    # its own outline (C1, 12/11)
                         rec.update(shape="poly", pts=pts)
+                        cv = _outline_curves(e)    # …its curves (17/11)
+                        if cv:
+                            rec["curves"] = cv
                 else:
                     rec.update(a=_pt(e["a"]), b=_pt(e["b"]))
                     if e.get("m"):

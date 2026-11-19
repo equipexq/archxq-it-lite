@@ -379,6 +379,12 @@ GUIDES.update({
             "(to a footing).",
             "A row drawn along a <b>footing row</b> stands centred on it, "
             "one column on each pad.",
+            "<b>A column with its own section</b> (Pro): its window's "
+            "<b>Shape</b> tab (or right click ▸ <b>Edit shape…</b>) — the "
+            "section seen from above: move its corners and sides, "
+            "<b>Round corner</b>, <b>Chamfer</b>, <b>Notch</b> (an L, a T, "
+            "a U), <b>Bend side</b>. A pad footing has the same tab. A "
+            "column of a row gives its shape to the whole row.",
             ADOPT_TIP,
         ],
         "mistakes": [
@@ -663,6 +669,38 @@ GUIDES.update({
             "it as DXF first.",
         ],
     },
+    "reference": {
+        "what": "An image or a PDF page lying on the current level, to "
+                "draw over. It shows only on that level, never on the "
+                "sheets.",
+        "steps": [
+            ("Load", "Pick the image (PNG, JPG) or the PDF (Pro): it lies "
+             "on the level's floor."),
+            ("Measure", "Click the two ends of something whose length you "
+             "know, type its real length + Enter — then click where the "
+             "first point goes (or Esc)."),
+            ("Place", "Click a point of the picture, then where it goes."),
+            ("Remove", "Takes it off the level (Ctrl+Z brings it back)."),
+            ("Level window", "The pencil icon: the level's window on its "
+             "References tab — every reference with its opacity, a PDF's "
+             "scale, «Remove»."),
+        ],
+        "tips": [
+            "A PDF comes at the scale its page states, and its lines are "
+            "the level's drawing: trace the walls over them, or <b>Walls "
+            "from DXF ▸ Make</b>.",
+            "<b>Opacity</b>: it always covers the floor, and what you "
+            "draw stands over it; under 100 % it is lighter, so your "
+            "lines stand out.",
+            "It comes in with its lower-left corner on the origin (0,0) — "
+            "a second one at the right of the first. The picture icon on "
+            "the level's row shows or hides it.",
+            "Another level's <b>ghost</b> shows its references too, faded "
+            "(<b>Ghost</b> % in the bar): match this level's picture to it "
+            "with <b>Place</b>, or with <b>X</b> and <b>Y</b> (the arrows: "
+            "1 cm).",
+        ],
+    },
     # ---- Openings --------------------------------------------------------
     "door": {
         "image": "door.jpg",
@@ -698,7 +736,9 @@ GUIDES.update({
                      "handle and colours", 340)],
         "tips": ["In the 3D view too: point at a wall of this level — the door lines up with the doors and windows above and below it (a blue dashed line). A wall of another level says so.",
                  "Width and Height in the options bar; <b>Hinge</b>: the "
-                 "jamb it hangs on. A swing door opens to the wall's inside.",
+                 "jamb it hangs on. A swing door opens to the wall's inside; "
+                 "<b>Opens</b> Out turns it round — a sliding door of "
+                 "one leaf too: the side its leaf runs on.",
                  "In plan a swing door shows its leaf open and its swing; a "
                  "sliding one its leaves and an arrow.",
                  "New swing doors come with a lever, sliding ones with a "

@@ -147,6 +147,9 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
                                    # (as Revit's: reference, then the edge)
                                    ("Align", "align"))),
     _e("wall_import", "Walls from DXF", ()),
+    # an image or a PDF page lying on the level, to draw over (refs.py —
+    # his ask, 18/11/2026); its actions are the options bar's icons
+    _e("reference", "Image / PDF reference", ()),
     # a line between two rooms with no wall (an open living room and
     # kitchen) — nothing in 3D, dashed in the plan (separators.py, D5)
     _e("separator", "Room separator", (("Draw", "geopath"),
@@ -202,7 +205,8 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
           ("column", "beam", "slab", "slab_edit", "footing")),
     Phase("walls", "Walls",
           "Walls of the current floor, by axis, thickness and height.",
-          ("wall", "wall_edit", "wall_import", "separator")),
+          ("wall", "wall_edit", "wall_import", "reference",
+           "separator")),
     Phase("openings", "Openings",
           "Doors and windows placed on the walls.",
           ("door", "window", "void")),
@@ -219,6 +223,9 @@ PHASES: dict[str, Phase] = {p.key: p for p in (
 PRO_ELEMENTS = frozenset({
     "beam", "slab", "slab_edit", "footing",
     "wall_import",
+    # a PDF page as a level's reference (an image: the Lite too — his OK,
+    # 18/11/2026)
+    "reference_pdf",
     "door", "window", "void",
     "roof",
     "rooms", "sheets", "section", "export", "studio", "update_all",

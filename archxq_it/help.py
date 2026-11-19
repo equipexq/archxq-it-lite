@@ -263,6 +263,33 @@ HELP: dict[str, tuple[str, str]] = {
         "wall's lines is an opening. Pick the drawing's <b>layer</b> of "
         "the walls when it has one.<br><br>Curved walls are not found yet "
         "(draw them by hand). DWG: save it as DXF first."),
+    "reference": (
+        "Image / PDF reference",
+        "A picture to draw over, lying on the <b>level's floor</b>: a "
+        "photo or a scan of a plan (PNG, JPG) — or a <b>PDF</b> page "
+        "(Pro). It shows only while you work on that level, as its guide "
+        "sheet; it is never geometry and never goes on the sheets. It is "
+        "kept inside the file.<br><br>"
+        "<b>Measure</b> gives it its true size: click the two ends of "
+        "something whose length you know (a wall, a dimension line), type "
+        "its real length + Enter. Drawn a little askew (under 5°), it is "
+        "straightened too. Then click where that first point goes — a "
+        "corner already drawn, the origin — or Esc to leave it where it "
+        "is. <b>Place</b> moves it by a point. <b>Opacity</b>: it always "
+        "covers the floor under it and what you draw stands over it; "
+        "under 100 % it is lighter, so your lines stand out.<br><br>"
+        "A <b>PDF</b> comes at the scale its page states (1:100, 1:50…; "
+        "none: 1:100 — measure it). Its <b>lines</b> come with it: their "
+        "ends pull the cursor, the wall tool traces between a wall's two "
+        "lines, and <b>Walls from DXF ▸ Make</b> raises the walls from "
+        "them. Its line weights are its «layers» — the thickest pen is "
+        "taken as the walls'.<br><br>"
+        "The <b>level's window</b> has a <b>References</b> tab (the pencil "
+        "icon in the bar opens it there): every reference of the level, "
+        "with its size, its opacity, a PDF's paper scale and «Remove» — "
+        "seen in the model as you change them, kept by OK in one Ctrl+Z. "
+        "Its Load, Measure and Place close the window and the tool comes "
+        "out in the view."),
     "rooms": (
         "Rooms",
         "Rooms are <b>found from the walls</b> by themselves: every space "

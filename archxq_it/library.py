@@ -107,6 +107,12 @@ def _garage(o) -> bool:
     return o.get("op") == "garage"
 
 
+def _opens_sides(o) -> bool:
+    """The door's «Opens» shows (structure.door_opens_sides)."""
+    from .structure import door_opens_sides
+    return door_opens_sides(o)
+
+
 def _plain_door(o) -> bool:
     """A door with leaves of its own — not a shopfront, not a garage door."""
     return not _shop(o) and not _garage(o)
@@ -785,9 +791,10 @@ CATALOG = {
                                               ("right", "Right")),
               _one_leaf),
          # a swing door opens IN (the wall's inside) or OUT (a customer's
-         # review, 2026-10-12: «it can only be inserted inward»)
+         # review, 2026-10-12: «it can only be inserted inward») — a
+         # sliding one of one leaf too: the side its leaf runs on (#113)
          Part("out", "Opens", ((False, "In"), (True, "Out")),
-              lambda o: o.get("op", "swing") == "swing"),
+              _opens_sides),
          Part("top", "Top", (("square", "Square"), ("arched", "Arched")),
               lambda o: o.get("op", "swing") == "swing"),
          Part("open", "Open", (), None, "slider"), DOOR_GLASS_PART)
@@ -1341,10 +1348,11 @@ CATALOG = {
                   "slab above. Height: its foot this high over the floor. "
                   "Wall top: its top at the top of the wall it runs along "
                   "(a cornice)"),
-         _size("z", "Foot height", 0.0, 6.0, 0.05, 0.90,
-               (0.90, 1.00, 2.80),
+         _size("z", "Foot height", -2.0, 6.0, 0.05, 0.90,
+               (0.0, 0.90, 1.00, 2.80),
                lambda o: _fixed_path(o) and o.get("anchor") == "height",
-               tip="Its foot over the level's floor"),
+               tip="Its foot over the level's floor — below the floor "
+                   "(a plinth down to the garden): negative"),
          Part("cut", "Doors & windows", ((True, "Stops at them"),
                                         (False, "Runs on")),
               tip="Where a door or a window crosses it, it stops (round the "
@@ -1549,8 +1557,24 @@ CATALOG = {
                lambda o: o.get("place", "void") != "free"),
          _size("h", "Height", 0.20, 6.00, 0.05, 2.10, (1.00, 2.10, 2.60),
                lambda o: o.get("place") == "free"),
-         _size("base", "Sill", 0.0, 3.00, 0.05, 0.0, (0.0, 0.90, 1.10),
-               lambda o: o.get("place") == "free")) + GRID_TRIM_PARTS),
+         # 2026-11-16: below the floor too (a lattice down to the garden
+         # under a raised porch) — its own window already took −1.0
+         _size("base", "Sill", -1.0, 3.00, 0.05, 0.0, (0.0, 0.90, 1.10),
+               lambda o: o.get("place") == "free",
+               tip="Its foot over the level's floor — below the floor: "
+                   "negative"),
+         # (his ask, 16/11 — as a wall's: where the line drawn runs)
+         Part("galign", "Line drawn", (("centre", "Centre"),
+                                       ("outside", "Outer face"),
+                                       ("inside", "Inner face")),
+              lambda o: o.get("place") == "free",
+              tip="Where the line you draw runs through the grid: its "
+                  "middle, its outer face or its inner face"),
+         Part("outside", "Outside face", (("right", "Right"),
+                                          ("left", "Left")),
+              lambda o: o.get("place") == "free",
+              tip="Which side of the line is outside, looking from where "
+                  "you start to where you end")) + GRID_TRIM_PARTS),
     "roof": Shelf("Roofs", (
         Type("gable", "Gable", "roof_gable", {"kind": "gable"},
              "Two slopes, a triangle of wall at each end"),

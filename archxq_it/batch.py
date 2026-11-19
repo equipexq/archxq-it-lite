@@ -17,8 +17,8 @@ import copy
 #: never carried to the others — who it is and where it is
 NEVER = frozenset({
     "id", "name", "level", "wall", "pos", "a", "b", "c", "r", "corners",
-    "holes", "pts", "x", "y", "anchor", "op_id", "on", "from", "to",
-    "start", "from_z", "to_z", "auto", "zc"})
+    "holes", "pts", "curves", "x", "y", "anchor", "op_id", "on", "from", "to",
+    "start", "from_z", "to_z", "auto", "zc", "m"})
 
 #: …and by family: an opening's kind (door ↔ window: the library's), a
 #: wall's (line ↔ arc), a structural element's type (a column stays one)

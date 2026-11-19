@@ -225,6 +225,24 @@ def set_sheets(viewport, key: str, ids) -> None:
     viewport.update()
 
 
+def set_ref_off(viewport, key: str, ids) -> None:
+    """The levels whose reference is switched off (refs.py) — view state,
+    written straight in, never an undo step (as the guide sheets)."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["ref_off"] = sorted({str(i) for i in ids if i})
+    data[key] = doc
+
+
+def set_ref_ghost(viewport, key: str, pct: int) -> None:
+    """How strong a ghost level's references are over the plan (%) — view
+    state, written straight in, never an undo step (as the ghosts)."""
+    data = viewport.scene.plugin_data
+    doc = dict(data.get(key) or {})
+    doc["ref_ghost"] = max(0, min(100, int(pct)))
+    data[key] = doc
+
+
 def show_folds(viewport, group, corners, breaks, on: bool) -> None:
     """Fold lines drawn or not on the plot's surface, without rebuilding
     it: their edges hard (drawn) or soft (not)."""
@@ -613,6 +631,9 @@ def prune_layers(viewport, keep) -> None:
     sits on (left behind by an undone «+», say). Others' layers are never
     touched."""
     used = {getattr(g, "layer", None) for g in viewport.scene.groups}
+    # (a level's references sit on a layer of their own: refs.py)
+    used |= {getattr(im, "layer", None)
+             for im in getattr(viewport.scene, "image_planes", None) or ()}
     gone = [L for L in viewport.scene.layers
             if L.name.startswith(LAYER_PREFIX) and L.name not in keep
             and L.name not in used]
@@ -755,6 +776,10 @@ def save_doc_renaming(viewport, key: str, doc: dict, renames) -> None:
                     if getattr(g, "layer", None) == a:
                         g.layer = b
                     stack.extend(getattr(g, "children", None) or [])
+                # (a level's references: their layer follows its name)
+                for im in getattr(scene, "image_planes", None) or ():
+                    if getattr(im, "layer", None) == a:
+                        im.layer = b
             for k, (a, _b) in enumerate(pairs):
                 rename(a, f"\x00axq-tmp-{k}")
             for k, (_a, b) in enumerate(pairs):
@@ -1369,15 +1394,20 @@ def join_last_steps(history, first) -> None:
     st[-1] = both
 
 
-def touch_scene(viewport) -> None:
+def touch_scene(viewport, light: bool = False) -> None:
     """The scene's drawing changed outside the undo history (a live
-    preview): the host redraws it."""
+    preview): the host redraws it. ``light``: only redrawn — the version
+    goes up, so the host sends the changed group again (its meshes'
+    fingerprints), but its «scene changed» signal is not sent: its
+    listeners took ~0.45 s on his corporate building at every live step,
+    the build itself 0.05 s (18/11/2026). A preview is nothing stored —
+    the commit after it signals as ever."""
     sc = viewport.scene
     try:
         sc.version += 1
     except (AttributeError, TypeError):
         pass
-    if hasattr(viewport, "notify_scene_changed"):
+    if not light and hasattr(viewport, "notify_scene_changed"):
         viewport.notify_scene_changed()
     else:
         viewport.update()
@@ -1402,15 +1432,16 @@ def _unselect(scene, groups) -> None:
 
 
 def commit_build(viewport, key: str, doc: dict, elevations,
-                 level_layer_of) -> dict:
+                 level_layer_of, only=None) -> dict:
     """Rebuild EVERY wall and structural element of the building from
     ``doc`` and store ``doc`` — ONE undo step. (A slab moves the walls
     under it; a wall's ends depend on its neighbours: the whole building
     is made again together.) One group per element, on its level's layer,
-    tagged with its kind."""
+    tagged with its kind. ``only``: just these elements' (fastcommit.py —
+    nothing else is built from them), the rest left as it is."""
     from core.history import CompoundCommand, SetPluginDataCommand
     viewport.history.execute(CompoundCommand(
-        [building_swap(viewport, doc, elevations, level_layer_of),
+        [building_swap(viewport, doc, elevations, level_layer_of, only),
          SetPluginDataCommand(key, doc)]))
     viewport.update()
     return doc
@@ -1550,6 +1581,60 @@ def _put_edges(mesh, pending) -> None:
                 e.curve = True
 
 
+#: (m) how near two points are welded into one vertex by the host's
+#: ``Mesh.add_face`` — measured 18/11/2026: 1e-4 apart one vertex, 1.01e-4
+#: two (by distance, not by a grid)
+WELD = 1e-4
+
+
+def _welds(pts) -> bool:
+    """Has this ring two neighbours the host welds (``WELD``)? Quick: the
+    first coordinate apart answers for nearly every pair."""
+    w = WELD + 1e-9
+    n = len(pts)
+    for i in range(n):
+        p, q = pts[i - 1], pts[i]
+        if abs(p[0] - q[0]) <= w and abs(p[1] - q[1]) <= w \
+                and abs(p[2] - q[2]) <= w \
+                and sum((p[j] - q[j]) ** 2 for j in range(3)) <= w * w:
+            return True
+    return False
+
+
+def welds_in(faces) -> bool:
+    """Has any face (or hole) of these a pair ``clean_loop`` takes out?"""
+    for f in faces:
+        if isinstance(f, dict):
+            if _welds(f["loop"]) or any(_welds(h) for h in
+                                        f.get("holes") or ()):
+                return True
+        elif _welds(f):
+            return True
+    return False
+
+
+def clean_loop(pts) -> list:
+    """A face's ring without the points the host would weld into the one
+    before it (and the last into the first). Such a pair is ONE vertex
+    twice in the host's face, and its triangulation then went outside the
+    face: «ghost» triangles over a stepped top's notches (his screen,
+    18/11/2026 — a lap-sided wall with a stepped Shape, its top cut by
+    ``walls.topped`` into pieces whose union left points 1e-12 apart). The
+    same vertices as the host's: nothing moves."""
+    if not _welds(pts):
+        return list(pts)
+    lim = (WELD + 1e-9) ** 2
+    out = []
+    for p in pts:
+        if out and sum((p[i] - out[-1][i]) ** 2 for i in range(3)) <= lim:
+            continue
+        out.append(p)
+    while len(out) > 1 and sum((out[0][i] - out[-1][i]) ** 2
+                               for i in range(3)) <= lim:
+        out.pop()
+    return out
+
+
 def mesh_of(faces, hide=()):
     """A host mesh from ArchXQ's faces (plain loops, or {loop, holes,
     color} dicts). ``hide``: edges (``seams.edge_key``) not drawn — a
@@ -1568,9 +1653,17 @@ def mesh_of(faces, hide=()):
     pending = []                       # (host face, its edges drawn otherwise)
     for f in faces:
         if isinstance(f, dict):
-            face = mesh.add_face([QVector3D(*q) for q in f["loop"]],
+            if exact:                  # (as adopted: its edges by index)
+                loop, holes = f["loop"], f["holes"]
+            else:
+                loop = clean_loop(f["loop"])
+                holes = [h for h in (clean_loop(h) for h in f["holes"])
+                         if len(h) >= 3]
+                if len(loop) < 3:
+                    continue
+            face = mesh.add_face([QVector3D(*q) for q in loop],
                                  [[QVector3D(*q) for q in h]
-                                  for h in f["holes"]])
+                                  for h in holes])
             if f.get("soft") and face is not None:
                 smooth.add(id(face))
             if f.get("curve") and face is not None:
@@ -1590,7 +1683,9 @@ def mesh_of(faces, hide=()):
             if exact and f["ef"] and face is not None:
                 pending.append((face, f["ef"]))
         else:
-            mesh.add_face([QVector3D(*q) for q in f])
+            loop = clean_loop(f)
+            if len(loop) >= 3:
+                mesh.add_face([QVector3D(*q) for q in loop])
     if exact:
         _put_edges(mesh, pending)
         return mesh
@@ -1644,14 +1739,22 @@ def build_sig(e: dict, layer, look: str, k: int, hide) -> str:
         k, look, e.get("floor"),
         sorted(sorted(p) for p in hide) if hide else None)
         # (a piece adopted: its category — its IFC class, its «Show» chip)
-        + ((e["cat"],) if e.get("cat") else ())).encode(),
+        + ((e["cat"],) if e.get("cat") else ())
+        # (points the host welds taken out of its faces: ``clean_loop``,
+        # 18/11/2026 — one built before kept its «ghost» triangles, its
+        # sig the same: this one mark has it built once again)
+        + (("w",) if welds_in(e["faces"]) else ())).encode(),
         digest_size=16).hexdigest()
 
 
-def building_swap(viewport, doc: dict, elevations, level_layer_of):
+def building_swap(viewport, doc: dict, elevations, level_layer_of,
+                  only=None):
     """The command that puts the building rebuilt from ``doc`` in place of
     the one in the scene (not executed: ``commit_build`` runs it — and the
-    terrain's commit, when the slabs follow an excavation)."""
+    terrain's commit, when the slabs follow an excavation). ``only``: a set
+    of ids — just their pieces built (``structure.build``'s ``only``: the
+    rest read as context, exactly as a whole build reads it) and swapped;
+    every other group stays in place, untouched (fastcommit.py)."""
     from core.group import Group
     from core.history import Command
     from core.mesh import Mesh
@@ -1681,8 +1784,14 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
         if pk not in looks:
             looks[pk] = materials.look_key(doc, *pk)
         return looks[pk]
+    only = set(only) if only is not None else None
+
+    def mine(g) -> bool:              # (``only``: its groups alone)
+        return only is None or _rec(g).get("id") in only
     have: dict = {}
     for g in wall_groups(viewport, None, BUILT_KINDS):
+        if not mine(g):
+            continue
         sig = _rec(g).get("sig")
         if sig is None:
             continue
@@ -1695,7 +1804,7 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
     kept = set()
     new = []
     nth: dict = {}               # the groups of one element: 0, 1…
-    built = S.build(doc, elevations)
+    built = S.build(doc, elevations, only=only)
     # the walls' joints drawn clean (seams.py; Cesar's ticket, 2026-10-25)
     try:
         from .seams import hidden_edges
@@ -1739,7 +1848,7 @@ def building_swap(viewport, doc: dict, elevations, level_layer_of):
             materials.paint(viewport.scene, g, e["kind"], e["id"], doc)
         new.append(g)
     old = [g for g in wall_groups(viewport, None, BUILT_KINDS)
-           if id(g) not in kept]
+           if id(g) not in kept and mine(g)]
     keep_locks(old, new)
     # the doors / windows of a wall EXPLODED in the host stay, as plain
     # groups (explode.py) — taken out of ``old``, their tag dropped
@@ -1841,6 +1950,7 @@ def plan_style(viewport, on: bool, mode: str = "hidden_line") -> None:
     the undo and «unsaved» are not touched. Off: what was there before."""
     import dataclasses
     if on:
+        keep_style_in_renders()
         if not hasattr(viewport, _STYLE_WAS):
             setattr(viewport, _STYLE_WAS,
                     getattr(viewport, "style_override", None))
@@ -1854,6 +1964,56 @@ def plan_style(viewport, on: bool, mode: str = "hidden_line") -> None:
         viewport.style_override = getattr(viewport, _STYLE_WAS)
         delattr(viewport, _STYLE_WAS)
     viewport.update()
+
+
+def keep_style_in_renders() -> None:
+    """The host's sheet pictures (the composer, the sheet tabs' thumbnails)
+    draw each frame WITH the live 3D view and, done, set its
+    ``style_override`` to None instead of putting it back: the plan's
+    hidden line gone — textures shown, the Plan button still on (his test,
+    19/11/2026: a reference's opacity changed in the level's window, the
+    scene changed, the thumbnails drawn again). Wrapped once, per class:
+    the view's own style (and the host's ``plano_style``) put back after
+    each frame, only when the host left it empty."""
+    try:
+        from views import composer as C
+    except Exception:  # noqa: BLE001 — another host: nothing to keep
+        return
+    for name in ("ComposerWindow", "SceneThumbnailer"):
+        cls = getattr(C, name, None)
+        orig = getattr(cls, "render_frame", None) if cls else None
+        if orig is None or "_axq_render_orig" in vars(cls):
+            continue
+
+        def render_frame(self, *a, _orig=orig, **k):
+            vp = getattr(getattr(self, "_window", None), "viewport", None)
+            keep = {n: getattr(vp, n, None)
+                    for n in ("style_override", "plano_style")} \
+                if vp is not None else {}
+            try:
+                return _orig(self, *a, **k)
+            finally:
+                for n, v in keep.items():
+                    if v is not None and getattr(vp, n, None) is None:
+                        try:
+                            setattr(vp, n, v)
+                        except Exception:  # noqa: BLE001
+                            pass
+        cls._axq_render_orig = orig
+        cls.render_frame = render_frame
+
+
+def release_style_in_renders() -> None:
+    """The host's own ``render_frame`` back (the extension switched off)."""
+    try:
+        from views import composer as C
+    except Exception:  # noqa: BLE001
+        return
+    for name in ("ComposerWindow", "SceneThumbnailer"):
+        cls = getattr(C, name, None)
+        if cls is not None and "_axq_render_orig" in vars(cls):
+            cls.render_frame = vars(cls)["_axq_render_orig"]
+            delattr(cls, "_axq_render_orig")
 
 
 _ORBITS = ("orbit", "orbit_about")

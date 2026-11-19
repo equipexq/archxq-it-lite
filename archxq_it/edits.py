@@ -148,6 +148,10 @@ def moved(rec: dict, m) -> dict:
                       for a in r["frame"]]
     if "angle" in r:
         r["angle"] = _angle(float(r["angle"]) + th)
+    if r.get("type") == "profile" and abs(_dz) > 1e-6:
+        # a profile rises / sinks with the Move tool (16/11, his ask)
+        from .along import moved_up
+        r = moved_up(r, _dz)
     if r.get("type") == "shaped" and abs(_dz) > 1e-6:
         # a piece adopted as it is (shaped.py) rises / sinks too: its
         # height is its own, not a level's rule
@@ -236,7 +240,17 @@ def reshaped(rec: dict, group, doc: dict):
         drawn = [moved(p) for p in S.column_outline(rec, sh)]
         if any(min(math.dist(q, d) for d in drawn) > TOL for q in plan):
             return None                         # stretched askew
-        r = S.poly_record(r, [moved(p) for p in S.poly_world(rec)])
+        cv = S.poly_curves(rec)
+        if cv:                                  # its curves stretched too
+            from . import sectionshape as SS
+            got = SS.scaled({"ctrl": rec["pts"], "curves": cv}, sx, sy)
+            if got is None:
+                return None
+            cv = got["curves"]
+            if sx * sy < 0:                     # (a mirror: in the old order)
+                cv = SS.reversed_shape(got["ctrl"], cv)[1]
+        r = S.poly_record(r, [moved(p) for p in S.poly_ctrl_world(rec)],
+                          curves=cv)
         if lo_moved or hi_moved:
             from . import model
             z0 = S.levels_info(doc, model.elevations)[rec["level"]]["z0"]
@@ -292,11 +306,25 @@ def reshaped(rec: dict, group, doc: dict):
             om = ((was[0] + was[1]) / 2, (was[2] + was[3]) / 2)
             nm = ((ext[0] + ext[1]) / 2, (ext[2] + ext[3]) / 2)
             c_, s_ = math.cos(ang), math.sin(ang)
-            new = [_unframe(nm[0] + (p[0] * c_ + p[1] * s_ - om[0]) * sx,
-                            nm[1] + (-p[0] * s_ + p[1] * c_ - om[1]) * sy,
-                            ang) for p in old]
+
+            def moved(p):
+                return _unframe(nm[0] + (p[0] * c_ + p[1] * s_ - om[0]) * sx,
+                                nm[1] + (-p[0] * s_ + p[1] * c_ - om[1]) * sy,
+                                ang)
+            new = [moved(p) for p in old]
             if any(min(math.dist(q, d) for d in new) > TOL for q in plan):
                 return None                     # stretched askew
+            cv = S.poly_curves(rec)
+            if cv:                              # its curves stretched too
+                from . import sectionshape as SS
+                got = SS.scaled({"ctrl": rec["pts"], "curves": cv}, sx, sy)
+                if got is None:
+                    return None
+                cv = got["curves"]
+                if sx * sy < 0:                 # (a mirror: in the old order)
+                    cv = SS.reversed_shape(got["ctrl"], cv)[1]
+                return S.poly_record(r, [moved(p) for p in
+                                         S.poly_ctrl_world(rec)], curves=cv)
             return S.poly_record(r, new)
         if rec.get("kind") == "pad":
             ang = math.radians(float(rec.get("angle", 0.0)))
@@ -311,6 +339,11 @@ def reshaped(rec: dict, group, doc: dict):
         if rec.get("m"):
             return r if (lo_moved or hi_moved) else None
         t = "beam"                     # a strip: its width like a beam's
+    if t == "beam" and rec["type"] == "beam" and rec.get("m"):
+        # a CURVED beam (phase 2): its depth only, as a curved strip's
+        if lo_moved or hi_moved:
+            r["h"] = size(float(rec["h"]), zr[1] - zr[0], z1n - z0n)
+        return r if r != rec else None
     if t == "beam":
         (ax, ay), (bx, by) = rec["a"], rec["b"]
         ang = math.atan2(by - ay, bx - ax)

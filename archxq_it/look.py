@@ -404,8 +404,20 @@ def _ic_material(p, r, _on):
     p.setBrush(Qt.NoBrush)
 
 
+def _ic_reference(p, r, _on):
+    """A picture to draw over: its frame, a hill and the sun."""
+    poly(p, [(1.5, 3), (14.5, 3), (14.5, 13), (1.5, 13)], BLUE, 1.4,
+         close=True)
+    poly(p, [(2.5, 12), (6.5, 7), (9, 10), (11, 8), (13.5, 12)], GOLD, 1.4)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(ACCENT))
+    p.drawEllipse(QPointF(11, 6), 1.4, 1.4)
+    p.setBrush(Qt.NoBrush)
+
+
 TAB_ICONS = {"geometry": _ic_geometry, "build": _ic_build, "railing": _ic_railing,
-             "position": _ic_position, "material": _ic_material}
+             "position": _ic_position, "material": _ic_material,
+             "reference": _ic_reference}
 
 
 def tab_icon(name) -> QIcon:

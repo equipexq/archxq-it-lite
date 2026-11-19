@@ -95,7 +95,9 @@ class Hub(QFrame):
         menu.setObjectName("axq_menu")
         menu.setStyleSheet(CSS)
         for key, text, el in (("import_dxf", "Import DXF → walls…",
-                               "wall_import"), (None, None, None),
+                               "wall_import"),
+                              ("ref", "Image or PDF on this level…",
+                               "reference"), (None, None, None),
                               ("pdf", "Export sheets to PDF…", "export"),
                               ("dxf", "Export drawings to DXF…", "export"),
                               ("quantities", "Export quantities (CSV)…",

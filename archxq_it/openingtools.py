@@ -178,13 +178,17 @@ def _sliding_lines(o, wall, P, s0, s1, t) -> list:
         if not two:
             # the fixed pane (back track) on the side it slides TO, the
             # moving one in front, its arrow going over the fixed one
+            # — the moving one on the side it «Opens» to (support #113)
             left = o.get("swing", "left") == "left"
+            k = S.door_side(o, wall)
             if left:
-                out = box(s0, m + lap, -d, 0.0) + box(m - lap, s1, 0.0, d)
-                arrows = ((s1 - 0.10, m - 0.10, d / 2),)
+                out = box(s0, m + lap, -k * d, 0.0) \
+                    + box(m - lap, s1, 0.0, k * d)
+                arrows = ((s1 - 0.10, m - 0.10, k * d / 2),)
             else:
-                out = box(m - lap, s1, -d, 0.0) + box(s0, m + lap, 0.0, d)
-                arrows = ((s0 + 0.10, m + 0.10, d / 2),)
+                out = box(m - lap, s1, -k * d, 0.0) \
+                    + box(s0, m + lap, 0.0, k * d)
+                arrows = ((s0 + 0.10, m + 0.10, k * d / 2),)
         for a, b, c in arrows:
             out += _arrow(P, a, b, c)
         return out
@@ -550,7 +554,8 @@ class OpeningTool(_PlotTool):
     def _opens_both_ways(self) -> bool:
         o = self.opts()
         if self.kind == "door":
-            return o.get("op", "swing") == "swing"    # (not a garage door)
+            # a swing door, a sliding one of one leaf (#113) — no garage
+            return S.door_opens_sides(o)
         return self.kind == "window" and o.get("op") == "casement"
 
     def on_key(self, viewport, key, modifiers) -> bool:

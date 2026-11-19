@@ -48,8 +48,13 @@ WHY_TWO = "It would cut the wall in two"
 WHY_SPLIT_CURVE = "Not through a curve of its shape — click beside it"
 WHY_SPLIT_FLOAT = "A piece of its shape would float — click beside it"
 WHY_LENGTH = "Its shape doesn't fit that length"
-WHY_KIND = ("Shape: straight solid walls only (not curved, curtain, grid, "
-            "light-framed or clad)")
+WHY_KIND = "Shape: straight walls only (not curved, nor a curtain wall)"
+WHY_TOP_ONLY = ("A grid, clad or light-framed wall takes a shape cut from "
+                "its top only — not into its sides")
+#: walls whose shape is their TOP (the shape editor, phase 3 — 17/11/2026):
+#: built as ever, then cut under it (walls.topped), as a gable end
+TOP_ONLY = ("gw", "frame", "clad")
+STEP = 0.001            # m: a sheer step in such a top, 1 mm wide
 WHY_POINT = "No such point"
 WHY_FEW = "A shape needs three points at least"
 
@@ -62,9 +67,64 @@ def why_no_shape(w: dict | None) -> str | None:
     w = w or {}
     if w.get("kind", "line") != "line":
         return WHY_KIND
-    if any(w.get(k) for k in ("cw", "gw", "frame", "clad")):
+    if w.get("cw"):
         return WHY_KIND
     return None
+
+
+def top_only(w: dict | None) -> bool:
+    """A grid / clad / light-framed wall: its shape is its top."""
+    return any((w or {}).get(k) for k in TOP_ONLY)
+
+
+def _top_chain(prof: dict) -> list | None:
+    """Its top seen from the front as [(s, z)], s growing — None when the
+    shape is not a top over a whole foot (cut into a side: a «C»)."""
+    pts, _arcs = outline(prof, 0.0)
+    L = float(prof["L"])
+    if len(pts) < 4:
+        return None
+    k = next((i for i, p in enumerate(pts)
+              if abs(p[0] - L) < 1e-6 and abs(p[1]) < 1e-9), None)
+    if k is None or pts[0] != (0.0, 0.0):
+        return None
+    chain = pts[k + 1:]
+    if not chain:
+        return None
+    # each step s goes back (or stands — a sheer step): never forward
+    if any(q[0] > p[0] + 1e-6 for p, q in zip([pts[k]] + chain, chain)):
+        return None
+    if any(p[1] <= 1e-9 for p in chain):
+        return None
+    while len(chain) > 1 and abs(chain[1][0] - L) < 1e-6:
+        chain.pop(0)                  # (its end B side, straight up)
+    while len(chain) > 1 and abs(chain[-2][0]) < 1e-6:
+        chain.pop()                   # (its end A side, straight down)
+    if abs(chain[0][0] - L) > 1e-6 or abs(chain[-1][0]) > 1e-6:
+        return None
+    return list(reversed(chain))
+
+
+def why_not_top(prof: dict) -> str | None:
+    """Why that shape can't be a grid / clad / framed wall's (None = it
+    can): it must be its top over its whole foot."""
+    return None if _top_chain(prof) is not None else WHY_TOP_ONLY
+
+
+def as_top(prof: dict, base: float = 0.0) -> dict | None:
+    """The shape as the wall's own top (walls.top_of): {"kind": "poly",
+    "pts": [[s, h]…]} — h from the level's floor (its Base offset in), s
+    along the line drawn; a sheer step 1 mm wide (STEP: one plane each
+    side of it). None: not a top."""
+    chain = _top_chain(prof)
+    if chain is None:
+        return None
+    out = []
+    for s, z in chain:
+        if out and s < out[-1][0] + STEP:
+            s = out[-1][0] + STEP
+        out.append([round(s, 6), round(base + z, 6)])
+    return {"kind": "poly", "pts": out}
 
 
 def _pt(p) -> list:
@@ -619,3 +679,59 @@ def split_at(prof: dict, s: float) -> tuple:
         h = is_rect(new)
         parts.append(h if h is not None else new)
     return parts[0], parts[1], None
+
+
+# ---- ready shapes (the shape editor, phase 3 — 17/11/2026) -----------------------------
+#: the cards over the drawing: (key, its name)
+PRESETS = (("gable", "Gable"), ("stepped", "Stepped parapet"),
+           ("round_end", "Rounded end"), ("arch_top", "Arched top"),
+           ("c", "«C» open at its end"))
+
+
+def preset(kind: str, L: float, h: float) -> tuple:
+    """A ready shape for a wall ``L`` long, ``h`` tall (from its foot):
+    (profile, None) or (None, why). Each one a starting point — its
+    points drag and its sizes type as any shape's."""
+    L, h = float(L), float(h)
+    if L < 4 * MIN_PART or h < 4 * MIN_PART:
+        return None, WHY_LENGTH
+    base = {"curves": {"r": {}, "arc": {}}, "L": round(L, 4),
+            "was": "level"}
+
+    def make(ctrl):
+        return _done(dict(base, ctrl=[[round(a, 4), round(b, 4)]
+                                      for a, b in ctrl]))
+    if kind == "gable":                 # a 30° gable over it
+        rise = min(L / 2 * math.tan(math.radians(30)), MAX_PEAK - h)
+        return make([[0, 0], [L, 0], [L, h], [L / 2, h + rise], [0, h]])
+    if kind == "stepped":               # two steps up to its middle
+        st = min(0.30, h / 4)
+        f = L / 5
+        return make([[0, 0], [L, 0], [L, h], [4 * f, h], [4 * f, h + st],
+                     [3 * f, h + st], [3 * f, h + 2 * st],
+                     [2 * f, h + 2 * st], [2 * f, h + st], [f, h + st],
+                     [f, h], [0, h]])
+    if kind == "round_end":             # its top corner at end B rounded
+        prof, why = make([[0, 0], [L, 0], [L, h], [0, h]])
+        if prof is None:
+            return None, why
+        return round_corner(prof, 2, round(min(h, L) / 2, 3))
+    if kind == "arch_top":              # its top an arc up, its ends as tall
+        prof, why = make([[0, 0], [L, 0], [L, h], [0, h]])
+        if prof is None:
+            return None, why
+        return bend_side(prof, 2, -round(min(L / 6, MAX_PEAK - h), 3))
+    if kind == "c":                     # cut open at end B, curved inside
+        z0, z1 = h * 0.3, h * 0.7
+        prof, why = make([[0, 0], [L, 0], [L, z0], [L * 0.4, z0],
+                          [L * 0.4, z1], [L, z1], [L, h], [0, h]])
+        if prof is None:
+            return None, why
+        r = round(min(0.3, (z1 - z0) / 2 - 0.01), 3)
+        for i in (3, 4):
+            got, why = round_corner(prof, i, r)
+            if got is None:
+                return None, why
+            prof = got
+        return prof, None
+    return None, WHY_POINT

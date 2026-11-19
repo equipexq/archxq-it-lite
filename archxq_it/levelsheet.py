@@ -29,13 +29,27 @@ from __future__ import annotations
 import math
 
 MARGIN = 2.0                # m round what the level has
-EMPTY = 10.0                # m — a level with nothing on it: a 20 × 20 sheet
+EMPTY = 20.0                # m — a level with nothing on it: a 20 × 20 sheet
+                            # FROM the origin (its lower-left corner on 0,0 —
+                            # his call, 18/11: where a reference comes in)
 FILL = "#2f7df6"            # the brand's blue (the Tools' — his favourite)
 
 
-def extent(doc: dict, level_id: str):
+def extent(doc: dict, level_id: str, boxes=()):
     """(x0, y0, x1, y1): the plot and what stands on the level, with a
-    margin; a bare level: a square round the origin."""
+    margin; a bare level: a square from the origin (its lower-left corner
+    on 0,0). ``boxes`` (x0, y0, x1, y1): what it covers too — the level's
+    references (an image, a PDF page), never half off the sheet."""
+    ext = _own(doc, level_id)
+    for b in boxes or ():
+        ext = (min(ext[0], b[0]), min(ext[1], b[1]), max(ext[2], b[2]),
+               max(ext[3], b[3]))
+    return ext
+
+
+def _own(doc: dict, level_id: str):
+    """The sheet by what the level has (the plot, its walls, its
+    structure) — ``extent`` without the references."""
     xs, ys = [], []
     plot = doc.get("plot") or {}
     for p in plot.get("corners") or ():
@@ -67,7 +81,7 @@ def extent(doc: dict, level_id: str):
             xs.append(p[0])
             ys.append(p[1])
     if not xs:
-        return (-EMPTY, -EMPTY, EMPTY, EMPTY)
+        return (0.0, 0.0, EMPTY, EMPTY)
     return (min(xs) - MARGIN, min(ys) - MARGIN, max(xs) + MARGIN,
             max(ys) + MARGIN)
 

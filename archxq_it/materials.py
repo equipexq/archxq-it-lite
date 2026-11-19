@@ -592,7 +592,8 @@ def lift(wtype: dict, els: dict, doc: dict) -> dict:
 
 def merge(doc: dict, change: dict) -> dict:
     """``doc`` with a window's material change in it. ``change`` = {"kind",
-    "id", "parts": {part: ref | None}, "all": bool} — «all»: the kind's
+    "id", "parts": {part: ref | None}, "all": bool, "only": bool} — «only»:
+    a wall of a type keeps it as its OWN, not the type's (16/11); «all»: the kind's
     material too, and the other elements of the kind follow it (their own
     choice for that part is let go)."""
     doc = dict(doc)
@@ -621,7 +622,7 @@ def merge(doc: dict, change: dict) -> dict:
             if kind == "wall":          # …the types' looks of that part too
                 for look in wtype.values():
                     look.pop(part, None)
-        elif tid:
+        elif tid and not change.get("only"):
             look = wtype.setdefault(tid, {})
             if ref:
                 look[part] = ref
@@ -630,6 +631,10 @@ def merge(doc: dict, change: dict) -> dict:
             for other in of_type:
                 els.get(other, {}).pop(part, None)
         else:
+            if tid:
+                # (a type with no look yet keeps an empty one: else a file
+                # read back would lift this wall's own onto the type)
+                wtype.setdefault(tid, {})
             own = els.setdefault(eid, {})
             if ref:
                 own[part] = ref
@@ -872,6 +877,19 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
             studs = attrs(STUD_MAT[fr["kind"]])
             if studs is not None:
                 made["_studs"] = studs
+    # a STEEL column of the tables (sectionlib.py, phase 4) with no
+    # material of its own: steel — never the columns' concrete for all
+    if kind == "column" and el_id and textures_allowed():
+        own = (((doc.get("materials") or {}).get("el") or {})
+               .get(el_id) or {})
+        if not own.get("all"):
+            from .sectionlib import steel_of
+            col = next((e for e in doc.get("structure") or []
+                        if e.get("id") == el_id), None)
+            if col is not None and steel_of(col):
+                a = attrs(_BRUSHED)
+                if a is not None:
+                    made["all"] = a
     sheet = None
     if textures_allowed():
         if kind == "roof" and "cover" not in made:   # nothing CHOSEN for it
@@ -1450,12 +1468,15 @@ class MaterialTab:
         if tid:
             name = next((t.get("name") for t in doc.get("wall_types") or ()
                          if t.get("id") == tid), "")
-            note = W.QLabel(tr("Type «{name}»: what you pick goes to every "
-                               "wall of this type — and to the next ones "
-                               "drawn with it", name=name))
-            note.setWordWrap(True)
-            note.setStyleSheet("color: #8fb8f9;")
-            right.addWidget(note)
+            # (16/11, his ask: a wall of a type painted ALONE — unticked:
+            # the selected wall(s) only, as their own)
+            self.of_type = W.QCheckBox(tr("All walls of type «{name}»",
+                                          name=name))
+            self.of_type.setChecked(True)
+            self.of_type.setToolTip(tr(
+                "Ticked: every wall of this type takes it, and the next ones "
+                "drawn with it. Unticked: only the selected walls"))
+            right.addWidget(self.of_type)
         root.addLayout(right, 1)
         self._show()
 
@@ -1899,6 +1920,8 @@ class MaterialTab:
         self.on_apply(ch)
         self.start = dict(self.now)        # applied: no longer a change
         self.all.setChecked(False)
+        if getattr(self, "of_type", None) is not None:
+            self.of_type.setChecked(True)
 
     def change(self) -> dict | None:
         """What to store (``merge``), None: nothing changed."""
@@ -1907,8 +1930,10 @@ class MaterialTab:
             parts = dict(self.now)
         if not parts:
             return None
+        of_type = getattr(self, "of_type", None)
         return {"kind": self.kind, "id": self.el_id, "parts": parts,
-                "all": self.all.isChecked()}
+                "all": self.all.isChecked(),
+                "only": of_type is not None and not of_type.isChecked()}
 
 
 def with_tab(dlg, tab: MaterialTab) -> None:

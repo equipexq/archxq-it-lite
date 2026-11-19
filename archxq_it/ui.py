@@ -25,7 +25,8 @@ import functools
 import math
 
 from PySide6.QtCore import QEvent, QObject, QRect, QSettings, Qt, QTimer
-from PySide6.QtWidgets import QDialog
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication, QDialog
 
 from . import compat, edition, foreignbars, model, paintlog, viewframe
 from . import profiles as PF
@@ -100,7 +101,7 @@ COLUMN_SHAPES = [
 BEAM_SHAPES = [
     ("chain", "geopath", "Point by point — beam after beam"),
     ("walls", "beam_walls", "Along the walls — one click: a beam over "
-                            "every straight wall of this level"),
+                            "every wall of this level, curved ones too"),
 ]
 SLAB_SHAPES = [
     ("walls", "slab_walls", "Inside the walls — one click: the slab under "
@@ -193,6 +194,22 @@ DXF_ACTIONS = [
                            "block in it says door or window); the columns, "
                            "stairs and rooms' names too"),
     ("clear", "eraser", "Remove the drawing from this level"),
+]
+REF_ACTIONS = [
+    ("load", "io", "Load an image (PNG, JPG) or a PDF page onto this level "
+                   "— a reference to draw over (the model is not changed)"),
+    ("measure", "tape", "Measure: click two points of something whose "
+                        "length you know (a wall, a dimension), type its "
+                        "real length — the picture takes its scale (and is "
+                        "straightened when a little askew); then click "
+                        "where it goes"),
+    ("place", "move", "Place: click a point of the picture, then where it "
+                      "goes (a corner already drawn, the origin…)"),
+    ("clear", "eraser", "Remove the reference from this level (one Ctrl+Z "
+                        "brings it back)"),
+    ("level", "edit", "The level's window, on its References tab: every "
+                      "reference of this level — its opacity, a PDF's "
+                      "scale, remove one"),
 ]
 ROOM_ACTIONS = [
     ("names", "doc_rooms", "Name the rooms of the current level — a table "
@@ -677,6 +694,69 @@ class _PickThrough(QObject):
         super().__init__()
         self.owner = owner
         self.eat_release = False
+        #: a press held back over a level's reference (see _ref_click)
+        self.ref_press = None
+        self.replaying = False
+
+    def _ref_click(self, obj, event) -> bool | None:
+        """A level's REFERENCE in front of the model takes the click (his
+        test, 18/11/2026: the Level 2 plan clicked in 3D, the host's pick
+        took a door of Level 1 UNDER it — the level jumped to Level 1 and
+        the picture went out with it). The press is held: released on the
+        spot, the picture is selected; dragged, the host gets the press
+        back (its box selection, as ever). None: not ours."""
+        t = event.type()
+        o = self.owner
+        if self.replaying:
+            return None
+        rp = self.ref_press
+        if rp is not None:
+            if t == QEvent.MouseMove:
+                p = event.position()
+                if math.dist((p.x(), p.y()), (rp[1], rp[2])) >= 5:
+                    self.ref_press = None
+                    self.replaying = True
+                    try:
+                        QApplication.sendEvent(obj, rp[0])
+                    finally:
+                        self.replaying = False
+                return None
+            if t == QEvent.MouseButtonRelease \
+                    and event.button() == Qt.LeftButton:
+                self.ref_press = None
+                compat.select(o.viewport, [rp[3]],
+                              "add" if rp[4] else "replace")
+                return True
+        if t not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick) \
+                or event.button() != Qt.LeftButton or o.picking_through():
+            return None
+        p = event.position()
+        x, y = p.x(), p.y()
+        try:
+            if o.plan_on and (o.plan_opening_at(x, y)
+                              or o.plan_glazing_at(x, y)):
+                return None            # a door's symbol, drawn over it
+            im = o.ref_in_front(x, y)
+        except Exception:  # noqa: BLE001 — the host's click then
+            return None
+        if im is None:
+            return None
+        if t == QEvent.MouseButtonDblClick:
+            # its level's window, on the References tab (as _PlotDoubleClick)
+            self.ref_press = None
+            self.eat_release = True
+            lid = o.ref_level_id(im)
+            if lid:
+                QTimer.singleShot(0, lambda: o.keep_strip(
+                    lambda: o.edit_level(lid, tab="references")))
+            return True
+        add = bool(event.modifiers() & (Qt.ShiftModifier
+                                        | Qt.ControlModifier))
+        self.ref_press = (QMouseEvent(
+            event.type(), event.position(), event.globalPosition(),
+            event.button(), event.buttons(), event.modifiers()),
+            x, y, im, add)
+        return True
 
     def eventFilter(self, obj, event) -> bool:
         t = event.type()
@@ -684,6 +764,13 @@ class _PickThrough(QObject):
                 and event.button() == Qt.LeftButton:
             self.eat_release = False
             return True
+        try:
+            took = self._ref_click(obj, event)
+        except Exception:  # noqa: BLE001 — the host's click then
+            self.ref_press = None
+            took = None
+        if took is not None:
+            return took
         if t in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick) \
                 and event.button() == Qt.LeftButton:
             # the host's own click takes groups of a level hidden by its eye
@@ -803,6 +890,16 @@ class _PlotDoubleClick(QObject):
                 and o.alive and o.active and compat.selecting(o.viewport)):
             doc = o.doc()
             p = event.position()
+            # a level's REFERENCE (an image, a PDF page) double-clicked — the
+            # first click picked it: the level's window, on its References
+            # tab (his ask, 18/11)
+            ims = o.selected_refs() \
+                if not compat.selected_groups(o.viewport) else []
+            lid = o.ref_level_id(ims[0], doc) if ims else None
+            if lid:
+                QTimer.singleShot(0, lambda: o.keep_strip(
+                    lambda: o.edit_level(lid, tab="references")))
+                return True
             if obj is o.viewport and o.picking_through():
                 # through: what the click picked (not the face in front)
                 sel = compat.selected_groups(o.viewport)
@@ -1314,6 +1411,11 @@ class ArchXQ:
         # (installed after: it sees the click first)
         self._pickthru = _PickThrough(self)
         self.viewport.installEventFilter(self._pickthru)
+        # the levels' references sharp at a slant too (refs.sharpen)
+        self._sharpen_views()
+        # the plan's look kept when the host draws the sheet pictures with
+        # the live view (compat.keep_style_in_renders, 19/11/2026)
+        compat.keep_style_in_renders()
         # the on-screen GRIPS of the one element selected (grips.py) —
         # installed last: a press on a grip is theirs, any other the host's
         from .grips import GripControl
@@ -1744,7 +1846,10 @@ class ArchXQ:
         if self._dock is not None:
             self._dock.raise_()
 
-    def pick(self, phase: str, element: str) -> None:
+    def pick(self, phase: str, element: str, follow: bool = False) -> None:
+        # ``follow``: not the user's pick in the menu but ArchXQ following
+        # him (a picture clicked in the view, the level window's buttons):
+        # the reference then neither moves the view nor asks for a file
         # the Project button's menu ACTS (his call, 07/11/2026): «New
         # project» starts one (in a new tab when this one has a project),
         # «Edit project» opens its window
@@ -1775,6 +1880,7 @@ class ArchXQ:
                 return
             self.current = phase
             self._row_for_phase(phase)    # Terrain ↔ its level (07/11)
+        was = self.element
         if element != self.element:
             self._drop_tool()             # another element: its tool goes
         self.element = element
@@ -1782,7 +1888,18 @@ class ArchXQ:
         self._sel_at_phase = set(self._lib_picked()[1])
         if element == "excavation":
             self._to_dig_row()            # its level, at once (07/11)
+        fresh = element == "reference" and was != element and not follow
         self.refresh()
+        if element == "reference" and not follow:
+            # the reference is laid, measured, placed and matched in the
+            # PLAN (his ask, 18/11: the ghost is drawn there only) — the
+            # plan at once; leaving it stays his choice
+            self.enter_plan()
+        if fresh:
+            from . import refs
+            if not refs.images(self.viewport,
+                               refs.layer_of(self._ref_level())):
+                QTimer.singleShot(0, self.import_reference)
         if self._dock is not None:
             self._dock.raise_()
 
@@ -2981,6 +3098,8 @@ class ArchXQ:
                            self._on_doc_option),
                 "wall_import": ("DXF", self._dxf_options,
                                 self._on_dxf_option),
+                "reference": ("Reference", self._ref_options,
+                              self._on_ref_option),
                 "rooms": ("Rooms", lambda: [
                     {"key": "act", "label": "", "kind": "icons",
                      "value": None, "choices": ROOM_ACTIONS},
@@ -3312,6 +3431,16 @@ class ArchXQ:
                        "notches it"}
         how = o.get("hole_by", "rect") if hole else o.get("shape")
         drawn = how in ("rect", "rect_c", "rect_r", "chain")
+        # its top stays inside its level: at most the level's height (the
+        # next floor) — 9.50 typed for a slab of a 4 m level raised it into
+        # the floor above (his file, 18/11/2026)
+        top_max = 10.0
+        try:
+            lvls = self.doc()["levels"]
+            if not self.terrain_current and 0 <= self.floor < len(lvls):
+                top_max = min(top_max, float(lvls[self.floor]["height"]))
+        except (KeyError, TypeError, ValueError):
+            pass
         curves = ([{"key": "rad", "label": "Corner radius", "kind": "len",
                     "value": float(o.get("rad") or 0.0), "min": 0.0,
                     "max": 50.0, "step": 0.05,
@@ -3345,7 +3474,7 @@ class ArchXQ:
                 # 2.80 under the roof's trusses, a plenum over it (a
                 # customer's ask, 2026-10-13: «how you make plenum»)
                 {"key": "offset", "label": "Top", "kind": "len",
-                 "value": o["offset"], "min": -5.0, "max": 10.0,
+                 "value": o["offset"], "min": -5.0, "max": top_max,
                  "step": 0.01, "tip": "Its top, from the level's floor (0 = "
                                       "the floor itself; up high: a ceiling)"}]
 
@@ -3578,6 +3707,8 @@ class ArchXQ:
         self.hub.close_sub()
         if key == "import_dxf":
             QTimer.singleShot(0, self.import_dxf)
+        elif key == "ref":
+            QTimer.singleShot(0, self.import_reference)
         elif key == "pdf":
             QTimer.singleShot(0, self.export_pdf)
         elif key == "dxf":
@@ -3588,7 +3719,7 @@ class ArchXQ:
     def _underlay(self, doc: dict | None = None):
         doc = doc or self.doc()
         _i, lv, _z = self._work_level()
-        return lv, (doc.get("underlays") or {}).get(lv["id"])
+        return lv, self._drawing(lv["id"], doc)
 
     def _dxf_options(self) -> list[dict]:
         _lv, u = self._underlay()
@@ -3620,7 +3751,9 @@ class ArchXQ:
             doc = self.doc()
             lv, u = self._underlay(doc)
             if u:
-                doc["underlays"][lv["id"]] = dict(u, layer=value)
+                # (the STORED drawing: a PDF's lines stay apart — refs.py)
+                raw = doc["underlays"][lv["id"]]
+                doc["underlays"][lv["id"]] = dict(raw, layer=value)
                 self.save(doc)
                 self.viewport.update()
         else:
@@ -3804,6 +3937,532 @@ class ArchXQ:
         compat.flash(self.viewport, "Drawing removed — Ctrl+Z brings it "
                      "back", 5000)
 
+    # ---- A level's REFERENCE: an image or a PDF page to draw over (refs.py) ---------
+    def _ref_index(self, doc: dict) -> int:
+        """The level whose references show: the one worked on; on the
+        Terrain, the ground floor (a site plan to draw the plot over).
+        Never moves the work off the Terrain (``_work_level`` does)."""
+        if self.terrain_current or not 0 <= self.floor < len(doc["levels"]):
+            return self._ground_index(doc)
+        return self.floor
+
+    def _ref_level(self, doc: dict | None = None) -> dict:
+        doc = doc or self.doc()
+        return doc["levels"][self._ref_index(doc)]
+
+    def selected_refs(self) -> list:
+        """The levels' references (an image, a PDF page) in the selection —
+        the host picks a picture as any entity."""
+        from . import refimage as R
+        return [e for e in self.viewport.scene.selection
+                if type(e).__name__ == "ImagePlane"
+                and R.is_ref_layer(getattr(e, "layer", "") or "")]
+
+    def ref_in_front(self, x: float, y: float):
+        """The level's reference (image / PDF page) shown under the pixel
+        when nothing of the model lies IN FRONT of it along the camera's
+        ray — or None. The host's own click takes a group behind it."""
+        from . import refimage as R
+        vp = self.viewport
+        if not (self.alive and self.active and compat.selecting(vp)) \
+                or not getattr(vp.scene, "image_planes", None):
+            return None
+        im = vp.pick_image_plane(x, y)
+        layer = getattr(im, "layer", "") or ""
+        if im is None or not R.is_ref_layer(layer) \
+                or compat._layer(vp, layer) is None \
+                or not compat.layer_visible(vp, layer):
+            return None             # (the host's image pick sees it hidden)
+        ray = compat.pixel_ray(vp, x, y)
+        if ray is None:
+            return None
+        (ox, oy, oz), (dx, dy, dz) = ray
+        a, u, v = im.origin, im.u, im.v
+        nx = u.y() * v.z() - u.z() * v.y()
+        ny = u.z() * v.x() - u.x() * v.z()
+        nz = u.x() * v.y() - u.y() * v.x()
+        den = nx * dx + ny * dy + nz * dz
+        if abs(den) < 1e-12:
+            return None
+        t = (nx * (a.x() - ox) + ny * (a.y() - oy) + nz * (a.z() - oz)) / den
+        if t <= 0:
+            return None
+        # what the last frame SHOWS there, from its depth (the host's
+        # read-back): nothing of the model on the camera's side of the
+        # picture. The host's rays miss a large floor or wall (its lazy
+        # pick) — a wall standing on the picture took no part in it.
+        # (Under it, by a few cm, the read-back cannot tell a floor from
+        # the picture itself, pushed back by its polygon offset: the
+        # picture, drawn over it, is what is seen.)
+        try:
+            seen = vp._depth_world_at(x, y)
+        except Exception:  # noqa: BLE001 — cannot say: the host's click
+            return None
+        if not seen:
+            return None
+        faded = float(getattr(im, "opacity", 1.0) or 0.0) < 0.999
+        if seen[0] != "hit" or seen[1] is None:
+            # the sky behind: an opaque picture drawn there would have been
+            # read back — only a faded one (it writes no depth) shows there
+            return im if faded else None
+        if faded:
+            return None                # drawn UNDER the model (the host)
+        h = seen[1]
+        nn = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+        # the plane's side the camera is on: +1 along (nx, ny, nz) or -1
+        side = -1.0 if den > 0 else 1.0
+        above = side * (nx * (h.x() - a.x()) + ny * (h.y() - a.y())
+                        + nz * (h.z() - a.z())) / nn
+        if above > 0.02:
+            return None                   # a wall, a column in front of it
+        return im
+
+    def ref_level_id(self, im, doc: dict | None = None) -> str | None:
+        """The level a reference lies on (by its Reference layer)."""
+        from . import refs
+        doc = doc or self.doc()
+        layer = getattr(im, "layer", None)
+        return next((lv["id"] for lv in doc.get("levels") or ()
+                     if refs.layer_of(lv) == layer), None)
+
+    def _sync_refs(self) -> None:
+        """Each level's references shown only on it (refs.sync)."""
+        from . import refs
+        vp = self.viewport
+        if not getattr(vp.scene, "image_planes", None):
+            return
+        self._sharpen_views()
+        doc = self.doc()
+        if doc.get("levels"):
+            refs.sync(vp, doc, self._ref_level(doc)["id"])
+
+    def _sharpen_views(self) -> None:
+        """Every 3D view of ours draws the references sharp (refs.sharpen:
+        each project tab has its own view, and the host's other views
+        their own — his test, 18/11: the file opened second stayed
+        blurred)."""
+        from . import refs
+        done = getattr(self, "_sharp_views", None)
+        if done is None:
+            done = self._sharp_views = []
+        try:
+            views = self.each_view()
+        except Exception:  # noqa: BLE001
+            views = [self.viewport]
+        for v in views:
+            if v is not None and not any(v is d for d in done):
+                refs.sharpen(v)
+                done.append(v)
+
+    def _drawing(self, level_id: str, doc: dict | None = None):
+        """The level's drawing (a DXF's, or a PDF page's placed with its
+        picture now — refs.drawing), or None."""
+        from . import refs
+        cache = self.__dict__.setdefault("_ref_lines_cache", {})
+        return refs.drawing(self.viewport, doc or self.doc(), level_id, cache)
+
+    def _ref_pdf(self, lv: dict):
+        """(picture, its page's entry) of the level's PDF reference — the
+        last one put on it — or (None, None)."""
+        from . import refs
+        data = refs.lines_data(self.viewport)
+        for im in reversed(refs.images(self.viewport, refs.layer_of(lv))):
+            e = data.get(getattr(im, "name", ""))
+            if isinstance(e, dict) and e.get("w_pt"):
+                return im, e
+        return None, None
+
+    def _ref_one(self, lv: dict, ims: list):
+        """The reference the bar's X / Y move: the one picked in the view
+        (on this level), else the last loaded."""
+        picked = [im for im in self.selected_refs() if im in ims]
+        return picked[0] if picked else ims[-1]
+
+    def _ref_bar_follow(self) -> None:
+        """The Reference bar shows what is true now — after a Ctrl+Z, a
+        Measure / Place, a ghost switched on, another picture picked —
+        never rebuilt while one of its fields is being typed in."""
+        if self.element != "reference" or self.options_for is None \
+                or isinstance(self.options_for, type):
+            return
+        from PySide6.QtWidgets import QApplication
+        from . import refs
+        doc = self.doc()
+        lv = self._ref_level(doc)
+        ims = refs.images(self.viewport, refs.layer_of(lv))
+        sig = (lv["id"], tuple((id(im), repr(refs.frame_of(im)),
+                                round(float(im.opacity), 3)) for im in ims),
+               tuple(id(im) for im in self.selected_refs()),
+               tuple(doc.get("ghosts") or ()), tuple(doc.get("ref_off") or ()),
+               doc.get("ref_ghost"))
+        if sig == getattr(self, "_ref_bar_sig", None):
+            return
+        fw = QApplication.focusWidget()
+        if fw is not None and self.optbar.isAncestorOf(fw):
+            return                         # typing: once it is done
+        self._ref_bar_sig = sig
+        QTimer.singleShot(0, self._refill_options)
+
+    def _ghost_refs(self, doc: dict, lv: dict) -> bool:
+        """A level with its ghost on (not this one) has references to show
+        over this plan — the bar's «Ghost %» is worth showing."""
+        from . import refs
+        off = set(doc.get("ref_off") or ())
+        return any(r["id"] != lv["id"] and r["id"] not in off
+                   and refs.images(self.viewport, refs.layer_of(r))
+                   for r in doc["levels"]
+                   if r["id"] in (doc.get("ghosts") or ()))
+
+    def _ref_options(self) -> list[dict]:
+        from . import refimage as R
+        from . import refs
+        doc = self.doc()
+        lv = self._ref_level(doc)
+        ims = refs.images(self.viewport, refs.layer_of(lv))
+        tool = getattr(self.viewport, "active_tool", None)
+        lit = getattr(tool, "mode", None) \
+            if self.tool_element() == "reference" else None
+        opts = [{"key": "act", "label": "", "kind": "icons", "value": lit,
+                 "choices": REF_ACTIONS}]
+        ghost = {"key": "ghost", "label": "Ghost", "kind": "int",
+                 "value": int(round(refs.ghost_opacity(doc) * 100)),
+                 "min": 0, "max": 100,
+                 "tip": "How strong the ghost levels' references are over "
+                        "this plan (%) — to match this level's picture to "
+                        "theirs"} if self._ghost_refs(doc, lv) else None
+        if not ims:
+            opts.append({"key": "note", "label": "", "kind": "note",
+                         "text": tr("No reference on «{n}» yet — load an "
+                                    "image or a PDF", n=lv["name"])})
+            if ghost:                     # another level's, seen over it
+                opts.append(ghost)
+            return opts
+        opts.append({"key": "show", "label": "Show", "kind": "segments",
+                     "value": "no" if lv["id"] in (doc.get("ref_off") or [])
+                     else "yes", "choices": [("yes", "On"), ("no", "Off")],
+                     "tip": "The level's reference in the view (only on "
+                            "this level, as its guide sheet)"})
+        opts.append({"key": "fade", "label": "Opacity", "kind": "int",
+                     "value": int(round(float(ims[-1].opacity) * 100)),
+                     "min": 10, "max": 100, "step": 5,
+                     "tip": "How strong the picture is (%). It always "
+                            "covers the floor under it, and what you draw "
+                            "stands over it; under 100 % it is lighter, so "
+                            "your lines read clearly over it"})
+        # where it lies: its lower-left corner, typed or stepped 1 cm by
+        # the arrows (his ask, 18/11: to match one level's picture to
+        # another's) — the one picked in the view, else the last loaded
+        x0, y0, _x1, _y1 = R.box_of(refs.frame_of(self._ref_one(lv, ims)))
+        for key, value in (("x", x0), ("y", y0)):
+            opts.append({"key": key, "label": key.upper(), "kind": "len",
+                         "value": round(value, 3), "min": -100000.0,
+                         "max": 100000.0, "step": 0.01,
+                         "tip": "Where the reference lies: its lower-left "
+                                "corner (the one picked in the view; none "
+                                "picked: the last one loaded). The arrows "
+                                "move it 1 cm — one Ctrl+Z each"})
+        if ghost:
+            opts.append(ghost)
+        im, e = self._ref_pdf(lv)
+        if im is not None:
+            now = R.page_scale(refs.frame_of(im), e["w_pt"])
+            near = min(R.SCALES, key=lambda n: abs(n - now))
+            cur = str(near) if abs(near - now) < 1e-3 * near \
+                else f"{now:.6g}"
+            choices = [(str(n), f"1:{n}") for n in R.SCALES]
+            if cur not in dict(choices):
+                choices.insert(0, (cur, f"1:{now:.4g} (measured)"))
+            opts.append({"key": "scale", "label": "Paper scale",
+                         "kind": "choice", "value": cur, "choices": choices,
+                         "tip": "The scale the PDF was drawn at: its page "
+                                "laid at its real size (its lower-left "
+                                "corner stays). "
+                                "Not sure? Measure it"})
+        return opts
+
+    def _on_ref_option(self, key: str, value) -> None:
+        from . import refimage as R
+        from . import refs
+        vp = self.viewport
+        doc = self.doc()
+        lv = self._ref_level(doc)
+        if key == "act":
+            if value == "load":
+                QTimer.singleShot(0, self.import_reference)
+            elif value == "level":
+                QTimer.singleShot(0, lambda k=lv["id"]: self.edit_level(
+                    k, tab="references"))
+            elif value == "clear":
+                QTimer.singleShot(0, self.remove_reference)
+            else:
+                QTimer.singleShot(0, lambda m=value: self.start_ref_tool(m))
+            QTimer.singleShot(0, self._refill_options)
+        elif key == "show":
+            self.set_refs_shown(lv["id"], value == "yes")
+        elif key == "fade":
+            ims = refs.images(vp, refs.layer_of(lv))
+            refs.run(vp, refs.opacity_cmds(ims, max(10, min(100, int(value)))
+                                           / 100.0))
+        elif key in ("x", "y"):
+            ims = refs.images(vp, refs.layer_of(lv))
+            if not ims:
+                return
+            im = self._ref_one(lv, ims)
+            f = refs.frame_of(im)
+            x0, y0, _x1, _y1 = R.box_of(f)
+            to = (float(value), y0) if key == "x" else (x0, float(value))
+            if abs(to[0] - x0) > 1e-6 or abs(to[1] - y0) > 1e-6:
+                refs.run(vp, [refs.frame_cmd(im, R.corner_at(f, *to))])
+        elif key == "ghost":
+            compat.set_ref_ghost(vp, self.app.key, value)
+            vp.update()
+        elif key == "scale":
+            im, e = self._ref_pdf(lv)
+            try:
+                want = float(value)
+            except (TypeError, ValueError):
+                return
+            if im is None or want <= 0:
+                return
+            f = refs.frame_of(im)
+            now = R.page_scale(f, e["w_pt"])
+            if now > 0 and abs(want - now) > 1e-9:
+                refs.run(vp, [refs.frame_cmd(im, R.scaled(f, want / now))])
+                compat.flash(vp, f"The page at 1:{want:g} — Ctrl+Z undoes "
+                             "it", 4000)
+
+    @_project_first
+    def import_reference(self, path: str | None = None,
+                         page: int | None = None) -> bool:
+        """«Image or PDF on this level…»: a picture (PNG, JPG, BMP) or a
+        PDF page (Pro) laid on the current level's floor, on its own
+        Reference layer — one Ctrl+Z. A picture is then MEASURED (the tool
+        comes out); a PDF page comes at the scale its text states (else
+        1:100, and measured) and its lines become the level's drawing: the
+        walls traced or made from them (Walls from DXF). ``path`` (and a
+        PDF's ``page``, 0-based): that file, no dialog."""
+        import os
+
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        from . import refimage as R
+        from . import refs
+        vp = self.viewport
+        pdf_ok = not (edition.lite() and is_pro("reference_pdf"))
+        base = compat.document_path(self.window)
+        start = os.path.dirname(base) if base else os.path.expanduser("~")
+        images = "*.png *.jpg *.jpeg *.bmp"
+        filt = (f"Images and PDF ({images} *.pdf);;Images ({images});;"
+                "PDF (*.pdf)") if pdf_ok else f"Images ({images})"
+        if not path:
+            path, _f = QFileDialog.getOpenFileName(
+                self.window, tr("An image or a PDF on this level"), start,
+                filt)
+        if not path:
+            return False
+        is_pdf = path.lower().endswith(".pdf")
+        if is_pdf and self._pro_only("reference_pdf"):
+            return False
+        doc = self.doc()
+        i = self._ref_index(doc)
+        lv = doc["levels"][i]
+        z = model.elevations(doc["levels"], doc["project"]["ground_level"]
+                             if model.has_project(doc) else 0.0)[i] + R.LIFT
+        layer = refs.layer_of(lv)
+        # its lower-left corner on the origin — at the right of the level's
+        # references when it has some (his call, 18/11)
+        corner = R.next_corner(refs.frame_of(im)
+                               for im in refs.images(vp, layer))
+        stem = os.path.basename(path)
+        cmds, measure, scale, n_lines = [], False, None, 0
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            if is_pdf:
+                from . import pdfread
+                if pdfread.needs_fetch():
+                    compat.flash(vp, "Getting the PDF reader (once)…", 30000)
+                    QApplication.processEvents()
+                    pdfread.fetch()
+                sizes = refs.pdf_pages(path)
+                QApplication.restoreOverrideCursor()
+                if page is None or not 0 <= page < len(sizes):
+                    page = self._ask_page(sizes, stem)
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+                if page is None:
+                    return False
+                got = refs.pdf_page(path, page)
+                scale = got["scale"] or 100
+                measure = got["scale"] is None
+                frame = R.corner_at(
+                    R.page_frame(got["w_pt"], got["h_pt"], scale, (0, 0), z),
+                    *corner)
+                name = refs.unique_name(vp, f"{lv['name']} · {stem}"
+                                        + (f" · p{page + 1}"
+                                           if len(sizes) > 1 else ""))
+                add, _im = refs.add_cmd(got["png"], frame, got["aspect"],
+                                        name, layer)
+                cmds.append(add)
+                n_lines = len(got["lines"])
+                if n_lines:
+                    names, segs, wall = R.weight_layers(got["lines"])
+                    data = dict(refs.lines_data(vp))
+                    data[name] = {"uv": [[round(s[0], 6), round(s[1], 6),
+                                          round(s[2], 6), round(s[3], 6),
+                                          s[4]] for s in segs],
+                                  "file": stem, "page": page,
+                                  "w_pt": got["w_pt"], "h_pt": got["h_pt"]}
+                    cmds.append(refs.data_cmd(refs.LINES_KEY, data))
+                    doc["underlays"] = dict(doc.get("underlays") or {})
+                    doc["underlays"][lv["id"]] = {
+                        "name": stem + (f" p.{page + 1}" if len(sizes) > 1
+                                        else ""),
+                        "layers": names, "segs": [], "layer": wall,
+                        "blocks": [], "texts": [], "loops": [], "ref": name}
+                    cmds.append(refs.data_cmd(self.app.key, doc))
+                else:
+                    # (no lines: a scanned page — only its picture; a
+                    # PDF entry all the same, for its paper scale)
+                    data = dict(refs.lines_data(vp))
+                    data[name] = {"uv": [], "file": stem, "page": page,
+                                  "w_pt": got["w_pt"], "h_pt": got["h_pt"]}
+                    cmds.append(refs.data_cmd(refs.LINES_KEY, data))
+            else:
+                aspect = refs.image_aspect(path)
+                if aspect is None:
+                    compat.flash(vp, tr("«{n}» is not an image that can be "
+                                        "read", n=stem), 6000)
+                    return False
+                frame = R.corner_at(R.first_frame(aspect, (0, 0), z),
+                                    *corner)
+                name = refs.unique_name(vp, f"{lv['name']} · {stem}")
+                add, _im = refs.add_cmd(path, frame, aspect, name, layer)
+                cmds.append(add)
+                measure = True
+            compat.ensure_layers(vp, [layer])
+            refs.run(vp, cmds)
+        except Exception as e:  # noqa: BLE001 — say it
+            compat.log_error("import_reference")
+            compat.flash(vp, tr("Not loaded — {e}", e=e), 9000)
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        off = set(self.doc().get("ref_off") or [])
+        if lv["id"] in off:
+            compat.set_ref_off(vp, self.app.key, off - {lv["id"]})
+        if self.terrain_current or self.floor != i:
+            self.set_floor(lv["id"], quiet=True)
+        self._sync_refs()
+        if self.element != "reference":
+            self.pick("walls", "reference", follow=True)
+        self.enter_plan(quiet=True)
+        compat.fit_plan(vp, [R.world_of(frame, c)[:2]
+                             for c in ((0, 0), (1, 0), (1, 1), (0, 1))])
+        what = tr("«{f}» on «{n}»", f=stem, n=lv["name"])
+        if is_pdf:
+            what += (f" at 1:{scale}" + (" (read from the page)"
+                                         if not measure else
+                                         " — no scale on the page: measure "
+                                         "it"))
+            if n_lines:
+                what += tr(" · {k} lines: trace the walls over them, or "
+                           "Walls from DXF ▸ Make", k=n_lines)
+        compat.flash(vp, what + " — Ctrl+Z undoes it", 10000)
+        self._refill_options()
+        if measure:
+            QTimer.singleShot(0, lambda: self.start_ref_tool("measure"))
+        return True
+
+    def _ask_page(self, sizes: list, stem: str):
+        """The page to use (0-based); one page: it. None: cancelled."""
+        if len(sizes) == 1:
+            return 0
+        from PySide6.QtWidgets import QInputDialog
+        from . import refimage as R
+        items = [tr("Page {k}  ({w} × {h} mm)", k=k + 1,
+                    w=round(w * R.PT * 1000), h=round(h * R.PT * 1000))
+                 for k, (w, h) in enumerate(sizes)]
+        item, ok = QInputDialog.getItem(self.window, stem,
+                                        tr("Which page?"), items, 0, False)
+        return items.index(item) if ok and item in items else None
+
+    def start_ref_tool(self, mode: str) -> None:
+        """Measure / Place / Remove on the level's references (reftool)."""
+        from . import refs
+        from .reftool import RefTool
+        doc = self.doc()
+        i = self._ref_index(doc)
+        lv = doc["levels"][i]
+        layer = refs.layer_of(lv)
+        if not refs.images(self.viewport, layer):
+            compat.flash(self.viewport, tr("No reference on «{n}» — load an "
+                                           "image or a PDF first",
+                                           n=lv["name"]), 5000)
+            return
+        from . import refimage as R
+        # (the clicks on the picture's own plane — LIFT over the floor —
+        # so a perspective view does not shift them)
+        z = model.elevations(doc["levels"], doc["project"]["ground_level"]
+                             if model.has_project(doc) else 0.0)[i] + R.LIFT
+        lid = lv["id"]
+        tool = RefTool(mode, z, layer,
+                       lambda: (self._drawing(lid) or {}).get("segs") or [],
+                       self._ref_done, self._ref_cancelled)
+        tool.axq_element = "reference"
+        self._activate(tool)
+        QTimer.singleShot(0, self._refill_options)
+
+    def _ref_done(self, removed) -> None:
+        if removed is not None:
+            self._remove_refs([removed])
+        QTimer.singleShot(0, self._refill_options)
+
+    def _ref_cancelled(self) -> None:
+        compat.back_to_select(self.viewport)
+        QTimer.singleShot(0, self._refill_options)
+
+    def remove_reference(self) -> None:
+        """The eraser: the level's one reference goes at once; several —
+        click the one to remove."""
+        from . import refs
+        lv = self._ref_level()
+        ims = refs.images(self.viewport, refs.layer_of(lv))
+        if len(ims) == 1:
+            self._remove_refs(ims)
+        elif ims:
+            self.start_ref_tool("remove")
+
+    def _remove_cmds(self, ims) -> list:
+        """The commands that take these pictures away — with their PDF
+        lines and the drawing made of them."""
+        from . import refs
+        vp = self.viewport
+        names = {getattr(im, "name", "") for im in ims}
+        cmds = [refs.delete_cmd(ims)]
+        data = refs.lines_data(vp)
+        if names & set(data):
+            cmds.append(refs.data_cmd(refs.LINES_KEY, {
+                k: v for k, v in data.items() if k not in names}))
+        doc = self.doc()
+        und = doc.get("underlays") or {}
+        if any(u.get("ref") in names for u in und.values()):
+            doc["underlays"] = {k: u for k, u in und.items()
+                                if u.get("ref") not in names}
+            cmds.append(refs.data_cmd(self.app.key, doc))
+        return cmds
+
+    def _remove_refs(self, ims) -> None:
+        """These pictures gone — with their PDF lines and the drawing made
+        of them — as one Ctrl+Z."""
+        from . import refs
+        vp = self.viewport
+        refs.run(vp, self._remove_cmds(ims))
+        self._refill_options()
+        compat.flash(vp, ("Reference removed" if len(ims) == 1 else
+                          f"{len(ims)} references removed")
+                     + " — Ctrl+Z brings it back", 5000)
+        if not refs.images(vp, refs.layer_of(self._ref_level())) \
+                and self.tool_element() == "reference":
+            compat.back_to_select(vp)
+
     def _draw_underlay(self, viewport, painter) -> None:
         """The level's imported drawing, thin, over the view (its walls'
         layer darker)."""
@@ -3815,8 +4474,8 @@ class ArchXQ:
             if not 0 <= self.floor < len(levels):
                 return
             lv = levels[self.floor]
-            u = (doc.get("underlays") or {}).get(lv["id"])
-            if not u:
+            u = self._drawing(lv["id"], doc)
+            if not u or not u.get("segs"):
                 return
             z = model.elevations(levels, doc["project"]["ground_level"]
                                  if model.has_project(doc) else 0.0)[
@@ -5558,9 +6217,10 @@ class ArchXQ:
         def back() -> None:
             if self._live_meshes:
                 self._live_back()
-                compat.touch_scene(self.viewport)
+                compat.touch_scene(self.viewport, light=True)
         draw = {"wall": self._live_wall_rec,
-                "profile": self._live_profile_rec}.get(
+                "profile": self._live_profile_rec,
+                "struct": self._live_struct_rec}.get(
                     kind, self._live_opening_rec)
         try:
             livewin.Live(dlg, read, draw, back)
@@ -5631,7 +6291,7 @@ class ArchXQ:
         for op, parts in made[1]:
             if parts:
                 self._live_put(op["id"], "opening", parts, d2)
-        compat.touch_scene(self.viewport)
+        compat.touch_scene(self.viewport, light=True)
 
     def _live_profile_rec(self, rec: dict, mat=None) -> None:
         """A profile as its window says."""
@@ -5650,7 +6310,33 @@ class ArchXQ:
             return
         self._live_back()
         self._live_put(r["id"], "profile", faces, d2)
-        compat.touch_scene(self.viewport)
+        compat.touch_scene(self.viewport, light=True)
+
+    #: the elements whose window shows them live (their Shape tab too —
+    #: his test, 18/11/2026: a beam's section and curve waited for Apply)
+    LIVE_STRUCT = ("column", "beam", "footing")
+
+    def _live_struct_rec(self, rec: dict, mat=None) -> None:
+        """A column / beam / footing as its window says — built with its
+        level as context (a beam joined to the others), only it shown."""
+        from . import materials as M
+        from . import structure as S
+        r = {k: v for k, v in rec.items() if not str(k).startswith("_")}
+        if r.get("type") not in self.LIVE_STRUCT or S.why_not(r):
+            return
+        doc = self.doc()
+        if not any(x["id"] == r["id"] for x in doc["structure"]):
+            return
+        d2 = dict(doc, structure=[r if x["id"] == r["id"] else x
+                                  for x in doc["structure"]])
+        if mat is not None:
+            d2 = M.merge(d2, mat)
+        faces = S.elements_live(d2, model.elevations, {r["id"]}).get(r["id"])
+        if not faces:
+            return
+        self._live_back()
+        self._live_put(r["id"], r["type"], faces, d2)
+        compat.touch_scene(self.viewport, light=True)
 
     def _live_opening_rec(self, o: dict, mat=None) -> None:
         """A door / window / void as its window says, and its wall's hole.
@@ -5680,7 +6366,7 @@ class ArchXQ:
         self._live_put(wall["id"], "wall", made[0], d2)
         if parts:
             self._live_put(o["id"], "opening", parts, d2)
-        compat.touch_scene(self.viewport)
+        compat.touch_scene(self.viewport, light=True)
 
     def _type_layer_live(self, key: str, changes: dict) -> None:
         """A library bar of a wall TYPE's layer dragged: the selected wall of
@@ -6962,17 +7648,50 @@ class ArchXQ:
         if changed and self.options_for is not None:
             QTimer.singleShot(0, self._refill_options)
 
+    #: a number in the bar is taken once it RESTS this long (ms)
+    BAR_SETTLE_MS = 350
+
     def _bar_to_selected(self, element: str, key: str, value) -> None:
         """A field of the options bar changed with elements of its kind
         selected (his ask, 2026-10-08: as the library does): they take it
-        at once — the model rebuilt, still selected; a run of changes to
-        the same field of the same ones is ONE Ctrl+Z."""
-        from . import structure as S
+        — the model rebuilt, still selected; a run of changes to the same
+        field of the same ones is ONE Ctrl+Z.
+        Never rebuilt INSIDE the field's own signal, and a number only once
+        it rests (his freeze, 18/11/2026: one click on «Top»'s arrow, each
+        1 cm step rebuilding a large timber floor for seconds — the arrow's
+        repeat ran on through the rebuilds, 0 → 9.50 m, minutes)."""
         if key not in self.BAR_REC.get(element, ()):
             return
         sel_key, ids = self._lib_picked()
         if sel_key != element or not ids:
             return
+        old = getattr(self, "_bar_pending", None)
+        if old is not None and (old[0], old[1], set(old[3])) \
+                != (element, key, set(ids)):
+            self._bar_settled()             # another field / others: no loss
+        self._bar_pending = (element, key, value, list(ids))
+        t = getattr(self, "_bar_timer", None)
+        if t is None:
+            t = QTimer()
+            t.setSingleShot(True)
+            t.timeout.connect(self._bar_settled)
+            self._bar_timer = t
+        number = isinstance(value, (int, float)) \
+            and not isinstance(value, bool)
+        t.start(self.BAR_SETTLE_MS if number else 0)
+
+    def _bar_settled(self) -> None:
+        job = getattr(self, "_bar_pending", None)
+        self._bar_pending = None
+        if job is None or not self.alive:
+            return
+        try:
+            self._bar_apply(*job)
+        except Exception:  # noqa: BLE001 — say it, never lose the field
+            compat.log_error("_bar_apply")
+
+    def _bar_apply(self, element: str, key: str, value, ids: list) -> None:
+        from . import structure as S
         rk, rv = key, value
         if element == "column" and key in ("height", "h"):
             # the bar's «Height» (To the slab / Custom) + its field → the
@@ -6984,10 +7703,20 @@ class ArchXQ:
         extra = {"zt": self.beam_opts["zt"]} \
             if element == "beam" and key == "zmode" and rv == "own" else {}
         doc = self._live(self.doc())
+        # a slab's top stays inside its own level (see _slab_options)
+        tops = {lv["id"]: float(lv["height"]) for lv in doc["levels"]} \
+            if element == "slab" and rk == "offset" else {}
         n = 0
         for part in ("walls", "structure", "openings"):
             new = []
             for r in doc[part]:
+                if tops and r["id"] in ids and r.get("level") in tops \
+                        and float(rv) > tops[r["level"]] + 1e-9:
+                    compat.flash(self.viewport, tr(
+                        "A slab's top stays inside its level: {h} at most "
+                        "(the floor above)",
+                        h=compat.fmt_len(tops[r["level"]])), 6000)
+                    return
                 if r["id"] in ids and r.get(rk) != rv:
                     if rk in ("w", "d") and S.is_poly(r):
                         # its own outline (C1): stretched to that size
@@ -7497,6 +8226,8 @@ class ArchXQ:
         fit = fit_beam = None
         if colrows.opts_of(row.get("opts"))["fit"] == "fit":
             def fit(r, _w=walls):
+                if S.is_poly(r):        # its own section (the shape editor):
+                    return r            # as the row keeps it, never refitted
                 return S.fit_column(r, _w)
 
             def fit_beam(r, _w=walls):
@@ -8838,9 +9569,9 @@ class ArchXQ:
             why = "no walls meet yet"
         elif (element, shape) == ("beam", "walls"):
             o = self.beam_opts
-            recs = [{"type": "beam", "a": a, "b": b, "w": o["w"],
-                     "h": o["h"]} for a, b in S.along_walls(walls)]
-            why = "no straight walls yet"
+            recs = [dict(ab, type="beam", w=o["w"], h=o["h"])
+                    for ab in S.along_walls(walls)]
+            why = "no walls yet"
         elif (element, shape) == ("slab", "walls"):
             # one slab under EACH block of walls (his Level 2 in two wings,
             # 2026-10-15: only the bigger got one)
@@ -9097,7 +9828,7 @@ class ArchXQ:
                                sum(p[1] for p in cs) / len(cs))
         # a DXF under this level: its walls' two lines as «lanes» to trace
         # between (0.15.0, B8 — tracing.py); the layer walls come from, or all
-        u = (doc.get("underlays") or {}).get(lv["id"])
+        u = self._drawing(lv["id"], doc)
         if u and u.get("segs") and shape == "chain":
             from . import tracing
             # (a line's layer is kept as its index in «layers»)
@@ -9220,13 +9951,14 @@ class ArchXQ:
         """The ids of the low walls / glass grids that differ between two
         documents — when NOTHING else does (walls, openings, levels, plot,
         materials, the other elements); else None (rebuild it all)."""
-        skip = ("structure", "built")
+        from .fastcommit import same    # (a key at None = no key: a typed
+        skip = ("structure", "built")   # wall's «frame»: None, 18/11/2026)
         keys = (set(old) | set(new)) - set(skip)
-        if any(old.get(k) != new.get(k) for k in keys):
+        if any(not same(old.get(k), new.get(k)) for k in keys):
             return None
         a = {e["id"]: e for e in old.get("structure") or []}
         b = {e["id"]: e for e in new.get("structure") or []}
-        diff = {i for i in set(a) | set(b) if a.get(i) != b.get(i)}
+        diff = {i for i in set(a) | set(b) if not same(a.get(i), b.get(i))}
         if not diff:
             return None
         for i in diff:
@@ -9246,6 +9978,7 @@ class ArchXQ:
             self.locked_note()
             return
         deep_was = self._deepest(before)
+        asked = doc                      # (what was drawn: before autoslabs)
         # a column of a «Column row» changed on its own (the options bar,
         # the AI, a batch): the change goes to the row, all made again —
         # else the row's next edit would undo it (colrows.settle)
@@ -9292,9 +10025,19 @@ class ArchXQ:
             compat.commit_some(self.viewport, self.app.key, doc,
                                model.elevations, compat.level_layer, some)
         else:
+            # only columns / beams / footings changed: only they (and what
+            # is built from them) computed again — a beam's Apply took 2.9 s
+            # on his corporate building, all of it built for one beam (his
+            # test, 18/11/2026; fastcommit.py)
+            try:
+                from . import fastcommit
+                part = fastcommit.struct_only(before, doc)
+            except Exception:  # noqa: BLE001 — unsure: all of it, as ever
+                part = None
             compat.commit_build(self.viewport, self.app.key, doc,
-                                model.elevations, compat.level_layer)
+                                model.elevations, compat.level_layer, part)
             self._ground_follows(deep_was)
+        self._reveal_new(before, asked)  # drawn with its chip off: back on
         self._apply_parts()              # «Show», and what hides in walls
         lv_id = getattr(getattr(self.viewport, "active_tool", None),
                         "level_id", None)
@@ -10029,9 +10772,10 @@ class ArchXQ:
             a.triggered.connect(lambda _=False, i=ids: QTimer.singleShot(
                 0, lambda: self.select_these(i)))
 
-    def edit_element(self, el_id: str) -> None:
+    def edit_element(self, el_id: str, tab: str | None = None) -> None:
         """A column's / beam's / slab's / footing's window (modal). Apply
-        = one Ctrl+Z."""
+        = one Ctrl+Z. ``tab``: "shape" opens a column's / a pad's on its
+        Shape tab (right-click › Edit shape…)."""
         from .dialogs import ElementDialog
         if str(el_id).startswith("floor:"):  # a room's floor (its material)
             self.edit_floor(el_id)
@@ -10085,11 +10829,15 @@ class ArchXQ:
                             row=row)
         self._mat_tab(dlg, el["type"], el_id)
         self._layer_eyes(dlg, el_id)
+        if tab == "shape" and getattr(dlg, "sshape_tab", None) is not None:
+            dlg.tabs.setCurrentIndex(dlg.sshape_tab)
         from . import structure as S
         apply = self._batch_window(dlg, "struct", el_id, self.apply_element,
                                    S.LABEL[el["type"]].lower() + "s",
                                    lambda: self.edit_element(el_id))
         self._in_place(dlg, apply)
+        if el["type"] in self.LIVE_STRUCT:
+            self._live_window(dlg, "struct")   # it, live (livewin.py)
         if not dlg.exec():
             return
         action, new = dlg.result_data()
@@ -10220,6 +10968,9 @@ class ArchXQ:
         tab.on_apply = apply
         materials.with_tab(dlg, tab)
         dlg.show_material()
+        # on top: the slab it lies on — its window a click away (his ask,
+        # 18/11/2026: the finish passes for the slab, «Slab» must be there)
+        dlg.slab_bar(slab.get("name") or "")
 
         def now() -> None:
             ch = tab.change()
@@ -10232,6 +10983,9 @@ class ArchXQ:
             ch = tab.change()
             if ch is not None:
                 apply(ch)
+            if getattr(dlg, "action", "") == "slab":
+                sid = slab["id"]
+                QTimer.singleShot(0, lambda: self.edit_element(sid))
 
     def _floor_apply(self, ch: dict, box: dict) -> None:
         """A room's floor's material stored and painted — a room with no
@@ -12731,6 +13485,18 @@ class ArchXQ:
             a.setStatusTip("Its sizes, its name")
             a.triggered.connect(lambda _=False, e=eid: QTimer.singleShot(
                 0, lambda: self.edit_element(e)))
+            rec = next((x for x in self.doc().get("structure") or []
+                        if x["id"] == eid), None)
+            if rec is not None and (rec.get("type") == "column" or (
+                    rec.get("type") == "footing"
+                    and rec.get("kind") == "pad")):
+                # its section's shape (the shape editor): that tab
+                c = sub.addAction("Edit shape…")
+                c.setStatusTip("Round a corner, cut a notch, bend a side — "
+                               "its section seen from above")
+                c.triggered.connect(
+                    lambda _=False, e=eid: QTimer.singleShot(
+                        0, lambda: self.edit_element(e, tab="shape")))
             b = sub.addAction(f"Delete {label.lower()}")
             b.triggered.connect(lambda _=False, e=eid: QTimer.singleShot(
                 0, lambda: self.delete_element(e)))
@@ -13142,6 +13908,7 @@ class ArchXQ:
         """Top → bottom as a section reads, the Terrain at the ground —
         under the ground floor, over the basements (his eye, 2026-10-05:
         basements listed over the Terrain read as above the ground)."""
+        from . import refs
         levels = doc["levels"]
         names = [compat.level_layer(r["name"]) for r in levels]
         compat.ensure_layers(self.viewport, names + [compat.TERRAIN_LAYER])
@@ -13163,7 +13930,10 @@ class ArchXQ:
                  "parts_off": [label for key, label, _k in model.LEVEL_PARTS
                                if key in off.get(r["id"], ())],
                  "ghost": r["id"] in (doc.get("ghosts") or ()),
-                 "sheet": r["id"] in (doc.get("sheets") or ())}
+                 "sheet": r["id"] in (doc.get("sheets") or ()),
+                 # its references (an image, a PDF page): the row's icon
+                 "refs": len(refs.images(self.viewport, refs.layer_of(r))),
+                 "refs_on": r["id"] not in (doc.get("ref_off") or ())}
                 for i, r in reversed(list(enumerate(levels)))]
         rows.insert(self._terrain_at(rows),
                     {"key": TERRAIN_ROW, "name": "Terrain",
@@ -13215,6 +13985,7 @@ class ArchXQ:
                     "The excavation goes down under «{n}» — draw it",
                     n=levels[i]["name"]), 4000)
         self.levels.mark_current(key)
+        self._sync_refs()                # its reference shows at once
         self._outline_soon()
         if self.plan_on:
             self._apply_parts()          # the plan cut at the new level
@@ -13282,6 +14053,7 @@ class ArchXQ:
         name = self._level_layer(key, doc)
         compat.set_layer_visible(self.viewport, name,
                                  not compat.layer_visible(self.viewport, name))
+        self._sync_refs()                # its reference with it
         self._fill_levels(doc)
         self._outline_soon()
 
@@ -13295,6 +14067,9 @@ class ArchXQ:
         renames = [(compat.level_layer(before[r["id"]]),
                     compat.level_layer(r["name"]))
                    for r in levels if r["id"] in before]
+        from . import refimage
+        renames += [(refimage.ref_layer(a), refimage.ref_layer(b))
+                    for a, b in renames]
         keep = current or (doc["levels"][self.floor]["id"]
                            if 0 <= self.floor < len(doc["levels"]) else None)
         doc["levels"] = levels
@@ -13325,6 +14100,9 @@ class ArchXQ:
             doc = self.doc()
         if doc.get("walls") or doc.get("structure"):
             self._commit_all(self._live(doc))
+        from . import refs
+        refs.run(self.viewport, refs.follow_levels(self.viewport, self.doc(),
+                                                   model.elevations))
 
     def edit_current_level(self) -> None:
         doc = self.doc()
@@ -13333,9 +14111,10 @@ class ArchXQ:
             return
         self.edit_level(doc["levels"][self.floor]["id"])
 
-    def edit_level(self, key: str) -> None:
+    def edit_level(self, key: str, tab: str | None = None) -> None:
         """The level's own window (modal): name, height; add a level above
-        or below; delete it when nothing sits on it."""
+        or below; delete it when nothing sits on it; its references (an
+        image, a PDF page). ``tab``: "references" opens it there."""
         from .dialogs import LevelDialog
         doc = self.doc()
         ids = [r["id"] for r in doc["levels"]]
@@ -13343,13 +14122,34 @@ class ArchXQ:
             return
         i = ids.index(key)
         layer = compat.level_layer(doc["levels"][i]["name"])
+        refs_in, put_back, rebase = self._level_refs(doc, doc["levels"][i])
         dlg = LevelDialog(doc, i, compat.layer_content(self.viewport, layer),
                           self.window,
                           on_show=lambda off: self.set_level_parts(key, off),
-                          on_add=self._add_level_now)
-        if not dlg.exec():
+                          on_add=self._add_level_now, refs=refs_in, tab=tab)
+
+        def now() -> None:
+            # «Apply» with the window OPEN (his ask, 19/11/2026: it closed
+            # and came back a moment later): what OK stores, stored now —
+            # the references (one Ctrl+Z) and the name / height / slabs —
+            # and the window's starting point moved to what was applied, so
+            # a Cancel after it keeps it
+            put_back()
+            self._apply_ref_changes(dlg.ref_changes)
+            _a, name, height = dlg.result_data()
+            self._keep_level_typed(key, dlg, name, height)
+            rebase()
+            dlg.applied()
+        dlg._apply_now = now
+        ok = dlg.exec()
+        put_back()                     # (the preview gone: the real change
+        if not ok:                     # comes as commands, one Ctrl+Z)
             return
+        self._apply_ref_changes(dlg.ref_changes)
         action, name, height = dlg.result_data()
+        if action.startswith("ref_"):
+            self._level_then_tool(key, dlg, name, height, action)
+            return
         doc = self.doc()               # fresh: nothing changed meanwhile lost
         ids = [r["id"] for r in doc["levels"]]
         if key not in ids:
@@ -13390,11 +14190,160 @@ class ArchXQ:
         else:
             # its slabs typed in the window (support #93, 07/11/2026): the
             # level keeps it for the slabs to come, and its slabs take it —
-            # in the same Ctrl+Z as the height
-            for lid, t in dlg.slabs().items():
-                doc = model.with_level_slab(doc, levels, lid, t)
-            self._save_levels(doc, levels, current=key)
-            self._again(dlg, lambda: self.edit_level(key))
+            # in the same Ctrl+Z as the height. Nothing of the level changed
+            # (only its references, say): nothing saved — no empty Ctrl+Z
+            # steps before the references' one, no rebuild (18/11/2026)
+            self._keep_level_typed(key, dlg, name, height)
+
+    # ---- the level's window ▸ References ----------------------------------------------
+    def _level_refs(self, doc: dict, lv: dict):
+        """(what the «References» tab is given, how to put the pictures
+        back as they were, how «Apply» makes what is now the starting
+        point). Its changes are SEEN in the model while the window is open
+        (set straight on the pictures, no undo); OK / Apply make them
+        commands."""
+        from . import refimage as R
+        from . import refs
+        vp = self.viewport
+        ims = refs.images(vp, refs.layer_of(lv))
+        lines = refs.lines_data(vp)
+        before = {id(im): (im, refs.frame_of(im), float(im.opacity))
+                  for im in ims}
+        items = []
+        for im in ims:
+            e = lines.get(getattr(im, "name", ""))
+            f = refs.frame_of(im)
+            w, h = R.size_of(f)
+            pdf = isinstance(e, dict) and bool(e.get("w_pt"))
+            scale = R.page_scale(f, e["w_pt"]) if pdf else None
+            size = compat.fmt_wh(w, h)
+            if pdf:
+                info = tr("PDF, page {p} · {s} · {k} lines",
+                          p=int(e.get("page") or 0) + 1, s=size,
+                          k=len(e.get("uv") or []))
+            else:
+                info = tr("Image · {s}", s=size)
+            items.append({"name": im.name, "label": str(
+                getattr(im, "name", "")).split(" · ", 1)[-1],
+                "info": info, "opacity": float(im.opacity),
+                "scale": scale})
+
+        def preview(name: str, ch: dict) -> None:
+            im = refs.find(vp, name)
+            if im is None or id(im) not in before:
+                return
+            _im, f0, o0 = before[id(im)]
+            im.opacity = 0.0 if ch.get("remove") else float(
+                ch.get("opacity", o0))
+            f = f0
+            if ch.get("scale"):
+                e = lines.get(name) or {}
+                now = R.page_scale(f0, e.get("w_pt") or 0)
+                if now > 0:
+                    f = R.scaled(f0, float(ch["scale"]) / now)
+            self._set_frame(im, f)
+            compat.touch_scene(vp)
+            compat.fresh_frame(vp)
+
+        def put_back() -> None:
+            for im, f0, o0 in before.values():
+                im.opacity = o0
+                self._set_frame(im, f0)
+            compat.touch_scene(vp)
+            compat.fresh_frame(vp)
+
+        def rebase() -> None:
+            """«Apply» stored the changes: the pictures as they are now are
+            the starting point (a Cancel after it puts back these)."""
+            now_lv = next((r for r in self.doc().get("levels") or []
+                           if r["id"] == lv["id"]), lv)
+            before.clear()
+            for im in refs.images(vp, refs.layer_of(now_lv)):
+                before[id(im)] = (im, refs.frame_of(im), float(im.opacity))
+
+        def on_show(on: bool) -> None:
+            self.set_refs_shown(lv["id"], on)
+        return ({"items": items, "preview": preview, "on_show": on_show,
+                 "off": lv["id"] in (doc.get("ref_off") or [])}, put_back,
+                rebase)
+
+    @staticmethod
+    def _set_frame(im, f) -> None:
+        from PySide6.QtGui import QVector3D
+        im.origin = QVector3D(*f[0])
+        im.u = QVector3D(*f[1])
+        im.v = QVector3D(*f[2])
+
+    def _apply_ref_changes(self, changes: dict) -> None:
+        """What the «References» tab changed, as ONE Ctrl+Z."""
+        from . import refimage as R
+        from . import refs
+        if not changes:
+            return
+        vp = self.viewport
+        lines = refs.lines_data(vp)
+        cmds, gone = [], []
+        for name, ch in changes.items():
+            im = refs.find(vp, name)
+            if im is None:
+                continue
+            if ch.get("remove"):
+                gone.append(im)
+                continue
+            if "opacity" in ch:
+                cmds += refs.opacity_cmds([im], ch["opacity"])
+            if ch.get("scale"):
+                f = refs.frame_of(im)
+                now = R.page_scale(f, (lines.get(name) or {}).get("w_pt")
+                                   or 0)
+                if now > 0 and abs(float(ch["scale"]) - now) > 1e-9:
+                    cmds.append(refs.frame_cmd(
+                        im, R.scaled(f, float(ch["scale"]) / now)))
+        if gone:
+            cmds += self._remove_cmds(gone)
+        refs.run(vp, cmds)
+        if cmds:
+            compat.flash(vp, "References changed — Ctrl+Z undoes it", 4000)
+
+    def _level_then_tool(self, key: str, dlg, name: str, height: float,
+                         action: str) -> None:
+        """«Load / Measure / Place» in the level's window: what was typed
+        there kept (only when changed), then the level worked on and the
+        tool out in the view."""
+        if key not in [r["id"] for r in self.doc()["levels"]]:
+            return
+        self._keep_level_typed(key, dlg, name, height)
+        self.set_floor(key, quiet=True)
+        if self.element != "reference":
+            # (its own file dialog only once: the one «Load» asks for)
+            self.pick("walls", "reference", follow=True)
+        self.enter_plan()               # the reference's work is in the plan
+        go = {"ref_load": self.import_reference,
+              "ref_measure": lambda: self.start_ref_tool("measure"),
+              "ref_place": lambda: self.start_ref_tool("place")}[action]
+        QTimer.singleShot(0, go)
+
+    def _keep_level_typed(self, key: str, dlg, name: str,
+                          height: float) -> None:
+        """The name, height and slabs typed in the level's window, saved
+        (one Ctrl+Z) — only when one of them changed. Either way the
+        level is the one worked on after (as OK always did)."""
+        doc = self.doc()
+        ids = [r["id"] for r in doc["levels"]]
+        if key not in ids:
+            return
+        i = ids.index(key)
+        lv = doc["levels"][i]
+        slabs = dlg.slabs()
+        if name == lv["name"] and not slabs \
+                and abs(height - float(lv["height"])) <= 1e-6:
+            self.set_floor(key, quiet=True)
+            return
+        levels = [dict(r) for r in doc["levels"]]
+        levels[i]["name"], levels[i]["height"] = name, height
+        for lid, t in slabs.items():
+            doc = model.with_level_slab(doc, levels, lid, t)
+        self._save_levels(doc, levels, current=key)
 
     def repeat_level(self, key: str, n: int, name: str | None = None,
                      height: float | None = None) -> None:
@@ -13618,6 +14567,11 @@ class ArchXQ:
     def _sync_outliner(self, force: bool = False) -> None:
         if not self.alive:
             return
+        try:
+            self._sync_refs()            # a level's references: on it only
+            self._ref_bar_follow()
+        except Exception:  # noqa: BLE001 — never stop the outliner
+            compat.log_error("_sync_refs")
         doc = self.doc()
         vp = self.viewport
         sig = (tuple((g.uid, g.name, getattr(g, "layer", None), g.hidden)
@@ -13644,17 +14598,25 @@ class ArchXQ:
         # plot → the Terrain, a Level 2 object → Level 2) — only at the
         # moment the pick CHANGES: a level clicked afterwards wins, even
         # with the object still selected
-        picked = frozenset(g.uid for g in selected)
+        # a level's reference picked (an image, a PDF page — no group with
+        # it): its bar, on its level (his ask, 18/11 — no Walls › Image /
+        # PDF reference to go through)
+        ims = [] if selected else self.selected_refs()
+        picked = frozenset(g.uid for g in selected) \
+            | frozenset(id(im) for im in ims)
         if picked != self._last_pick:
             self._last_pick = picked
             QTimer.singleShot(0, self._library_show)  # its type, marked
             # its phase and element too (his ask, 2026-10-02): a wall →
             # Walls › Wall, a window → Openings › Window…
-            target = self._element_for(selected)
+            target = ("walls", "reference") if ims \
+                else self._element_for(selected)
             if target and target != (self.current, self.element) \
                     and self.tool_element() is None:
-                QTimer.singleShot(0, lambda t=target: self.pick(*t))
-            where = self._level_of(selected, doc)
+                QTimer.singleShot(0, lambda t=target: self.pick(
+                    *t, follow=True))
+            where = self.ref_level_id(ims[0], doc) if ims \
+                else self._level_of(selected, doc)
             if where is not None and where != self.current_key():
                 self.set_floor(where, quiet=True)
                 return                     # set_floor schedules the rebuild
@@ -13824,6 +14786,20 @@ class ArchXQ:
         if on and not self.plan_on:
             compat.flash(self.viewport, "Ghost on — it shows in the plan "
                          "view", 4000)
+        self._ref_bar_follow()          # its references' «Ghost %» in the bar
+        self.viewport.update()
+
+    def set_refs_shown(self, key: str, on: bool) -> None:
+        """A level's references (an image, a PDF page) shown or hidden — a
+        view change (no undo), kept in the file. The same switch from the
+        row's picture icon, the bar's «Show» and the level's window."""
+        cur = set(self.doc().get("ref_off") or [])
+        cur = (cur - {key}) if on else (cur | {key})
+        compat.set_ref_off(self.viewport, self.app.key, cur)
+        self._sync_refs()
+        self._fill_levels(self.doc())
+        if self.element == "reference":         # the bar's «Show» follows
+            self._refill_options()
         self.viewport.update()
 
     def toggle_sheet(self, key: str) -> None:
@@ -13886,7 +14862,11 @@ class ArchXQ:
             hover = getattr(tool, "hover", None) if active else None
             if not (isinstance(hover, (list, tuple)) and len(hover) >= 2):
                 hover = None
-            ext = LS.extent(doc, lv["id"])
+            from . import refimage as R
+            from . import refs
+            ext = LS.extent(doc, lv["id"], [   # (it covers the references)
+                R.box_of(refs.frame_of(im)) for im in refs.images(
+                    viewport, refs.layer_of(lv))])
             if active:                       # out to what is being drawn
                 ext = LS.grow(ext, list(getattr(tool, "pts", None)
                                         or []) + [hover])
@@ -13931,6 +14911,61 @@ class ArchXQ:
                   # «Structure» off hid the stairs too) — THIS chip decides
                   "stairs": ("stair", "ramp")}
 
+    #: the «Show» chips switched back on by something new drawn — never the
+    #: Terrain (an elevation hides it on its own, _terrain_for_side)
+    REVEAL_PARTS = ("structure", "slabs", "stairs", "walls", "openings",
+                    "roof")
+
+    @classmethod
+    def new_parts(cls, before: dict, after: dict) -> set:
+        """The «Show» chips of what is NEW in ``after`` (an id ``before``
+        did not have): the parts its group would hide by."""
+        kinds = set()
+        for key in ("walls", "openings", "structure"):
+            old = {r.get("id") for r in before.get(key) or ()}
+            for r in after.get(key) or ():
+                if r.get("id") in old:
+                    continue
+                kinds.add({"walls": "wall", "openings": "opening"}.get(
+                    key) or r.get("type"))
+        parts = set()
+        for k in kinds:
+            mine = [p for p, ks in cls.SHOW_KINDS.items() if k in ks]
+            if "slabs" in mine:              # (as _apply_parts: its own chip)
+                mine = ["slabs"]
+            elif "stairs" in mine:
+                mine = ["stairs"]
+            parts.update(p for p in mine if p in cls.REVEAL_PARTS)
+        return parts
+
+    def _reveal_new(self, before: dict, after: dict) -> None:
+        """Something NEW drawn whose «Show» chip is off: the chip on again
+        — else it is made hidden and seems not drawn at all (his lattice
+        under the porch, 16/11, «Openings» off: «it isn't drawing»). Only
+        new elements: an edit or an undo leaves his chips as they are."""
+        try:
+            back = sorted(self.new_parts(before, after) & self.hidden_parts)
+        except Exception:  # noqa: BLE001 — never block a commit
+            compat.log_error("reveal_new")
+            return
+        if not back:
+            return
+        names = []
+        for part in back:
+            self.hidden_parts.discard(part)
+            chip = getattr(self.viewbar, "parts", {}).get(part)
+            if chip is not None:
+                chip.blockSignals(True)
+                chip.setChecked(True)
+                chip.blockSignals(False)
+                names.append(chip.text())
+        if names:
+            # (after the tool's own «1 grid on…», which would cover it)
+            msg = tr("«{names}» was off — on again, to show what you drew",
+                     names=" · ".join(names))
+            QTimer.singleShot(60, lambda: compat.flash(self.viewport, msg,
+                                                       6000))
+
     def on_view_option(self, what: str, value) -> None:
         """«Show: Terrain · Structure · Walls…» — a part of the building
         shown / hidden at once (a VIEW change: not in the undo). It holds
@@ -13969,6 +15004,7 @@ class ArchXQ:
             except Exception:  # noqa: BLE001 — hidden, as before
                 self._dig_rows = {}
         hide, show, cut = [], [], []
+        band = self._level_band(here)        # (z from, z to) of a level
         for g in self.viewport.scene.groups:
             k = compat.kind_of(g)
             parts = [p for p, kinds in self.SHOW_KINDS.items() if k in kinds]
@@ -14011,7 +15047,12 @@ class ArchXQ:
                 # show (his rule, 2026-10-26: «não está no nível, não
                 # aparece»). Marked on the group when the plan hid it, so
                 # one he hid himself is never shown back.
-                act = self._foreign_cut(g, here)
+                # ONE standing in the level's own height (its foot from the
+                # floor to under the next one) IS of the level: his car in
+                # the garage, a bench, a fountain (Kamen #110, 16/11: put on
+                # the plan, gone after the view changed and came back)
+                act = self._foreign_cut(g, here, band is not None
+                                        and self._foot_in(g, band))
                 if act in ("hide", "cut"):
                     cut.append(g)
                 if act == "hide":
@@ -14224,13 +15265,75 @@ class ArchXQ:
         except Exception:  # noqa: BLE001 — nothing hidden
             return None
 
+    #: a foot this much under the level's floor is still on it (a rug, a
+    #: car's tyres sunk a little); the next floor starts this much lower
+    FOOT_TOL = 0.10
+
+    def _level_band(self, here):
+        """The plan's level ``here``: (its floor's z, the next floor's z),
+        or None (no plan, the Terrain, unknown)."""
+        if here is None or here == TERRAIN_ROW:
+            return None
+        try:
+            from . import structure as S
+            info = S.levels_info(self.doc(), model.elevations).get(here)
+        except Exception:  # noqa: BLE001 — as before: of the Terrain
+            return None
+        if not info:
+            return None
+        z0 = float(info["z0"])
+        return z0, z0 + float(info["height"])
+
+    def _foot_in(self, g, band) -> bool:
+        """The group's lowest point stands in ``band`` (its level). Cached
+        per group while its vertices and placement stay the same."""
+        z = self._foot_z(g)
+        return z is not None and \
+            band[0] - self.FOOT_TOL <= z < band[1] - self.FOOT_TOL
+
+    def _foot_z(self, g):
+        from PySide6.QtGui import QVector3D
+        # its own name: «_foot_cache» is the plan's dashed footings' (a
+        # tuple) — sharing it broke both (found 19/11/2026, Lite 0.14.0 test)
+        cache = self.__dict__.setdefault("_foot_z_cache", {})
+        vs = list(g.mesh.vertices) if getattr(g, "mesh", None) else []
+        xf = getattr(g, "xform", None)
+
+        def pos(v):
+            return v.position if hasattr(v, "position") else v
+        try:
+            first = pos(vs[0]) if vs else None
+            key = (len(vs), None if first is None else
+                   (round(first.x(), 4), round(first.y(), 4),
+                    round(first.z(), 4)),
+                   None if xf is None else tuple(round(float(c), 5)
+                                                 for c in xf.data()),
+                   len(getattr(g, "children", None) or ()))
+            hit = cache.get(id(g))
+            if hit is not None and hit[0] == key:
+                return hit[1]
+            zs = [float((xf.map(pos(v)) if xf is not None else pos(v)).z())
+                  for v in vs]
+            for c in getattr(g, "children", None) or ():
+                if getattr(c, "mesh", None) is not None:
+                    cz = self._foot_z(c)
+                    if cz is not None:
+                        zs.append(cz if xf is None else float(
+                            xf.map(QVector3D(0, 0, cz)).z()))
+            z = min(zs) if zs else None
+        except Exception:  # noqa: BLE001 — unknown: of the Terrain, as before
+            return None
+        cache[id(g)] = (key, z)
+        return z
+
     @staticmethod
-    def _foreign_cut(g, here) -> str | None:
+    def _foreign_cut(g, here, mine: bool = False) -> str | None:
         """A group not ArchXQ's in the plan of the row ``here``: "hide" (the
         plan hides it now, tagged), "cut" (hidden by the plan already),
         "show" (the plan had hidden it: back), None (left alone — one he
-        hid himself stays hidden)."""
-        want = here is not None and here != TERRAIN_ROW
+        hid himself stays hidden). ``mine``: it stands on that level — it
+        shows (and one the plan had hidden comes back)."""
+        want = here is not None and here != TERRAIN_ROW and not mine
         ext = getattr(g, "ext", None) or {}
         if want and not g.hidden:
             g.ext = {**ext, PLAN_CUT_TAG: True}
@@ -15769,6 +16872,7 @@ class ArchXQ:
         self.radial.viewport = new
         for f in self._filters():
             new.installEventFilter(f)
+        self._sharpen_views()        # (each project tab: its own 3D view)
         if old is not None:
             try:
                 old.sceneVersionChanged.disconnect(self._outline_soon)
@@ -15869,6 +16973,10 @@ class ArchXQ:
             self.floor = self._ground_index(doc)
         self._fill_levels(doc)
         self._apply_parts()          # rebuilt groups keep the «Show»
+        try:
+            self._sync_refs()        # (a file opened: only its level's)
+        except Exception:  # noqa: BLE001 — never stop the refresh
+            compat.log_error("_sync_refs")
         self._outline_soon()
 
         has_methods = self.strip.fill(self.element, self.method)
@@ -16142,6 +17250,22 @@ class ArchXQ:
             z = model.elevations(levels, doc["project"]["ground_level"]
                                  if model.has_project(doc) else 0.0)[
                 self.floor]
+            # their REFERENCES (an image, a PDF page) first, faded — under
+            # the green lines (his ask, 18/11: to lay one level's picture
+            # over another's and match them)
+            try:
+                from . import refs
+                off = set(doc.get("ref_off") or ())
+                by_id = {r["id"]: r for r in levels}
+                ims = [im for lid in ghosts if lid not in off
+                       for im in refs.images(viewport,
+                                             refs.layer_of(by_id[lid]))]
+                if ims:
+                    refs.paint_ghosts(
+                        viewport, painter, ims, z, refs.ghost_opacity(doc),
+                        lambda x, y, zz: compat.to_pixel(viewport, x, y, zz))
+            except Exception:  # noqa: BLE001 — the green lines still come
+                paintlog.failed()
             painter.save()
             painter.setRenderHint(painter.RenderHint.Antialiasing)
             ink = QColor(self.GHOST_INK)
@@ -16217,34 +17341,65 @@ class ArchXQ:
         stair, a slab picked in the plan could hardly be seen). In the PLAN
         only: in 3D it is drawn over everything, the hidden edges too, and
         hid the model (his screen, 2026-10-09) — the host's own there."""
-        from PySide6.QtCore import QPointF
+        from PySide6.QtCore import QLineF
         from PySide6.QtGui import QColor, QPen
         if not self.plan_on:
             return
         try:
+            import numpy as np
             sel = [g for g in compat.selected_groups(viewport)
                    if compat.kind_of(g) in compat.BUILT_KINDS
                    and not g.hidden]
             if not sel:
                 return
-            segs = []
-            for g in sel:
-                for e in g.mesh.edges:
-                    if getattr(e, "soft", False) or getattr(e, "hidden",
-                                                            False):
-                        continue
-                    a, b = e.v0.position, e.v1.position
-                    pa = compat.to_pixel(viewport, a.x(), a.y(), a.z())
-                    pb = compat.to_pixel(viewport, b.x(), b.y(), b.z())
-                    if pa and pb:
-                        segs.append((QPointF(*pa), QPointF(*pb)))
+            # its edges read ONCE (till the model or the selection changes):
+            # a timber floor of 57 × 34 m has 55 000 of them (his freeze,
+            # 18/11/2026 — every repaint read and projected them one by one,
+            # ~11 s, and each mouse move asked for another)
+            key = (tuple(id(g) for g in sel),
+                   getattr(viewport.scene, "geometry_version", None))
+            cache = getattr(self, "_sel_edges", None)
+            if cache is None or cache[0] != key:
+                pts = []
+                for g in sel:
+                    for e in g.mesh.edges:
+                        if getattr(e, "soft", False) \
+                                or getattr(e, "hidden", False):
+                            continue
+                        a, b = e.v0.position, e.v1.position
+                        pts.append((a.x(), a.y(), a.z(), b.x(), b.y(), b.z()))
+                cache = (key, np.array(pts, dtype=float).reshape(-1, 6))
+                self._sel_edges = cache
+            edges = cache[1]
+            if not len(edges):
+                return
+            # the plan is a parallel view: world → pixel is affine, told
+            # exactly by four points — all the edges projected at once
+            o = compat.to_pixel(viewport, 0.0, 0.0, 0.0)
+            ax = [compat.to_pixel(viewport, *p) for p in
+                  ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))]
+            if not o or not all(ax):
+                return
+            m = np.array([[p[0] - o[0] for p in ax],
+                          [p[1] - o[1] for p in ax]])
+            pa = edges[:, :3] @ m.T + (o[0], o[1])
+            pb = edges[:, 3:] @ m.T + (o[0], o[1])
+            seg = np.round(np.hstack([pa, pb]), 1)
+            # seen from above, many fall on one another (a joist's top and
+            # bottom, a layer over the next): each line drawn once
+            flip = (seg[:, 0] > seg[:, 2]) | ((seg[:, 0] == seg[:, 2])
+                                              & (seg[:, 1] > seg[:, 3]))
+            seg[flip] = seg[flip][:, [2, 3, 0, 1]]
+            seg = np.unique(seg, axis=0)
+            seg = seg[np.abs(seg[:, 0] - seg[:, 2])
+                      + np.abs(seg[:, 1] - seg[:, 3]) > 0.05]
+            lines = [QLineF(*s) for s in seg.tolist()]
             painter.save()
             painter.setRenderHint(painter.RenderHint.Antialiasing)
             halo = QColor(255, 255, 255, 150)
             for color, width in ((halo, 5.0), (QColor(self.SELECT_INK), 2.4)):
                 painter.setPen(QPen(color, width))
-                for pa, pb in segs:
-                    painter.drawLine(pa, pb)
+                painter.drawLines(lines)
             painter.restore()
         except Exception:  # noqa: BLE001 — never break the host's paint
             paintlog.failed()
@@ -16776,6 +17931,14 @@ class ArchXQ:
             self._clean_keys(False)
         self.viewport.removeEventFilter(self._dbl)
         self.viewport.removeEventFilter(self._pickthru)
+        from . import refs as _refs
+        for v in [self.viewport] + list(getattr(self, "_sharp_views", ())):
+            try:
+                _refs.unsharpen(v)
+            except RuntimeError:      # (its project tab is gone)
+                pass
+        self._sharp_views = []
+        compat.release_style_in_renders()
         self.quick.teardown()
         self._quick_key.setEnabled(False)
         self._quick_key.deleteLater()

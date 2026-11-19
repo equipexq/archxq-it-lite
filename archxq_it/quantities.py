@@ -67,6 +67,7 @@ _WORDS = (N_("Curtain wall"), N_("Wall"), N_("Slab"), N_("Ceiling"),
           N_("Block"), N_("Column"), N_("Round column"), N_("Beam"),
           N_("Pad footing"), N_("Strip footing"), N_("Fill"),
           N_("Shaped column"), N_("Shaped pad footing"), N_("corners"),
+          N_("tube"), N_("narrows to"), N_("(entasis)"),
           N_("Asphalt"), N_("Sidewalk"), N_("Curb"),
           N_("All levels"), N_("Category"), N_("Item"), N_("Level"),
           N_("Count"), N_("Length"), N_("Area"), N_("Volume"))
@@ -316,17 +317,39 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                 sec = math.pi * (float(e["w"]) / 2) ** 2
                 item = f"{tr('Round column')} Ø{_cm(e['w'])}"
             elif S.is_poly(e):            # its own outline (C1, 12/11)
-                sec = abs(S._area(S.poly_world(e)))
+                sec = S.poly_area(e)       # (exact: its arcs too, 17/11)
                 item = (f"{tr('Shaped column')} {_cm(e['w'])} × "
                         f"{_cm(e['d'])} ({len(e['pts'])} {tr('corners')})")
             else:
                 sec = float(e["w"]) * float(e["d"])
                 item = f"{tr('Column')} {_cm(e['w'])} × {_cm(e['d'])}"
-            s.add("Columns", item, lid, 1, h, 0.0, sec * h)
+            # the section library, its form (sectionlib.py — phase 4): a
+            # table steel by its name; a tube less its inside; narrowing,
+            # its true volume (each band a frustum, as built)
+            from . import sectionlib as SL
+            steel = SL.steel_of(e)
+            if steel:
+                item = steel
+            if SL.hollow(e) > 0:
+                sec = SL.section_area(
+                    e, sec, S.poly_local(e) if S.is_poly(e) else None)
+                item += (f" · {tr('tube')} "
+                         f"{round(SL.hollow(e) * 1000, 1):g} mm")
+            if SL.taper(e) < 1.0:
+                item += f" · {tr('narrows to')} {round(SL.taper(e) * 100)} %"
+                if SL.entasis(e):
+                    item += f" {tr('(entasis)')}"
+            s.add("Columns", item, lid, 1, h, 0.0,
+                  sec * h * SL.volume_factor(e))
         elif typ == "beam":
-            L = math.dist(e["a"], e["b"])
-            s.add("Beams", f"{tr('Beam')} {_cm(e['w'])} × {_cm(e['h'])}",
-                  lid, 1, L, 0.0, L * float(e["w"]) * float(e["h"]))
+            # (along its curve, along its slope: phase 2, 17/11/2026)
+            from . import beamshape as BS
+            L = BS.length3d(e)
+            item = f"{tr('Beam')} {_cm(e['w'])} × {_cm(e['h'])}"
+            if BS.section(e) != "rect":          # (its section: apart)
+                from .beamshapetab import SECTIONS
+                item += f" {tr(dict(SECTIONS)[BS.section(e)])}"
+            s.add("Beams", item, lid, 1, L, 0.0, BS.volume(e))
         elif typ == "footing":
             if e.get("kind") == "strip":
                 L = math.dist(e["a"], e["b"])
@@ -334,7 +357,7 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                       f"{_cm(e['d'])}", lid, 1, L, 0.0,
                       L * float(e["w"]) * float(e["d"]))
             elif S.is_poly(e):            # its own outline (C1, 12/11)
-                a = abs(S._area(S.pad_outline(e)))
+                a = S.poly_area(e)         # (exact: its arcs too, 17/11)
                 s.add("Footings", f"{tr('Shaped pad footing')} "
                       f"{_cm(e['w'])} × {_cm(e['d'])} "
                       f"({len(e['pts'])} {tr('corners')})", lid, 1, 0.0,

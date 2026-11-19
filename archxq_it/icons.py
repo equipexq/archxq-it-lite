@@ -576,6 +576,34 @@ def _sheet(p, on: bool) -> None:
         p.drawLine(c, d)
 
 
+def _ref(p, on: bool) -> None:
+    """The level's REFERENCE (an image, a PDF page — refs.py): a picture,
+    its hill and its sun — lit (a warm fill, bold) when it shows, a dim
+    outline when hidden (as the guide sheet's and the ghost's)."""
+    from PySide6.QtGui import QPolygonF
+    ink = QColor(INK)
+    if not on:
+        ink.setAlpha(110)
+    frame = QRectF(6, 12, 52, 40)
+    if on:
+        fill = QColor(ACCENT)
+        fill.setAlpha(70)
+        p.setPen(Qt.NoPen)
+        p.setBrush(fill)
+        p.drawRect(frame)
+    p.setBrush(Qt.NoBrush)
+    p.setPen(_pen(ink, 3.0 if on else 2.6))
+    p.drawRect(frame)
+    p.setPen(_pen(QColor("#e8b04a") if on else ink, 3.0))
+    p.drawPolyline(QPolygonF([QPointF(10, 48), QPointF(24, 30),
+                              QPointF(33, 40), QPointF(41, 33),
+                              QPointF(54, 48)]))
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(ACCENT) if on else ink)
+    p.drawEllipse(QPointF(44, 22), 4.0, 4.0)
+    p.setBrush(Qt.NoBrush)
+
+
 def _foot_rows(p) -> None:
     """A row of columns standing on one strip footing (elevation)."""
     p.setPen(Qt.NoPen)
@@ -777,7 +805,9 @@ _CUSTOM = {"help": _help, "guides": _guides, "guard": _guard,
            "foot_strip": _foot_strip, "foot_path": _foot_path,
            "ghost": _ghost, "ghost_on": _ghost_on,
            "sheet": lambda p: _sheet(p, False),
-           "sheet_on": lambda p: _sheet(p, True)}
+           "sheet_on": lambda p: _sheet(p, True),
+           "level_ref": lambda p: _ref(p, False),
+           "level_ref_on": lambda p: _ref(p, True)}
 _cache: dict[str, QIcon] = {}
 
 

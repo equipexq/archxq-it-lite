@@ -190,18 +190,27 @@ def _col_axes(c: dict):
     return (math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a))
 
 
-def outline_grips(loop, z: float) -> list[Grip]:
+def outline_grips(loop, z: float, curves=None) -> list[Grip]:
     """Each corner of a column's / a pad's outline (free on its plane — a
     rectangle's turns it into its own outline, in one step) and each
     side's middle (the side moves parallel) — the slab's (PLANO_CONTORNO_
-    JUNTAS C1, 12/11/2026). ``loop``: counter-clockwise, as built."""
+    JUNTAS C1, 12/11/2026). ``loop``: counter-clockwise — its CONTROL
+    corners; ``curves`` on them (the shape editor): a bent side's grip on
+    its arc's middle."""
+    from . import curved as CV
+    arcs = (curves or {}).get("arc") or {}
     out = [Grip(f"v{i}", (p[0], p[1], z), (1.0, 0.0, 0.0), 0.0, "point",
                 tip="Its corner — drag it anywhere (onto the walls' faces "
                 "and corners)") for i, p in enumerate(loop)]
     for i, p in enumerate(loop):
         q = loop[(i + 1) % len(loop)]
         n = _outward(list(loop), i)
-        out.append(Grip(f"s{i}", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, z),
+        m = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+        h = CV._key(arcs, i)
+        if h:                            # (+: to the left of p → q, inside)
+            L = math.dist(p, q) or 1.0
+            m = (m[0] - (q[1] - p[1]) / L * h, m[1] + (q[0] - p[0]) / L * h)
+        out.append(Grip(f"s{i}", (m[0], m[1], z),
                         (n[0], n[1], 0.0), 0.0, "move", True,
                         "Move this side, parallel"))
     return out
@@ -212,8 +221,8 @@ def outline_changed(e: dict, key: str, v):
     None) — a column's / a pad's own outline («poly»); a rectangle (a
     square pad) becomes one. Its place and angle stay."""
     from . import structure as S
-    loop = [tuple(p) for p in (S.pad_outline(e) if e.get("type") == "footing"
-                               else S.column_outline(e, 0.0))]
+    loop = [tuple(p) for p in S.outline_ctrl(e)]
+    curves = S.poly_curves(e)           # (its curves stay on their corners)
     i = int(key[1:])
     if i >= len(loop):
         return None, "Gone"
@@ -223,13 +232,13 @@ def outline_changed(e: dict, key: str, v):
         n = _outward(loop, i)
         for j in (i, (i + 1) % len(loop)):
             loop[j] = (loop[j][0] + n[0] * v, loop[j][1] + n[1] * v)
-    why = S.poly_why(loop)
+    why = S.poly_why(loop, curves)
     if why:
         return None, why
     # (its insertion point — the centre, or a corner — stays where it is:
     # the corners are measured from it; a base / a capital it had waits,
     # unbuilt, for «Back to rectangle»)
-    return S.poly_record(dict(e), loop, keep_xy=True), None
+    return S.poly_record(dict(e), loop, keep_xy=True, curves=curves), None
 
 
 def pad_grips(f: dict, z: float, edit: bool = True) -> list[Grip]:
@@ -244,7 +253,7 @@ def pad_grips(f: dict, z: float, edit: bool = True) -> list[Grip]:
                 tip="Move it — onto the columns' centres",
                 extra={"e2": (v[0], v[1], 0.0), "shape": "circle"})]
     if edit:
-        out += outline_grips(loop, z)
+        out += outline_grips(S.outline_ctrl(f), z, S.poly_curves(f))
     return out
 
 
@@ -281,8 +290,8 @@ def column_grips(c: dict, z: float, z0: float | None = None,
                            (u[0], u[1], 0.0), w, tip="Its diameter")] + ends
     out = [move] + ends
     if S.is_poly(c):                     # its own outline: corners, sides
-        return out + (outline_grips(S.column_outline(c, 0.0), zm)
-                      if edit else [])
+        return out + (outline_grips(S.outline_ctrl(c), zm,
+                                    S.poly_curves(c)) if edit else [])
     if edit:                             # a rectangle's corners (→ poly)
         out += [g for g in outline_grips(S.column_outline(c, 0.0), zm)
                 if g.key[0] == "v"]
@@ -303,9 +312,15 @@ def beam_grips(b: dict, z: float) -> list[Grip]:
     """A straight beam's: its two ends — FREE on its plane (onto another
     beam's end, a column's centre or corner, off its own line: his test,
     2026-10-12), an arrow across, and under its middle its DEPTH (its top
-    stays, in the slab)."""
-    if b.get("m") or "a" not in b:
+    stays, in the slab).
+
+    CURVED (the shape editor, phase 2 — 17/11/2026): its ends, its arc's
+    middle (how far it bends — its radius; the Pro's) and its depth; an
+    INCLINED one: end B's grip at its own top (``z`` is end A's)."""
+    if "a" not in b:
         return []
+    from . import beamshape as BS
+    from . import edition
     a, e = tuple(b["a"]), tuple(b["b"])
     L = math.dist(a, e)
     if L < 1e-6:
@@ -313,14 +328,28 @@ def beam_grips(b: dict, z: float) -> list[Grip]:
     u = _unit2((e[0] - a[0], e[1] - a[1]))
     n = (-u[1], u[0])
     h = float(b["h"])
+    rise = BS.rise(b)
+    zm = z + rise / 2
+    ends = [Grip("a", (a[0], a[1], z), (1.0, 0.0, 0.0), 0.0, "point",
+                 tip="Its end — drag it anywhere"),
+            Grip("b", (e[0], e[1], z + rise), (1.0, 0.0, 0.0), 0.0, "point",
+                 tip="Its end — drag it anywhere")]
+    if b.get("m"):
+        bul = BS.bulge(b)
+        m = BS.centre(b).at(0.5)
+        out = ends + [Grip("h", (m[0], m[1], zm - h), (0.0, 0.0, -1.0), h,
+                           tip="Its depth — its top stays in the slab")]
+        if not edition.lite():
+            out.append(Grip("bulge", (m[0], m[1], zm), (n[0], n[1], 0.0),
+                            bul, tip="Its curve — pull it deeper / flatter "
+                            "(0 = straight), or type its radius",
+                            extra={"chord": L}))
+        return out
     m = ((a[0] + e[0]) / 2, (a[1] + e[1]) / 2)
-    return [Grip("a", (a[0], a[1], z), (1.0, 0.0, 0.0), 0.0, "point",
-                 tip="Its end — drag it anywhere"),
-            Grip("b", (e[0], e[1], z), (1.0, 0.0, 0.0), 0.0, "point",
-                 tip="Its end — drag it anywhere"),
-            Grip("across", (m[0], m[1], z), (n[0], n[1], 0.0), 0.0, "move",
+    return ends + [
+            Grip("across", (m[0], m[1], zm), (n[0], n[1], 0.0), 0.0, "move",
                  True, "Move it across — onto the columns' centres or faces"),
-            Grip("h", (m[0], m[1], z - h), (0.0, 0.0, -1.0), h,
+            Grip("h", (m[0], m[1], zm - h), (0.0, 0.0, -1.0), h,
                  tip="Its depth — its top stays in the slab")]
 
 
@@ -1335,12 +1364,20 @@ def element_changed(doc: dict, eid: str, key: str, v, grip=None):
     elif t == "beam" and key == "across":
         u = _unit2((e["b"][0] - e["a"][0], e["b"][1] - e["a"][1]))
         n = (-u[1], u[0])
-        for k in ("a", "b"):
-            r[k] = [round(e[k][0] + n[0] * v, 4), round(e[k][1] + n[1] * v, 4)]
+        for k in ("a", "b", "m"):
+            if e.get(k):
+                r[k] = [round(e[k][0] + n[0] * v, 4),
+                        round(e[k][1] + n[1] * v, 4)]
     elif t == "beam" and key == "h":
         r["h"] = round(v, 4)
+    elif t == "beam" and key == "bulge":  # its curve (phase 2): 0 = straight
+        from . import beamshape as BS
+        r = BS.with_bulge(r, v)
     elif t == "beam":                     # an end, anywhere on its plane
         r[key] = [round(e[key][0] + v[0], 4), round(e[key][1] + v[1], 4)]
+        if e.get("m"):                    # (curved: it keeps its bend)
+            from . import beamshape as BS
+            r = BS.with_bulge(r, BS.bulge(e))
     elif t == "slab" and key == "z":      # up / down (its «Top»)
         r["offset"] = round(float(e.get("offset", 0.0)) + v, 4)
         # (a block's base / a ceiling's height go with it: its top follows
@@ -1786,8 +1823,7 @@ def outline_magnets(doc: dict, e: dict, key: str, z: float) -> list:
     from . import structure as S
     st = doc.get("structure") or []
     lid = e["level"]
-    loop = [tuple(p) for p in (S.pad_outline(e) if e.get("type") == "footing"
-                               else S.column_outline(e, 0.0))]
+    loop = [tuple(p) for p in S.outline_ctrl(e)]
     i = int(key[1:])
     if i >= len(loop):
         return []

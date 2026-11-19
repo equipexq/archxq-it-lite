@@ -38,7 +38,12 @@ import math
 #: the column options a row keeps (ui.col_opts' keys)
 OPT_KEYS = ("section", "w", "d", "angle", "anchor", "height", "h", "base",
             "cbase", "ccap", "fit", "by", "count", "spacing", "ends",
-            "align", "beams", "foots")
+            "align", "beams", "foots",
+            # a section of its own (the shape editor, 17/11/2026): section
+            # «poly», its corners and curves — every column of the row
+            "pts", "curves",
+            # its FORM (sectionlib.py, phase 4): a tube, narrowing, entasis
+            "hollow", "tp", "ent")
 DEFAULT_OPTS = {"section": "rect", "w": 0.30, "d": 0.30, "angle": 0.0,
                 "anchor": "centre", "height": "level", "h": 3.0, "base": 0.0,
                 "cbase": None, "ccap": None, "fit": "fit", "by": "count",
@@ -72,7 +77,10 @@ BEAM_PARTS = ("top", "foot", "mid")
 LAYOUT_KEYS = ("by", "count", "spacing", "ends", "align")
 #: a column's keys that, changed on one column of a row, go to the row
 #: (column key → the row's option)
-SETTLE_KEYS = ("shape", "w", "d", "height", "base", "cbase", "ccap")
+SETTLE_KEYS = ("shape", "w", "d", "height", "base", "cbase", "ccap",
+               "pts", "curves", "hollow", "tp", "ent")
+#: a column's form (sectionlib.py): what the row keeps of it, as the column
+FORM_KEYS = ("hollow", "tp", "ent")
 
 
 # ---- the stations ---------------------------------------------------------------------
@@ -599,13 +607,51 @@ def column_rec(x, y, ang, o: dict) -> dict:
     """A column of the row, as ``ColumnTool._col`` + ``ui._struct_done``
     make one (before it is fitted into a wall)."""
     rnd = o["section"] == "round"
-    return {"type": "column", "x": round(x, 4), "y": round(y, 4),
-            "shape": o["section"], "w": o["w"],
-            "d": o["w"] if rnd else o["d"],
-            "angle": round(ang, 3), "anchor": o["anchor"],
-            "height": "level" if o["height"] == "level" else float(o["h"]),
-            "base": float(o.get("base", 0.0) or 0.0),
-            "cbase": o.get("cbase"), "ccap": o.get("ccap")}
+    r = {"type": "column", "x": round(x, 4), "y": round(y, 4),
+         "shape": o["section"], "w": o["w"],
+         "d": o["w"] if rnd else o["d"],
+         "angle": round(ang, 3), "anchor": o["anchor"],
+         "height": "level" if o["height"] == "level" else float(o["h"]),
+         "base": float(o.get("base", 0.0) or 0.0),
+         "cbase": o.get("cbase"), "ccap": o.get("ccap")}
+    if o["section"] == "poly" and o.get("pts"):
+        # its own section (the shape editor): off its station, as drawn
+        r.update(pts=[list(p) for p in o["pts"]], anchor="centre")
+        if o.get("curves"):
+            r["curves"] = copy.deepcopy(o["curves"])
+    elif o["section"] == "poly":
+        r["shape"] = "rect"
+    if any(o.get(k) for k in FORM_KEYS):     # its form (phase 4)
+        from . import sectionlib as SL
+        r = SL.clean_form(r, o)
+    return r
+
+
+def _set_form(o: dict, e: dict) -> None:
+    """The row's options take a column's form (or lose theirs)."""
+    from . import sectionlib as SL
+    for k in FORM_KEYS:
+        o.pop(k, None)
+    o.update({k: v for k, v in SL.clean_form({}, e).items()})
+
+
+def _section_of(e: dict) -> tuple:
+    """(section, pts, curves) a row keeps from one of its columns."""
+    if e.get("shape") == "poly" and e.get("pts"):
+        return "poly", [list(p) for p in e["pts"]], \
+            copy.deepcopy(e.get("curves")) or None
+    return ("round" if e.get("shape") == "round" else "rect"), None, None
+
+
+def _set_section(o: dict, e: dict) -> None:
+    sec, pts, cv = _section_of(e)
+    o["section"] = sec
+    o.pop("pts", None)
+    o.pop("curves", None)
+    if pts:
+        o["pts"] = pts
+        if cv:
+            o["curves"] = cv
 
 
 def sig(row: dict) -> str:
@@ -869,6 +915,7 @@ def settle(before: dict, doc: dict) -> tuple[dict, list[str]]:
     was = {e["id"]: e for e in before.get("structure") or []
            if e.get("type") == "column" and e.get("row")}
     todo: dict = {}
+    ch_col: dict = {}                 # (the column a row's change came from)
     was_b = {e["id"]: e for e in before.get("structure") or []
              if e.get("type") == "beam" and e.get("row")}
     btodo: dict = {}
@@ -921,6 +968,7 @@ def settle(before: dict, doc: dict) -> tuple[dict, list[str]]:
         for k in SETTLE_KEYS:
             if old.get(k) != e.get(k):
                 todo.setdefault(rid, {})[k] = e.get(k)
+                ch_col[rid] = e
     if not todo and not btodo and not ftodo:
         return doc, []
     rows = []
@@ -938,8 +986,10 @@ def settle(before: dict, doc: dict) -> tuple[dict, list[str]]:
         if ch:
             r = dict(r, opts=dict(opts_of(r.get("opts"))))
             o = r["opts"]
-            if "shape" in ch:
-                o["section"] = "round" if ch["shape"] == "round" else "rect"
+            if any(k in ch for k in ("shape", "pts", "curves")):
+                _set_section(o, ch_col[r["id"]])
+            if any(k in ch for k in FORM_KEYS):
+                _set_form(o, ch_col[r["id"]])
             for k in ("w", "d", "base", "cbase", "ccap"):
                 if k in ch:
                     o[k] = ch[k]
@@ -959,7 +1009,8 @@ def from_column(row: dict, old: dict, new: dict, layout: dict | None) -> dict:
     count, spacing, ends) when given."""
     r = dict(row, opts=dict(opts_of(row.get("opts"))))
     o = r["opts"]
-    o["section"] = "round" if new.get("shape") == "round" else "rect"
+    _set_section(o, new)
+    _set_form(o, new)                      # its form too (phase 4)
     o["w"] = float(new["w"])
     o["d"] = float(new.get("d", new["w"]))
     h = new.get("height", "level")
@@ -1040,7 +1091,30 @@ def clean(raw, structure: list[dict], level_ids: set) -> list[dict]:
             o["spacing"] = min(max(float(o["spacing"]), 0.2), 100.0)
         except (TypeError, ValueError):
             continue
-        o["section"] = "round" if o["section"] == "round" else "rect"
+        if o["section"] == "poly":         # its own section: still one?
+            from . import structure as S
+            try:
+                pts = [[float(p[0]), float(p[1])] for p in o.get("pts") or ()]
+            except (TypeError, ValueError, IndexError):
+                pts = []
+            cv = o.get("curves") if isinstance(o.get("curves"), dict) \
+                else None
+            if not 3 <= len(pts) <= 64 or S.poly_why(pts, cv):
+                cv = None
+                if not 3 <= len(pts) <= 64 or S.poly_why(pts):
+                    o["section"] = "rect"
+                    pts = []
+            o.pop("pts", None)
+            o.pop("curves", None)
+            if pts:
+                o["pts"] = pts
+                if cv:
+                    o["curves"] = cv
+        else:
+            o["section"] = "round" if o["section"] == "round" else "rect"
+            o.pop("pts", None)
+            o.pop("curves", None)
+        _set_form(o, dict(o))               # its form: whole, or none
         o["height"] = "custom" if o["height"] == "custom" else "level"
         o["fit"] = "free" if o["fit"] == "free" else "fit"
         o["by"] = "spacing" if o["by"] == "spacing" else "count"

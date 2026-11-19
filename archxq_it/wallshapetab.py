@@ -27,6 +27,14 @@ BLUE = "#2f7df6"            # the Tools mock-up's blue (his choice, 2026-11)
 HIT = 8                     # px: a click this close takes a corner / side
 SNAP = 6                    # px: a drag this close to a line snaps to it
 GRID = 0.01                 # m: no snap: this step
+#: the foot's two corners (A, B): never moved, rounded nor cut
+FIXED = (0, 1)
+
+
+def fixed_side(k: int, n: int) -> bool:
+    """Side ``k`` of ``n`` touches the foot (the foot itself, end B's, end
+    A's): never moved whole — wallshape.move_side refuses it."""
+    return k in (0, 1) or (k + 1) % n in FIXED
 
 TOOLS = (("select", "Points"), ("round", "Round corner"),
          ("chamfer", "Chamfer"), ("notch", "Notch"), ("bend", "Bend side"))
@@ -162,18 +170,29 @@ class ShapeCanvas(QWidget):
         if not self.tab.editable:
             p.end()
             return
-        # the control corners (squares) and the sides' middles (diamonds)
+        # the control corners (squares) and the sides' middles (diamonds).
+        # The FOOT's two corners, A and B, never move (the foot stays
+        # whole — its length is the plan's): drawn small and grey, never
+        # lit — they looked like the others and he tried to drag them (his
+        # screen, 18/11/2026)
         ctrl = prof["ctrl"]
         n = len(ctrl)
         sel = self.tab.sel
         for i, (s, z) in enumerate(ctrl):
             q = self.to_px(s, z)
+            if i in FIXED:
+                p.setPen(QPen(L.colour(L.DIM), 1.0))
+                p.setBrush(QBrush(L.colour(L.DIM)))
+                p.drawRect(QRectF(q.x() - 3, q.y() - 3, 6, 6))
+                continue
             hot = i == sel or self.hover == ("corner", i)
             p.setPen(QPen(QColor(BLUE), 1.4))
             p.setBrush(QBrush(QColor(BLUE) if hot else L.colour(L.FIELD)))
             p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8))
         if self.tab.tool in ("select", "bend"):
-            for i in range(2, n):
+            # (the sides from the foot's corners — end A's, as end B's — are
+            # never moved whole: no diamond on them)
+            for i in range(2, n - 1):
                 a, b = self.to_px(*ctrl[i]), self.to_px(*ctrl[(i + 1) % n])
                 m = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
                 hot = self.hover == ("side", i)
@@ -219,11 +238,17 @@ class ShapeCanvas(QWidget):
                 self.tab.attempt(WS.bend_side(self.tab.prof, k,
                                               self.tab.size_value()))
             return
+        if i is not None and i in FIXED:     # A / B: says why, at once
+            self.tab.say(tr(WS.WHY_FOOT), bad=True)
+            return
         if i is not None:
             self.tab.select(i)
             self.drag = ("corner", i, self.tab.prof)
             return
         k = self.side_at(pt, mid_only=True)
+        if k is not None and fixed_side(k, len(self.tab.prof["ctrl"])):
+            self.tab.say(tr(WS.WHY_FOOT), bad=True)
+            return
         if k is not None:
             self.drag = ("side", k, self.tab.prof, self.to_sz(pt))
             return
@@ -234,8 +259,11 @@ class ShapeCanvas(QWidget):
         if self.drag is None:
             i = self.corner_at(pt)
             k = None if i is not None else self.side_at(pt, mid_only=True)
-            hv = ("corner", i) if i is not None else \
-                (("side", k) if k is not None else None)
+            n = len(self.tab.prof["ctrl"])
+            hv = (("corner", i) if i not in FIXED else None) \
+                if i is not None else \
+                (("side", k) if k is not None and not fixed_side(k, n)
+                 else None)
             if hv != self.hover:
                 self.hover = hv
                 self.update()
@@ -333,6 +361,10 @@ class ShapeTab:
     # -- checks beyond the shape's own ---------------------------------------------------------
     def _context_why(self, prof: dict) -> str | None:
         from . import structure as S
+        if WS.top_only(self.wall):      # a grid / clad / framed wall:
+            why = WS.why_not_top(prof)   # its top only (phase 3)
+            if why:
+                return why
         w = dict(self.wall, profile=prof)
         for o in self.openings:
             if S.opening_room(o, w, self.openings, 3.0) is not None:
@@ -410,6 +442,19 @@ class ShapeTab:
         self.attempt(WS.move_point(self.prof, self.sel, self.f_s.value(),
                                    self.f_z.value()))
 
+    def ready(self, kind: str) -> None:
+        """A ready shape (a card): over this wall's length, at its height
+        now (a shape's: its foot's straight sides' height)."""
+        h = self.ref_h - float(self.wall.get("base", 0.0) or 0.0)
+        sl = WS.slice_at(self.prof, 0.0)
+        if sl:
+            h = sl[-1][1]
+        got = WS.preset(kind, self.prof["L"], h)
+        if got[0] is not None:
+            got = (dict(got[0], was=self.prof.get("was", "level")), None)
+        self.sel = None
+        self.attempt(got)
+
     def to_rect(self) -> None:
         was = WS.to_rect(self.prof)
         h = self.ref_h if was == "level" else float(was) - float(
@@ -424,6 +469,29 @@ class ShapeTab:
         self.say("")
         self.canvas.update()
         self._told()
+
+
+from PySide6.QtCore import QSize  # noqa: E402
+
+_ICON = QSize(40, 26)
+
+
+def _preset_icon(kind: str):
+    """A ready shape's little drawing (its outline over a 6 × 3 m wall)."""
+    from PySide6.QtGui import QIcon, QPixmap
+    pm = QPixmap(_ICON.width() * 2, _ICON.height() * 2)
+    pm.fill(Qt.transparent)
+    prof, _why = WS.preset(kind, 6.0, 3.0)
+    if prof is not None:
+        pts, _arcs = WS.outline(prof, 0.0)
+        zmax = max(z for _s, z in pts)
+        k = min((pm.width() - 8) / 6.0, (pm.height() - 8) / max(zmax, 1e-6))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        L.poly(p, [(4 + s * k, pm.height() - 4 - z * k) for s, z in pts],
+               L.INK, 2.0, close=True, fill="#8a8f9655")
+        p.end()
+    return QIcon(pm)
 
 
 def add_tab(dlg, wall: dict, level: dict, openings=(), joined=()) -> None:
@@ -447,6 +515,28 @@ def add_tab(dlg, wall: dict, level: dict, openings=(), joined=()) -> None:
             tools.addItem(text, v)
         tools.setCurrentIndex(0)
         fl.addRow("Tool", tools)
+        # READY SHAPES (phase 3): a card each, a click puts it on
+        cards = QWidget()
+        cl = QHBoxLayout(cards)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(6)
+        top_only = WS.top_only(wall)
+        for key, text in WS.PRESETS:
+            b = QPushButton(tr(text))
+            b.setObjectName("axqChip")
+            b.setIcon(_preset_icon(key))
+            b.setIconSize(_ICON)
+            if key == "c" and top_only:
+                b.setEnabled(False)
+                b.setToolTip(tr(WS.WHY_TOP_ONLY))
+            else:
+                b.setToolTip(tr("Puts this shape on the wall, over its "
+                                "length and at its height — then drag "
+                                "and type as any shape"))
+            b.clicked.connect(lambda _c=False, k=key: st.ready(k))
+            cl.addWidget(b)
+        cl.addStretch(1)
+        fl.addRow(tr("Ready"), cards)
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)

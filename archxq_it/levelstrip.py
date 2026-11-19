@@ -93,6 +93,27 @@ class _Row(QFrame):
             e = QLabel(_elev(row["elev"]))
             e.setProperty("axq", "lvelev")
             lay.addWidget(e)
+        # its REFERENCE (an image, a PDF page — refs.py; his ask, 18/11):
+        # shown / hidden in one click — only on a level that has one
+        if row["kind"] != "terrain" and row.get("refs"):
+            rf = QToolButton()
+            rf.setProperty("axq", "eye")
+            rf.setIconSize(QSize(17, 17))
+            rf.setFocusPolicy(Qt.NoFocus)
+            on = bool(row.get("refs_on"))
+            rf.setIcon(icons.icon("level_ref_on" if on else "level_ref"))
+            if on:                         # lit: a warm chip and outline
+                rf.setStyleSheet("QToolButton { background: "
+                                 "rgba(232, 116, 44, 45); border: 1px solid "
+                                 "#e8742c; border-radius: 4px; }")
+            rf.setToolTip("Reference ON — this level's image / PDF shows "
+                          "while you work on it (click: hide)" if on else
+                          "Reference hidden — click: show this level's "
+                          "image / PDF")
+            rf.clicked.connect(lambda: strip.owner.set_refs_shown(
+                row["key"], not bool(row.get("refs_on"))))
+            lay.addWidget(rf)
+            self.refs = rf
         # its GUIDE SHEET in 3D (levelsheet.py, his idea 31/10 — from
         # ArchXQ for Blender): the icon rules, off = never shown
         if row["kind"] != "terrain":

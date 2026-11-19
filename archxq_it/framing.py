@@ -172,6 +172,8 @@ def top_line(w: dict, z0: float, A: float, B: float) -> list | None:
         sp = min(max(top["at"] * L, sa + 1e-9), sb - 1e-9)
         if A < sp < B:
             xs.add(sp)
+    elif top["kind"] == "poly":         # a shape's (phase 3): every bend
+        xs |= {s for s, _h in top["pts"] if A < s < B}
     return [(x, z0 + W.top_h(w, x)) for x in sorted(xs)]
 
 

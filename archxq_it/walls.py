@@ -232,23 +232,40 @@ def centre(w: dict) -> Seg:
 
 
 # ---- its openings on a raised wall ---------------------------------------------
+#: {wall id: its Base offset} — the walls standing on a SUNKEN floor: a base
+#: under 0 that is the top of a slab of its level under it (Drazen #105,
+#: 2026-11-17: House A 200 mm under House B, on one level — its doors stood
+#: on House B's floor). Filled by ``structure.wall_drops``, which every
+#: build, drag and sheet runs before its openings are read; read by
+#: ``opening_lift`` only while the wall's base is still that one.
+SUNK: dict = {}
+
+
 def opening_lift(w: dict | None) -> float:
     """How far a wall's doors and windows go up with it: its Base offset
     when positive (a raised room — László #65, 2026-10-29: the doors stayed
-    on the level's floor, buried); 0 for a base of 0 or under (a footing, a
+    on the level's floor, buried) — or when under 0 and the wall stands on
+    a sunken floor (``SUNK``: a slab's top there, Drazen #105): its doors
+    go DOWN to it; 0 for a base of 0 or another one under it (a footing, a
     wall going down through its slab)."""
     try:
-        return max(float((w or {}).get("base", 0.0) or 0.0), 0.0)
+        b = float((w or {}).get("base", 0.0) or 0.0)
     except (TypeError, ValueError):
         return 0.0
+    if b > 0:
+        return b
+    if b < 0 and abs(SUNK.get((w or {}).get("id"), 1.0) - b) < 1e-9:
+        return b
+    return 0.0
 
 
 def lifted(o: dict, w: dict | None) -> dict:
     """Opening ``o`` as it is built: its sill measured from the level's
-    floor (its own sill + the wall's lift). Nothing stored changes; with no
-    lift it is ``o`` itself — the same object, the same faces as before."""
+    floor (its own sill + the wall's lift — under 0 on a sunken floor).
+    Nothing stored changes; with no lift it is ``o`` itself — the same
+    object, the same faces as before."""
     k = opening_lift(w)
-    if k <= 0:
+    if abs(k) < 1e-12:
         return o
     # «_lift»: what of its sill is the wall's — «off the floor» (a stone
     # sill under an Opening) still reads its own sill (trim.own_sill)
@@ -302,7 +319,19 @@ def top_of(w: dict | None) -> dict | None:
 
 def top_peak(top: dict) -> float:
     """Its highest point, from the level's floor."""
+    if top.get("kind") == "poly":
+        return max(h for _s, h in top["pts"])
     return max(top["h0"], top["h1"], top.get("hp", 0.0))
+
+
+def _poly_h(pts: list, s: float) -> float:
+    """A «poly» top's height at s (past its ends: level)."""
+    if s <= pts[0][0]:
+        return pts[0][1]
+    for (a, ha), (b, hb) in zip(pts, pts[1:]):
+        if s <= b:
+            return ha + (hb - ha) * (s - a) / max(b - a, EPS)
+    return pts[-1][1]
 
 
 def top_h(w: dict, s: float) -> float:
@@ -314,6 +343,8 @@ def top_h(w: dict, s: float) -> float:
     if top is None:
         return float(w["height"]) if w.get("height", "level") != "level" \
             else None
+    if top.get("kind") == "poly":       # a shape's (phase 3, 17/11)
+        return _poly_h(top["pts"], s)
     sa, sb = top_span(w)
     s = min(max(s, sa), sb)
     return min(c + k * s for k, c in _planes(w, 0.0))
@@ -325,6 +356,9 @@ def top_span(w: dict) -> tuple:
     from its plan: the inner corner of a mitre, the face of the wall it
     butts into), so the corner square stays level at the end's height."""
     L = max(drawn(w).L, EPS)
+    top = top_of(w)
+    if top is not None and top.get("kind") == "poly":
+        return top["pts"][0][0], top["pts"][-1][0]
     got = w.get("_span")
     if got and got[1] - got[0] > 0.1:
         return float(got[0]), float(got[1])
@@ -375,6 +409,11 @@ def clear_span(w: dict, pieces, own=()) -> tuple:
 def top_mean(w: dict) -> float:
     """Its mean height along its line (areas, volumes)."""
     top = top_of(w)
+    if top["kind"] == "poly":
+        pts = top["pts"]
+        run = max(pts[-1][0] - pts[0][0], EPS)
+        return sum((b - a) * (ha + hb) / 2
+                   for (a, ha), (b, hb) in zip(pts, pts[1:])) / run
     if top["kind"] == "slope":
         return (top["h0"] + top["h1"]) / 2
     a = top["at"]
@@ -384,7 +423,11 @@ def top_mean(w: dict) -> float:
 
 def top_low(w: dict, s0: float, s1: float) -> float:
     """Its lowest height between s0 and s1 (its top is never a V: at one
-    of the two)."""
+    of the two — a shape's: at one of its corners too)."""
+    top = top_of(w)
+    if top is not None and top.get("kind") == "poly":
+        return min([top_h(w, s0), top_h(w, s1)] +
+                   [h for s, h in top["pts"] if s0 < s < s1])
     return min(top_h(w, s0), top_h(w, s1))
 
 
@@ -393,6 +436,12 @@ def _planes(w: dict, z0: float) -> list:
     from h0 to h1 between its top's ends (``top_span``); a gable's ridge
     stays where it was drawn (``at`` of its length)."""
     top, L = top_of(w), max(drawn(w).L, EPS)
+    if top["kind"] == "poly":           # one plane each stretch
+        out = []
+        for (a, ha), (b, hb) in zip(top["pts"], top["pts"][1:]):
+            k = (hb - ha) / max(b - a, EPS)
+            out.append((k, ha - k * a))
+        return out
     sa, sb = top_span(w)
     h0, h1 = _end_heights(top, sa, sb, L)
     if top["kind"] == "slope":
@@ -409,10 +458,29 @@ def _zones(w: dict, z0: float) -> list:
     first end level at h0, between them ``_planes``, past the last level at
     h1 (top_h) — None: open that way."""
     top = top_of(w)
+    if top["kind"] == "poly":           # a shape's: a zone each stretch
+        pts = top["pts"]
+        mid = [(a, b, [pl]) for (a, _ha), (b, _hb), pl in
+               zip(pts, pts[1:], _planes(w, z0))]
+        return [(None, pts[0][0], [(0.0, pts[0][1])])] + mid + \
+            [(pts[-1][0], None, [(0.0, pts[-1][1])])]
     sa, sb = top_span(w)
     h0, h1 = _end_heights(top, sa, sb, max(drawn(w).L, EPS))
     return [(None, sa, [(0.0, h0)]), (sa, sb, _planes(w, z0)),
             (sb, None, [(0.0, h1)])]
+
+
+def _bends(w: dict) -> list:
+    """Where along the line its top bends: its ends, a gable's ridge, a
+    shape's every point."""
+    top = top_of(w)
+    if top["kind"] == "poly":
+        return [s for s, _h in top["pts"]]
+    sa, sb = top_span(w)
+    if top["kind"] == "slope" or "at" not in top:
+        return [sa, sb]
+    sp = min(max(top["at"] * max(drawn(w).L, EPS), sa + EPS), sb - EPS)
+    return [sa, sp, sb]
 
 
 def _end_heights(top: dict, sa: float, sb: float, L: float) -> tuple:
@@ -467,7 +535,7 @@ def topped(faces: list, w: dict, z0: float) -> list:
     seg = drawn(w)
     p0, u = seg.p0, seg.u
     zones = _zones(w, z0)
-    ends = top_span(w)
+    ends = _bends(w)
     # (built up to its highest point over its plan — past its ends too)
     zmax = max(p[2] for f in faces
                for p in (f["loop"] if isinstance(f, dict) else f))
@@ -479,8 +547,10 @@ def topped(faces: list, w: dict, z0: float) -> list:
         return z0 + top_h(w, S(p)) - p[2]
 
     def checks(rings):
-        """The corners, and where an edge crosses an end's line (the top
-        bends there: an edge may pass over it between two corners under)."""
+        """The corners, and where an edge crosses a line the top bends at
+        (its ends, a gable's ridge, a shape's every point: an edge may pass
+        over it between two corners under — or under it between two corners
+        over: a board over the eave, under the ridge, 17/11/2026)."""
         out = []
         for r in rings:
             out += r
@@ -1192,7 +1262,14 @@ def _to_corner(walls: list[dict]) -> list[dict]:
     is carried onto that end, so a diagonal closes the corner (it stood
     beside it, mismatched or notched). And two ends never swap places
     (a short piece refused between two walls: each was carried onto the
-    other's end and they overlapped) — only the later wall moves."""
+    other's end and they overlapped) — only the later wall moves.
+
+    19/11/2026 (his test, a plan traced over an image): an end in that
+    corner now goes, ALONG ITS OWN LINE, to where the two walls' lines
+    cross — and the other's end too, along its line — when that crossing
+    is within both ends' reach. Nothing turns: carried straight onto the
+    other's end, a wall 5 cm off the old line came out slanted, and its
+    doors and windows, cut along the line drawn, were no longer cut."""
     ends = []
     for w in walls:
         if w.get("kind", "line") in ("line", "arc"):
@@ -1225,6 +1302,7 @@ def _to_corner(walls: list[dict]) -> list[dict]:
                     across = abs(_cross(back, v))
                     reach = max(o["t"], w["t"]) + JOIN_TOL
                     gap = _dist(e, p)
+                    x = None
                     if across <= 0.005 and JOIN_TOL < along <= reach:
                         pass                     # its line runs into it
                     elif s.kind == "line" and free(e) and \
@@ -1232,28 +1310,47 @@ def _to_corner(walls: list[dict]) -> list[dict]:
                             JOIN_TOL < gap <= 0.1 * d.L and \
                             abs((f - (0.0 if ek == "a" else 1.0)) * s.L) \
                             <= o["t"] / 2.0 + BODY_TOL:
-                        pass                     # in that end's corner
+                        # in that end's corner: both to where the lines
+                        # cross, if it is by both ends (each along its own)
+                        x = _lines_cross(d, od)
+                        if x is not None and not (
+                                _dist(x, p) <= reach and _dist(x, e) <= reach
+                                and _dist(x, od.at(1.0 if ek == "a" else 0.0))
+                                > reach and _dist(
+                                    x, d.p1 if key == "a" else d.p0) > reach):
+                            x = None
                     else:
                         continue
                     if best is None or gap < best[0]:
-                        best = (gap, oi, ek, e)
+                        best = (gap, oi, ek, e, x)
             if best is not None:
                 moves[(wi, key)] = best[1:]
-    out = []
-    for wi, w in enumerate(walls):
-        w = dict(w) if w.get("kind", "line") == "line" else w
-        for key in ("a", "b"):
-            m = moves.get((wi, key))
-            if m is None:
-                continue
-            oi, ek, e = m
-            back = moves.get((oi, ek))
-            if back is not None and back[0] == wi and back[1] == key and \
-                    oi > wi:
-                continue                         # the later one moves
-            w[key] = [e[0], e[1]]
-        out.append(w)
+    out = [dict(w) if w.get("kind", "line") == "line" else w for w in walls]
+    for (wi, key), (oi, ek, e, x) in moves.items():
+        if x is not None:                        # the lines' crossing
+            out[wi][key] = [x[0], x[1]]
+            if isinstance(out[oi], dict) and \
+                    out[oi].get("kind", "line") == "line":
+                out[oi][ek] = [x[0], x[1]]
+            continue
+        back = moves.get((oi, ek))
+        if back is not None and back[0] == wi and back[1] == key and \
+                oi > wi:
+            continue                             # the later one moves
+        if back is not None and back[3] is not None:
+            continue                             # (it went to the crossing)
+        out[wi][key] = [e[0], e[1]]
     return out
+
+
+def _lines_cross(d, od):
+    """Where two straight drawn lines cross (extended) — None: parallel."""
+    cr = _cross(d.u, od.u)
+    if abs(cr) < 1e-9:
+        return None
+    v = _sub(od.p0, d.p0)
+    t = _cross(v, od.u) / cr
+    return (d.p0[0] + d.u[0] * t, d.p0[1] + d.u[1] * t)
 
 
 def _joined(walls: list[dict], pairs: list | None = None):

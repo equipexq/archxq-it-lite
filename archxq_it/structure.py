@@ -32,6 +32,8 @@ from __future__ import annotations
 import math
 
 from . import corner_caps as CC
+from . import beamshape as BS
+from . import curved as CV
 from . import layerview as LV
 from . import walls as W
 
@@ -202,13 +204,79 @@ def is_poly(e: dict) -> bool:
     return e.get("shape") == "poly" and len(e.get("pts") or ()) >= 3
 
 
-def poly_world(e: dict) -> list:
-    """A «poly» piece's corners in plan (as stored: its own winding)."""
+#: its curves (the shape editor, 17/11/2026): ``curves`` = {"r": {i: radius},
+#: "arc": {i: sagitta}} on its control corners ``pts`` (curved.py's format;
+#: the corners then always anti-clockwise) — ``poly_world`` expands them
+#: (each curve within 1 mm), so whoever reads the outline gets it as built;
+#: the grips and edits work on the control corners (``outline_ctrl``).
+def poly_curves(e: dict) -> dict | None:
+    """A «poly» piece's curves, clean — None when it has none."""
+    if not is_poly(e) or not e.get("curves"):
+        return None
+    c = CV.clean(e.get("curves"))
+    return c if (c["r"] or c["arc"]) else None
+
+
+def _to_plan(e: dict, loc) -> list:
     x, y = float(e["x"]), float(e["y"])
     a = math.radians(float(e.get("angle", 0.0)))
     ca, sa = math.cos(a), math.sin(a)
     return [(x + float(p[0]) * ca - float(p[1]) * sa,
-             y + float(p[0]) * sa + float(p[1]) * ca) for p in e["pts"]]
+             y + float(p[0]) * sa + float(p[1]) * ca) for p in loc]
+
+
+def poly_local(e: dict) -> list:
+    """A «poly» piece's outline in its own frame, its curves expanded."""
+    cv = poly_curves(e)
+    if cv:
+        return [tuple(p) for p in CV.expand(e["pts"], cv)]
+    return [(float(p[0]), float(p[1])) for p in e["pts"]]
+
+
+def poly_box(e: dict) -> tuple:
+    """(x0, y0, x1, y1): the box round a «poly» piece in its own frame, as
+    built — its arcs' farthest points exact."""
+    cv = poly_curves(e)
+    if cv:
+        from . import sectionshape as SS
+        return SS.box_of(e["pts"], cv)
+    xs = [float(p[0]) for p in e["pts"]]
+    ys = [float(p[1]) for p in e["pts"]]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def poly_ctrl_world(e: dict) -> list:
+    """A «poly» piece's CONTROL corners in plan (as stored: its own
+    winding; anti-clockwise when it has curves)."""
+    return _to_plan(e, e["pts"])
+
+
+def poly_world(e: dict) -> list:
+    """A «poly» piece's outline in plan, as built: its corners (as stored:
+    its own winding) — its curves, if any, in fine steps."""
+    return _to_plan(e, poly_local(e))
+
+
+def poly_area(e: dict) -> float:
+    """A «poly» piece's area, exact (its arcs: circular sectors and
+    segments, never the fine steps)."""
+    cv = poly_curves(e)
+    if cv:
+        return abs(CV.area(e["pts"], cv))
+    return abs(_area([(float(p[0]), float(p[1])) for p in e["pts"]]))
+
+
+def outline_ctrl(e: dict) -> list:
+    """The corners the grips hold, counter-clockwise, in plan: a «poly»
+    piece's control corners; else its outline as built (a rectangle, a
+    square pad, a round column's 24 sides)."""
+    if is_poly(e):
+        if poly_curves(e):                  # (anti-clockwise, as stored)
+            return poly_ctrl_world(e)
+        return _ccw(poly_ctrl_world(e))
+    if e.get("type") == "footing":
+        return pad_outline(e)
+    return column_outline(e, 0.0)
 
 
 def inset(loop, d: float) -> list:
@@ -247,9 +315,15 @@ def _segs_cross(a, b, c, d) -> bool:
     return False
 
 
-def poly_why(pts) -> str | None:
+def poly_why(pts, curves=None) -> str | None:
     """Why an outline can't be a column's / a pad's (None = it can): three
-    corners at least, sides that don't cross, 5 × 5 cm at least."""
+    corners at least, sides that don't cross, 5 × 5 cm at least — and,
+    with ``curves`` (the shape editor), sectionshape.why_not's checks."""
+    cv = CV.clean(curves) if curves else None
+    if cv and (cv["r"] or cv["arc"]):
+        from . import sectionshape as SS
+        return SS.why_not({"ctrl": [[float(p[0]), float(p[1])]
+                                    for p in pts or ()], "curves": cv})
     pts = [tuple(map(float, p)) for p in pts or ()]
     if len(pts) < 3:
         return "An outline needs three corners at least"
@@ -269,12 +343,15 @@ def poly_why(pts) -> str | None:
     return None
 
 
-def poly_record(e: dict, world: list, keep_xy: bool = True) -> dict:
+def poly_record(e: dict, world: list, keep_xy: bool = True,
+                curves=None) -> dict:
     """``e`` (a column / a pad) with the outline ``world`` (plan points):
     ``shape: poly``, its corners in its own frame (its angle kept), its box
     as ``w``, ``d``. ``keep_xy``: off its insertion point as it is; else
-    off the outline's centroid."""
+    off the outline's centroid. ``curves`` on those corners (the shape
+    editor) — none: it has none (a new outline is a straight one)."""
     r = dict(e)
+    r.pop("curves", None)
     if not keep_xy or "x" not in r:
         cx, cy = centroid(world)
         r["x"], r["y"] = round(cx, 4), round(cy, 4)
@@ -286,10 +363,16 @@ def poly_record(e: dict, world: list, keep_xy: bool = True) -> dict:
         dx, dy = p[0] - x, p[1] - y
         # (to the micron: the exact corner stays exact)
         loc.append([round(dx * ca + dy * sa, 6), round(-dx * sa + dy * ca, 6)])
+    cv = CV.clean(curves) if curves else None
+    if cv and (cv["r"] or cv["arc"]):
+        from . import sectionshape as SS
+        loc, cv = SS.ccw(loc, cv)           # (curves: anti-clockwise)
+        r["curves"] = cv
     r["pts"] = loc
     r["shape"] = "poly"
     r["anchor"] = "centre"
-    xs, ys = [p[0] for p in loc], [p[1] for p in loc]
+    x0, y0, x1, y1 = poly_box(r)            # (its box: as built, exact)
+    xs, ys = (x0, x1), (y0, y1)
     if r.get("type") == "footing":           # (a pad's «d» is its depth)
         r["w"] = round(max(max(xs) - min(xs), max(ys) - min(ys)), 4)
     else:
@@ -304,11 +387,24 @@ def poly_sized(e: dict, key: str, v: float) -> dict:
     box's middle (the box, and so its place, stays centred)."""
     loc = [tuple(map(float, p)) for p in e["pts"]]
     i = 0 if key == "w" else 1
-    vs = [p[i] for p in loc]
-    lo, hi = min(vs), max(vs)
+    bx = poly_box(e)                         # (its box as built, exact)
+    lo, hi = bx[i], bx[i + 2]
     if hi - lo < 1e-9 or v <= 0:
         return dict(e)
     k, m = float(v) / (hi - lo), (hi + lo) / 2
+    cv = poly_curves(e)
+    if cv:                                   # its curves stretched with it
+        from . import sectionshape as SS
+        sh = [[p[0] - (m if not i else 0.0), p[1] - (m if i else 0.0)]
+              for p in loc]
+        got = SS.scaled({"ctrl": sh, "curves": cv}, 1.0 if i else k,
+                        k if i else 1.0)
+        if got is None:                      # (it no longer fits: as it is)
+            return dict(e)
+        pts = [[round(p[0] + (m if not i else 0.0), 6),
+                round(p[1] + (m if i else 0.0), 6)] for p in got["ctrl"]]
+        return dict(e, pts=pts, curves=got["curves"],
+                    **{key: round(float(v), 4)})
     pts = [[round(p[0] if i else m + (p[0] - m) * k, 6),
             round(m + (p[1] - m) * k if i else p[1], 6)] for p in loc]
     return dict(e, pts=pts, **{key: round(float(v), 4)})
@@ -319,11 +415,11 @@ def poly_to_rect(e: dict) -> dict:
     where the outline was (a pad: square, its larger side)."""
     if not is_poly(e):
         return dict(e)
-    loc = [tuple(map(float, p)) for p in e["pts"]]
-    xs, ys = [p[0] for p in loc], [p[1] for p in loc]
+    x0, y0, x1, y1 = poly_box(e)             # (its box as built, exact)
+    xs, ys = (x0, x1), (y0, y1)
     mx, my = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
     a = math.radians(float(e.get("angle", 0.0)))
-    r = {k: v for k, v in e.items() if k != "pts"}
+    r = {k: v for k, v in e.items() if k not in ("pts", "curves")}
     r["x"] = round(float(e["x"]) + mx * math.cos(a) - my * math.sin(a), 4)
     r["y"] = round(float(e["y"]) + mx * math.sin(a) + my * math.cos(a), 4)
     r["anchor"] = "centre"
@@ -372,6 +468,18 @@ def column_outline(c: dict, shrink: float = SHRINK) -> list:
     pts = [(mx - w / 2, my - d / 2), (mx + w / 2, my - d / 2),
            (mx + w / 2, my + d / 2), (mx - w / 2, my + d / 2)]
     return [_rot(p, (x, y), ang) for p in pts]
+
+
+def column_holes(c: dict) -> list:
+    """A TUBE's inside (its form, sectionlib.py — phase 4), as walls.solid
+    takes a hole (clockwise): its outline moved in by its wall — [] for a
+    solid column."""
+    from . import sectionlib as SL
+    t = SL.hollow(c)
+    if t <= 0:
+        return []
+    ins = SL.inner(column_outline(c, 0.0), t)
+    return [list(reversed(ins))] if ins else []
 
 
 #: the insertion points of a rectangular column: (−1|0|1 across, along)
@@ -427,15 +535,24 @@ def why_not(e: dict) -> str | None:
     try:
         if t == "column":
             if e.get("shape") == "poly":
-                return poly_why(e.get("pts"))
-            if float(e["w"]) < 0.05 or (e.get("shape") != "round"
-                                        and float(e["d"]) < 0.05):
+                why = poly_why(e.get("pts"), e.get("curves"))
+                if why:
+                    return why
+            elif float(e["w"]) < 0.05 or (e.get("shape") != "round"
+                                          and float(e["d"]) < 0.05):
                 return "A column needs a section of 5 cm at least"
+            # its form: a tube, narrowing (sectionlib.py, phase 4)
+            if any(k in e for k in ("hollow", "tp", "ent")):
+                from . import sectionlib as SL
+                return SL.why_form(e, column_outline(e, 0.0))
         elif t == "beam":
             if float(e["w"]) < 0.05 or float(e["h"]) < 0.05:
                 return "A beam needs a width and a height"
             if math.dist(e["a"], e["b"]) < max(float(e["w"]), 0.1):
                 return "Too short for a beam"
+            why = BS.why_shape(e)
+            if why:      # (curved, inclined, its section, its side: phase 2)
+                return why
         elif t == "slab":
             if len(e["corners"]) < 3 or float(e["t"]) < 0.02:
                 return "A slab needs three corners and a thickness"
@@ -443,7 +560,7 @@ def why_not(e: dict) -> str | None:
                 return "Too small for a slab"
         elif t == "footing":
             if e.get("kind") == "pad" and e.get("shape") == "poly":
-                why = poly_why(e.get("pts"))
+                why = poly_why(e.get("pts"), e.get("curves"))
                 if why:
                     return why
             if float(e["w"]) < 0.1 or float(e["d"]) < 0.05:
@@ -778,6 +895,7 @@ def fit_column(c: dict, walls: list[dict]) -> dict:
     if c.get("shape") == "poly":               # fitted again: from scratch
         c["shape"] = "rect"
     c.pop("pts", None)
+    c.pop("curves", None)
     dirs = []
     for w, s, f in here:
         u = s.tangent(f)
@@ -954,8 +1072,13 @@ def inside_frame_all(beams: list[dict], columns: list[dict]) -> list:
         from shapely.ops import unary_union
     except ImportError:
         return []
-    polys = [LineString([e["a"], e["b"]]).buffer(float(e["w"]) / 2,
-                                                 cap_style=3, join_style=2)
+    def line(e):                 # (a curved one along its arc: phase 2)
+        if not e.get("m"):
+            return [e["a"], e["b"]]
+        s = BS.centre(e)
+        return [s.at(i / 32) for i in range(33)]
+    polys = [LineString(line(e)).buffer(float(e["w"]) / 2,
+                                        cap_style=3, join_style=2)
              for e in beams if math.dist(e["a"], e["b"]) > 1e-3]
     if polys:
         # beams drawn by hand meet a few mm off: closed over 2 cm, so the
@@ -982,16 +1105,22 @@ def inside_frame_all(beams: list[dict], columns: list[dict]) -> list:
     return out
 
 
-def along_walls(walls: list[dict]) -> list[tuple]:
-    """Beams over the level's straight walls: on each wall's centre line,
-    end to end (curved / round walls are left out)."""
+def along_walls(walls: list[dict]) -> list[dict]:
+    """Beams over the level's walls: on each wall's centre line, end to end
+    — {"a", "b"} and, over a curved wall, its arc's middle «m» (phase 2 of
+    the shape editor, 17/11/2026: a curved beam; a round wall, closed, is
+    left out)."""
     out = []
     for w in walls:
-        if W.why_not(w) is not None or w.get("kind", "line") != "line":
+        if W.why_not(w) is not None or W.is_closed(w):
             continue
         s = W.centre(w)
-        out.append(([round(s.p0[0], 4), round(s.p0[1], 4)],
-                    [round(s.p1[0], 4), round(s.p1[1], 4)]))
+        rec = {"a": [round(s.at(0.0)[0], 4), round(s.at(0.0)[1], 4)],
+               "b": [round(s.at(1.0)[0], 4), round(s.at(1.0)[1], 4)]}
+        if s.kind == "arc":
+            m = s.at(0.5)
+            rec["m"] = [round(m[0], 4), round(m[1], 4)]
+        out.append(rec)
     return out
 
 
@@ -1038,7 +1167,9 @@ def level_plan_loops(doc: dict, lid: str) -> list:
             loops.append(pc["outer"])
             loops += list(pc.get("holes") or [])
     els = [e for e in struct if e["level"] == lid and why_not(e) is None]
-    loops += [column_outline(c, 0.0) for c in els if c["type"] == "column"]
+    for c in (e for e in els if e["type"] == "column"):
+        loops.append(column_outline(c, 0.0))
+        loops += column_holes(c)                # (a tube: its inside too)
     beams = [e for e in els if e["type"] == "beam"]
     for pieces in W.plan([as_wall(e, shrink=0.0) for e in beams]).values():
         loops += [pc["outer"] for pc in pieces]
@@ -1447,7 +1578,8 @@ def opening_loops(ops: list[dict], z0: float, b: float, top: float,
         else:
             zs = max(b, z0 + float(o.get("sill", 0.0)))
             if dropped and float(o.get("sill", 0.0)) <= 0:
-                zs = max(b, z0 - 0.01)
+                # (a sunken floor's: from there, W.SUNK)
+                zs = max(b, z0 + float(o.get("sill", 0.0)) - 0.01)
             zt = min(top, z0 + float(o.get("sill", 0.0)) + float(o["h"]))
             arc = door_arch(o, z0, top)
             if arc is not None:
@@ -1640,8 +1772,10 @@ def wall_with_openings(piece: dict, seg, ops: list[dict], z0: float,
         # a wall gone down through its slab: a door's sill face 1 cm under
         # the floor — on it, it would share the slab's top; down to the
         # wall's foot, a 20 cm pit showed under every door
+        # (on a sunken floor its sill is under the level's: from there —
+        # Drazen #105, W.SUNK)
         if dropped and float(o.get("sill", 0.0)) <= 0:
-            zs = max(b, z0 - 0.01)
+            zs = max(b, z0 + float(o.get("sill", 0.0)) - 0.01)
         zt = min(top, z0 + float(o.get("sill", 0.0)) + float(o["h"]))
         arc = door_arch(o, z0, top)
         if arc is not None:
@@ -1841,6 +1975,16 @@ def door_side(o: dict, wall: dict | None) -> float:
     inside = 1.0 if wall is None or float(wall.get("side", 1)) >= 0 \
         else -1.0
     return -inside if o.get("out") else inside
+
+
+def door_opens_sides(o: dict) -> bool:
+    """A door whose «Opens» (In / Out) shows: a swing door, and a sliding
+    one of ONE leaf — a barn's, a glass one's moving pane (support #113,
+    19/11/2026). Two sliding leaves run inside the wall: no side; a
+    garage door and a shopfront have their own."""
+    op = o.get("op", "swing")
+    return op == "swing" or (op == "sliding"
+                             and int(o.get("leaves", 1) or 1) == 1)
 
 
 class _Frame:
@@ -2416,8 +2560,17 @@ def _door_leaves(o, p0, u, n, a, b, za, zb, zt, wall) -> list:
     back, on = _room(wall, a - lap, b + lap)
     run = min(w, back if left else on)        # the rail stays on its wall
     s = op * run * (-1.0 if left else 1.0)
-    leaf = OF.leaf(F, a - lap + s, b + lap + s, c0, c1, za, zt + 0.005, style,
-                   lc, GLASS_COLOR)
+    if side > 0:
+        leaf = OF.leaf(F, a - lap + s, b + lap + s, c0, c1, za, zt + 0.005,
+                       style, lc, GLASS_COLOR)
+    else:
+        # on the wall's other face («Opens» Out, #113 — or a wall drawn the
+        # other way): the leaf built turned half round, so its face (a
+        # barn's boards) looks away from the wall and its back (the ledges,
+        # the braces) towards it, as on the inside
+        Fr = _Frame(p0, (-u[0], -u[1]), (-n[0], -n[1]))
+        leaf = OF.leaf(Fr, -(b + lap + s), -(a - lap + s), -c1, -c0, za,
+                       zt + 0.005, style, lc, GLASS_COLOR)
     # its pull on the ROOM face, by the edge that leads as it closes
     room = c1 if side > 0 else c0
     leaf += pull(b + lap + s - 0.08 if left else a - lap + s + 0.08, room,
@@ -2596,8 +2749,9 @@ def _tilted(boxes, p0, n, side, za, zb, op) -> list:
 
 def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
     """A GLAZED sliding door: its leaves in two tracks within the frame —
-    one fixed pane and one sliding over it, or two sliding apart from the
-    middle — the curtain wall's look."""
+    one fixed pane and one sliding over it (in the track on the side it
+    «Opens» to), or two sliding apart from the middle — the curtain
+    wall's look."""
     from . import openfinish as OF
     g, d = 0.003, LEAF
     op = opened(o)
@@ -2625,9 +2779,14 @@ def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
     fixed = (a, m + lap) if left else (m - lap, b)
     moving = (m - lap + s, b + s) if left else (a + s, m + lap + s)
     edge = moving[1] - ALU / 2 if left else moving[0] + ALU / 2
-    return (_leaf(p0, u, n, *fixed, -d - g, -g, za, zb, True, ac)
-            + _leaf(p0, u, n, *moving, g, d + g, za, zb, True, ac)
-            + pull(edge, d + g, 1.0))
+    # the moving pane on the side it «Opens» to — the wall's inside, or
+    # its outside (support #113, 19/11/2026); the fixed one behind it
+    k = door_side(o, wall)
+    return (_leaf(p0, u, n, *fixed, *sorted((-k * (d + g), -k * g)), za, zb,
+                  True, ac)
+            + _leaf(p0, u, n, *moving, *sorted((k * g, k * (d + g))), za, zb,
+                    True, ac)
+            + pull(edge, k * (d + g), k))
 
 
 # ---- roofs ---------------------------------------------------------------------------
@@ -4339,7 +4498,17 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
     too (his screen, 2026-10-23: the wall between two stacked flights
     left a slab-thick gap over the one below) — and, on a level with one
     under it (``below``), where no slab of its level is under it. ``build``
-    and a bar dragged (``wall_live``) agree."""
+    and a bar dragged (``wall_live``) agree.
+
+    A wall on a SUNKEN floor (Drazen #105, 2026-11-17): its Base offset,
+    under 0, is the top of a slab of its level under it — that is its
+    floor: an outside one goes down through the slabs under it as one with
+    a base of 0 does through its own (its drop counted from its base,
+    following the slab's thickness), and its doors and windows stand on it
+    (``W.SUNK`` → ``W.opening_lift``). Any other base under 0 is a footing,
+    as ever."""
+    for w in mine:                  # (read afresh: a slab gone, a base typed)
+        W.SUNK.pop(w["id"], None)
     if slab_t <= 0 or not slabs:
         return Drops()
     from shapely.geometry import Polygon
@@ -4351,6 +4520,29 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
         floor = [Polygon(s["corners"]).buffer(0) for s in slabs]
     except Exception:  # noqa: BLE001
         return Drops()
+    tops = [float(s.get("offset", 0) or 0) for s in slabs]
+
+    def under(w):
+        """The wall's plan's slabs (their indices)."""
+        got = set()
+        for pc in plans.get(w["id"], ()):
+            try:
+                p = Polygon(pc["outer"]).buffer(0)
+            except Exception:  # noqa: BLE001
+                continue
+            got |= {i for i, f in enumerate(floor)
+                    if f.intersection(p).area > 1e-4}
+        return got
+
+    # its base: 0, or a sunken floor's (the top of a slab under it)
+    base = {}
+    for w in mine:
+        b = float(w.get("base", 0.0) or 0.0)
+        if abs(b) <= 1e-9:
+            base[w["id"]] = 0.0
+        elif b < 0 and any(abs(tops[i] - b) < 1e-4 for i in under(w)):
+            base[w["id"]] = b
+            W.SUNK[w["id"]] = b
     # each slab's own depth under the floor (as ``levels_info`` reads the
     # level's deepest): a wall goes down through the slab UNDER IT — not
     # the level's deepest one (Drazen #105, 2026-11-16: two houses on one
@@ -4365,17 +4557,12 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
     floored = foot is not None and any(
         f.intersection(foot).area > 1e-4 for f in floor)
     for w in mine:
-        if w["id"] not in ids or abs(float(w.get("base", 0.0))) > 1e-9:
+        if w["id"] not in ids or w["id"] not in base:
             continue
-        d = 0.0
-        for pc in plans.get(w["id"], ()):
-            try:
-                p = Polygon(pc["outer"]).buffer(0)
-            except Exception:  # noqa: BLE001
-                continue
-            d = max([d] + [t for f, t in zip(floor, depth)
-                           if f.intersection(p).area > 1e-4])
-        if d <= 0 and floored:
+        # (from its base: on a sunken floor, the slab's depth under it)
+        b = base[w["id"]]
+        d = max([0.0] + [depth[i] + b for i in under(w)])
+        if d <= 0 and floored and b == 0.0:
             # off the slab's edge (a grip), inside the contour: the slabs
             # the contour holds
             d = max((t for f, t in zip(floor, depth)
@@ -4389,7 +4576,7 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
             deep = [ground(c.at(f)) for f in (0.25, 0.5, 0.75)]
             deep = [x for x in deep if x is not None]
             if deep:
-                out[w["id"]] = max(out[w["id"]], max(deep))
+                out[w["id"]] = max(out[w["id"]], max(deep) + b)
     # a slab with LAYERS: every other wall on it stands on its CORE, under
     # the floor's finishes (slab layers, 2026-10-23 — the floor is laid
     # between the walls)
@@ -4397,14 +4584,15 @@ def wall_drops(mine: list[dict], plans: dict, slabs: list[dict],
                for f, s in zip(floor, slabs)]
     layered = [(f, d) for f, d in layered if d > 1e-6]
     for w in mine if layered else ():
-        if w["id"] in out or abs(float(w.get("base", 0.0))) > 1e-9:
+        if w["id"] in out or w["id"] not in base:
             continue
+        b = base[w["id"]]
         for pc in plans.get(w["id"], ()):
             try:
                 p = Polygon(pc["outer"]).buffer(0)
             except Exception:  # noqa: BLE001
                 continue
-            d = max((d for f, d in layered
+            d = max((d + b for f, d in layered
                      if f.intersection(p).area > 1e-4), default=0.0)
             if d > out.get(w["id"], 0.0):
                 out[w["id"]] = d
@@ -5107,9 +5295,18 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
         # no longer fits its length, a plain wall at its height (the shape
         # kept in the record, the Shape tab says why)
         prof = shape_now(w)
-        if prof is not None:
+        from . import wallshape as WS
+        if prof is not None and WS.top_only(w):
+            # a grid / clad / light-framed wall (the shape editor, phase
+            # 3): its shape is its TOP — built as ever, cut under it
+            top = WS.as_top(prof, float(w.get("base", 0.0) or 0.0))
+            w = {k: v for k, v in w.items() if k != "profile"}
+            if top is not None:
+                w["top"] = top
+        elif prof is not None:
             return _profile_parts(w, prof, pieces, openings, z0, drop, runs)
-        w = {k: v for k, v in w.items() if k != "profile"}
+        else:
+            w = {k: v for k, v in w.items() if k != "profile"}
     if W.top_of(w) is not None:
         # its top from clear end to clear end: the corner squares level at
         # the ends' heights, flush with the walls joined there (his test,
@@ -5554,7 +5751,15 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
     above = {a: b for a, b in zip(order, order[1:])}   # level → next one up
     floors = [v["z0"] for v in info.values()]           # every floor's z
     runs = ramp_runs(doc, elevations)          # what walls give way to
+    # ``only``: a level with none of them is not gone through at all — its
+    # walls' joins (W.corners) were worked out for nothing, ~0.15 s on his
+    # corporate building at a beam's Apply (fastcommit.py, 18/11/2026)
+    busy = None if only is None else (
+        {w["level"] for w in walls if w["id"] in only}
+        | {e["level"] for e in struct if e["id"] in only})
     for lid, li in info.items():
+        if busy is not None and lid not in busy:
+            continue
         z0, under = li["z0"], li["under"]
         # walls — cut by their openings
         mine = [w for w in walls if w["level"] == lid]
@@ -5627,7 +5832,8 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
         for c in (e for e in els if e["type"] == "column" and not skip(e)):
             bot, top = column_span(doc, info, lid, c, floors)
             sh = FIT_SHRINK if c.get("fit") else SHRINK
-            piece = {"outer": _ccw(column_outline(c, sh)), "holes": []}
+            piece = {"outer": _ccw(column_outline(c, sh)),
+                     "holes": column_holes(c)}
             if top - bot < 0.05:
                 continue
             out.append(dict(_el(c, lid, _column_faces(c, piece, bot, top)),
@@ -5660,9 +5866,23 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
             if cuts and not own:
                 pieces = cut_pieces(pieces, cuts)
             # a ramp going THROUGH it (not through the slab): cut too
-            through = beam_ramp_cuts(pieces, runs, bot, top)
-            if through:
-                pieces = cut_pieces(pieces, through)
+            if own and BS.is_sloped(e):
+                # INCLINED (the shape editor, phase 2): its top from end A's
+                # to end B's along it, its depth plumb under it (a ramp
+                # through it: not cut — its run is under the slope)
+                zb = z0 + float(e["ztb"]) - SHRINK
+            else:
+                zb = top
+                through = beam_ramp_cuts(pieces, runs, bot, top)
+                if through:
+                    pieces = cut_pieces(pieces, through)
+            if BS.is_shaped(e):
+                # its section (L, inverted T, I), its shape from the side
+                # (haunch, notch, arched soffit), inclined: beamshape.py
+                out.append(dict(_el(e, lid, BS.faces(
+                    e, list(pieces), top, zb, top - bot)),
+                    inwall=in_one_wall(e, mine)))
+                continue
             out.append(dict(_el(e, lid, [f for pc in pieces
                                          for f in W.solid(pc, bot, top)]),
                             inwall=in_one_wall(e, mine)))
@@ -6208,9 +6428,16 @@ def column_span(doc: dict, info: dict, lid: str, c: dict,
 
 
 def _column_faces(c: dict, piece: dict, bot: float, top: float) -> list:
-    """A column's faces: its shaft, with its base and capital (Pro)."""
+    """A column's faces: its shaft, with its base and capital (Pro). A
+    shaft that NARROWS (its form, sectionlib.py — phase 4): its section
+    scaled up it round its centre."""
+    from . import sectionlib as SL
+    sc = SL.scales(c)
+
     def shaft(z0, z1):
-        return W.solid(piece, z0, z1)
+        if len(sc) == 2 and abs(sc[1][1] - 1.0) < 1e-12:
+            return W.solid(piece, z0, z1)
+        return SL.faces(piece, z0, z1, sc, column_centre(c))
     if c.get("cbase", "none") == "none" and c.get("ccap", "none") == "none":
         return shaft(bot, top)
     if is_poly(c):          # (a base / capital exists only for the rectangle
