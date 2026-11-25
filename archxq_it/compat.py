@@ -982,8 +982,10 @@ def _mesh_group(name: str, faces, soft, color, kind: str, **data):
     mesh = Mesh()
     for f in faces:
         if isinstance(f, dict):
-            mesh.add_face([v(p) for p in f["loop"]],
-                          [[v(p) for p in h] for h in f["holes"]])
+            made = mesh.add_face([v(p) for p in f["loop"]],
+                                 [[v(p) for p in h] for h in f["holes"]])
+            if f.get("attrs") and made is not None:
+                made.attrs.update(f["attrs"])      # (a pit's water)
         else:
             mesh.add_face([v(p) for p in f])
     if soft:
@@ -1316,10 +1318,12 @@ def outer_loop(pieces) -> list | None:
 
 
 #: ArchXQ's look at every command the host runs (edits.py): fn(history, cmd)
-_AFTER_COMMAND = {"fn": None}
+#: — kept through a reload of this module (two tests reload it: the host's
+#: Move was no longer adopted until a restart, found 22/11/2026)
+_AFTER_COMMAND = globals().get("_AFTER_COMMAND") or {"fn": None}
 #: …and just BEFORE it runs (an Explode of a wall with layers hidden in
 #: the 3D: made whole first — layerview.py)
-_BEFORE_COMMAND = {"fn": None}
+_BEFORE_COMMAND = globals().get("_BEFORE_COMMAND") or {"fn": None}
 
 
 def watch_commands(fn, before=None) -> None:

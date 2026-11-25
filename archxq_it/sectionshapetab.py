@@ -227,6 +227,12 @@ class SectionCanvas(QWidget):
         pt = e.position()
         tool = self.tab.tool
         i = self.corner_at(pt)
+        if tool == "notch" and i is not None:
+            # a POINT taken with the Notch on: it moves (as the wall's
+            # Shape, 20/11/2026)
+            self.tab.select(i)
+            self.drag = ("corner", i, self.tab.prof)
+            return
         if tool == "notch":
             self.drag = ("notch", self.snapped(*self.to_xy(pt)), None)
             return
@@ -262,6 +268,11 @@ class SectionCanvas(QWidget):
             if hv != self.hover:
                 self.hover = hv
                 self.update()
+            return
+        if not (e.buttons() & Qt.LeftButton):
+            # its release never came (as the wall's Shape, 20/11/2026):
+            # finished now
+            self.mouseReleaseEvent(e)
             return
         kind = self.drag[0]
         if kind == "corner":
@@ -643,6 +654,9 @@ def add_tab(dlg, el: dict, row=None) -> None:
         fl.addRow(st.size_label, st.size)
         st.f_x = L.metres(0.0, -10.0, 10.0, 0.01)
         st.f_y = L.metres(0.0, -10.0, 10.0, 0.01)
+        for f in (st.f_x, st.f_y):
+            f.setToolTip(tr("Click a point of the shape, then type where "
+                            "it goes"))
         fl.addRow(tr("Point across"), st.f_x)
         fl.addRow(tr("Point up"), st.f_y)
         back = QPushButton(tr("Back to rectangle"))

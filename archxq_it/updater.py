@@ -24,6 +24,7 @@ anything on disk is touched.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -203,7 +204,8 @@ def _urlopen(req, timeout: float):
     return urllib.request.urlopen(req, timeout=timeout, context=_ctx())
 
 
-def _request(path: str, key: str = "") -> urllib.request.Request:
+def _request(path: str, key: str = "",
+             start: int = 0) -> urllib.request.Request:
     ed = "Lite" if edition.lite() else "Pro"
     h = {"User-Agent": f"ArchXQ-IT/{current()} ({ed}; IngeTrazo "
                        f"{host_version()})",
@@ -211,6 +213,8 @@ def _request(path: str, key: str = "") -> urllib.request.Request:
          "X-ArchXQ-Version": f"{ed} {current()}"}
     if key:
         h["Authorization"] = f"Bearer {key}"
+    if start:                              # the rest of a cut download
+        h["Range"] = f"bytes={start}-"
     return urllib.request.Request(API + path, headers=h)
 
 
@@ -242,33 +246,84 @@ def check_license(key: str) -> None:
         r.read()
 
 
+TRIES = 8              # a cut download goes on from where it stopped
+PAUSE = 1.5            # s — before the next try
+
+
+def _part(r, f, start: int, total: int, progress) -> int:
+    """The answer's bytes into ``f`` → how many are there now (fewer than
+    it should when the connection was cut on the way)."""
+    got = start
+    while True:
+        try:
+            chunk = r.read(65536)
+        except (http.client.HTTPException, OSError):
+            break                          # cut: what came is kept
+        if not chunk:
+            break
+        f.write(chunk)                     # (a full disk is said, as ever)
+        got += len(chunk)
+        if progress and total:
+            progress(min(got, total), total)
+    f.flush()
+    return got
+
+
 def download(key: str, progress=None) -> tuple[Path, str]:
-    """The Pro's zip into a temporary file → (path, its version)."""
-    with _open(_request("/download", key), 60) as r:
-        version = r.headers.get("X-XQ-Version", "")
-        sha = (r.headers.get("X-XQ-SHA256", "") or "").lower()
-        # (the server may send it compressed, without a length: then the
-        # size the site published in latest.json)
-        total = int(r.headers.get("Content-Length") or 0) \
-            or int(latest_known().get("size") or 0)
-        fd, name = tempfile.mkstemp(prefix="archxq_it_pro-", suffix=".zip")
-        h = hashlib.sha256()
-        got = 0
-        with os.fdopen(fd, "wb") as f:
-            while True:
-                chunk = r.read(65536)
-                if not chunk:
-                    break
-                f.write(chunk)
-                h.update(chunk)
-                got += len(chunk)
-                if progress and total:
-                    progress(min(got, total), total)
+    """The Pro's zip into a temporary file → (path, its version). A
+    connection that cuts it on the way (support #119, 24/11/2026: every
+    try stopped at 5–7 MB of 7.4) goes on from where it stopped."""
+    fd, name = tempfile.mkstemp(prefix="archxq_it_pro-", suffix=".zip")
     path = Path(name)
-    if not sha or h.hexdigest() != sha:
+    version = sha = ""
+    got = total = bad = 0
+    try:
+        with os.fdopen(fd, "w+b") as f:
+            for n in range(TRIES):
+                if n:
+                    time.sleep(PAUSE)
+                try:
+                    r = _open(_request("/download", key, got), 60)
+                except UpdateError:
+                    if not n or n == TRIES - 1:
+                        raise              # (the first: its words, at once)
+                    continue
+                with r:
+                    now = (r.headers.get("X-XQ-SHA256", "") or "").lower()
+                    size = int(r.headers.get("Content-Length") or 0)
+                    part = got and r.status == 206
+                    if got and (not part or now != sha):
+                        got = 0            # whole again (or a newer one)
+                        f.seek(0)
+                        f.truncate()
+                        if part:           # the end of another zip: ask
+                            continue       # for that one whole
+                    sha = now
+                    version = r.headers.get("X-XQ-Version", "")
+                    # (the server may send it compressed, without a length:
+                    # then the size the site published in latest.json)
+                    total = got + size if size \
+                        else int(latest_known().get("size") or 0)
+                    got = _part(r, f, got, total, progress)
+                if total and got < total:
+                    continue               # cut: the rest of it
+                f.seek(0)
+                h = hashlib.sha256()
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+                if sha and h.hexdigest() == sha:
+                    return path, version
+                bad += 1
+                if bad > 1:
+                    break                  # damaged again: say so
+                got = 0                    # damaged: once more, whole
+                f.seek(0)
+                f.truncate()
+    except BaseException:
         path.unlink(missing_ok=True)
-        raise UpdateError("The download arrived damaged — please try again.")
-    return path, version
+        raise
+    path.unlink(missing_ok=True)
+    raise UpdateError("The download arrived damaged — please try again.")
 
 
 # ---- the disk ----------------------------------------------------------------------

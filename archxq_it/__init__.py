@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-__version__ = "0.14.0-lite"
+__version__ = "0.15.0-lite"
 
 _instance = None
 

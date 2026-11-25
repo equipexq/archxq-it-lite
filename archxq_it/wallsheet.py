@@ -191,6 +191,48 @@ def _layered(walls: list) -> list:
     return [w for w in walls if len(W.layers_of(w)) > 1]
 
 
+def _corner_gaps(w: dict, walls: list, openings: list, z0: float,
+                 cut: float) -> list:
+    """The gaps a corner window (cornerwin.py) leaves in ``w``'s layers
+    at the cut: its part on this wall up to the corner's outside, and on
+    through the corner."""
+    from shapely.geometry import Polygon
+
+    from . import openingtools as OT
+    out = []
+    for o in openings:
+        if not o.get("corner"):
+            continue
+        host = next((x for x in walls if x["id"] == o.get("wall")), None)
+        if host is None:
+            continue
+        parts = OT.plan_parts(o, host, walls)
+        if len(parts) != 2 or w["id"] not in (parts[0][0]["id"],
+                                              parts[1][0]["id"]):
+            continue
+        zs = z0 + W.opening_lift(host) + float(o.get("sill", 0.0))
+        if not zs < cut < zs + float(o["h"]):
+            continue
+        for pw, seg, r, end in parts:
+            if pw["id"] != w["id"]:
+                continue
+            s0, s1 = r["pos"] - r["w"] / 2, r["pos"] + r["w"] / 2
+            if end == "hi":
+                s1 += 0.05
+            else:
+                s0 -= 0.05
+            half = float(pw["t"]) / 2 + 0.02
+            u = seg.u
+            n = (-u[1], u[0])
+
+            def pt(s, c):
+                return (seg.p0[0] + u[0] * s + n[0] * c,
+                        seg.p0[1] + u[1] * s + n[1] * c)
+            out.append(Polygon([pt(s0, -half), pt(s1, -half), pt(s1, half),
+                                pt(s0, half)]))
+    return out
+
+
 def plan_parts(doc: dict, lid: str, walls: list, openings: list, P,
                z0: float, top_of_level: float, cut: float,
                symbols: bool) -> list:
@@ -229,6 +271,7 @@ def plan_parts(doc: dict, lid: str, walls: list, openings: list, P,
         except Exception:  # noqa: BLE001 — no gaps worked out: the wall whole
             gaps = []
         gaps += _shape_gaps(w, walls, z0, cut)
+        gaps += _corner_gaps(w, walls, openings, z0, cut)
         ls = W.layers_of(w)
         framed = symbols and FR.frame_of(w) is not None
         for i, part in bands.get(w["id"]) or []:

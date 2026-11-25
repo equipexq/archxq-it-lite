@@ -193,6 +193,35 @@ def island_all() -> None:
             pass
 
 
+#: the outline of ArchXQ's own windows (his ask, 20/11/2026: a dark window
+#: over IngeTrazo's dark screen had no edge — it all ran together)
+EDGE = "#6f757d"
+
+
+def window_edge(w) -> None:
+    """An ArchXQ WINDOW (a dialog, a window of its own — not a menu, a
+    pop-up, a tip) gets a grey edge: Windows 11 paints the window's own
+    border that colour (DWMWA_BORDER_COLOR), outside its content — nothing
+    in it moves. Elsewhere (Windows 10, Linux, macOS): left as it is."""
+    import sys
+    if sys.platform != "win32":
+        return
+    from PySide6.QtCore import Qt
+    kind = w.windowType()
+    if kind not in (Qt.Dialog, Qt.Window, Qt.Tool, Qt.Sheet):
+        return
+    try:
+        import ctypes
+        rgb = int(EDGE[1:], 16)
+        bgr = ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
+        col = ctypes.c_uint(bgr)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            ctypes.c_void_p(int(w.winId())), 34,      # DWMWA_BORDER_COLOR
+            ctypes.byref(col), ctypes.sizeof(col))
+    except Exception:  # noqa: BLE001 — an older Windows: no edge, as ever
+        pass
+
+
 def install_theme_guard() -> None:
     """Every ArchXQ widget made a dark island as it first shows while the
     host is LIGHT — bars, panels, windows, pop-ups, the ones still to come.
@@ -211,6 +240,11 @@ def install_theme_guard() -> None:
 
         def eventFilter(self, obj, ev) -> bool:
             t = ev.type()
+            if t == QEvent.Show and isinstance(obj, QWidget) \
+                    and obj.isWindow() and _ours(obj) \
+                    and not obj.property("axq_edge"):
+                obj.setProperty("axq_edge", True)
+                window_edge(obj)
             if t == QEvent.Show and isinstance(obj, QWidget) \
                     and _ours(obj) and not obj.property("axq_dark") \
                     and host_light():

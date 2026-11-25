@@ -16,6 +16,7 @@ import math
 from PySide6.QtCore import QEvent, QObject, Qt
 
 from . import compat, opendims as D, structure as S, walls as W
+from .i18n import tr
 from .plottools import _PlotTool
 
 REACH = 0.40          # m from a wall's face the cursor still finds it
@@ -99,6 +100,88 @@ def symbol_lines(o: dict, wall: dict, seg) -> list:
     return lines
 
 
+# ---- a CORNER window in plan (cornerwin.py, F3 — 20/11/2026) ------------------------------
+_PARTS_CACHE: dict = {}
+
+
+def plan_parts(o: dict, wall: dict, walls) -> list:
+    """[(wall, its centre seg, the record drawn there, its end at the
+    corner "lo"/"hi" or None)] — an opening as the plan draws it: itself
+    on its wall; a corner window that turns now, its two parts, each up to
+    the corner's outside (``cornerwin.ghost``). ``walls``: its level's
+    (a dict or a list)."""
+    plain = [(wall, W.centre(wall), o, None)]
+    if not o.get("corner") or walls is None:
+        return plain
+    ws = list(walls.values()) if isinstance(walls, dict) else list(walls)
+    ws = [w for w in ws if w.get("level") == wall.get("level")]
+    key = (repr(o), repr([(w["id"], w.get("a"), w.get("b"), w.get("t"),
+                           w.get("kind"), w.get("cw"), w.get("side"),
+                           w.get("align")) for w in ws]))
+    got = _PARTS_CACHE.get(key)
+    if got is None:
+        from . import cornerwin as CW
+        try:
+            got = CW.ghost(ws, o)
+        except Exception:  # noqa: BLE001 — the plain one, never nothing
+            compat.log_error("corner window in plan")
+            got = []
+        if len(_PARTS_CACHE) > 200:
+            _PARTS_CACHE.clear()
+        _PARTS_CACHE[key] = got
+    return got if len(got) == 2 else plain
+
+
+def plan_lines(o: dict, wall: dict, walls=None, jambs: bool = True) -> list:
+    """``symbol_lines`` — a corner window's: its two parts, open at the
+    corner, their glass / leaves meeting there (``_corner_lines``).
+    ``jambs`` False: without them (a sheet's cut draws the jambs)."""
+    parts = plan_parts(o, wall, walls)
+    if len(parts) != 2:
+        lines = symbol_lines(o, wall, W.centre(wall))
+        return lines if jambs else lines[2:]
+    return _corner_lines(parts, jambs)
+
+
+def _corner_lines(parts: list, jambs: bool) -> list:
+    """The two parts' symbols: no jamb at the corner; the lines along each
+    wall (glass, tracks, frame) ending where the other part's same line
+    meets them — mitred, as a plan draws a corner window."""
+    from . import cornerwin as CW
+    out = []
+    for i, (w, seg, rec, end) in enumerate(parts):
+        ow, oseg, _r, _e = parts[1 - i]
+        lines = symbol_lines(rec, w, seg)
+        del lines[1 if end == "hi" else 0]       # no jamb at the corner
+        if not jambs:
+            del lines[0]                         # (nor the outer one)
+        u = seg.u
+        n = (-u[1], u[0])
+        s_end = rec["pos"] + rec["w"] / 2 if end == "hi" \
+            else rec["pos"] - rec["w"] / 2
+        reach = float(ow.get("t", 0.2)) + 0.05
+
+        def s_c(p):
+            dx, dy = p[0] - seg.p0[0], p[1] - seg.p0[1]
+            return dx * u[0] + dy * u[1], dx * n[0] + dy * n[1]
+        for a, b in lines:
+            d = (b[0] - a[0], b[1] - a[1])
+            L = math.hypot(*d)
+            if L < 0.01 or abs(d[0] * u[1] - d[1] * u[0]) / L > 1e-3:
+                out.append((a, b))               # not along the wall
+                continue
+            (sa, c), (sb, _c) = s_c(a), s_c(b)
+            k = 0 if abs(sa - s_end) < abs(sb - s_end) else 1
+            if abs((sa, sb)[k] - s_end) > reach:
+                out.append((a, b))               # short of the corner
+                continue
+            s_new = CW._cross_at(seg, c, oseg, CW._map(c, w, ow))
+            p = (seg.p0[0] + u[0] * s_new + n[0] * c,
+                 seg.p0[1] + u[1] * s_new + n[1] * c)
+            out.append((p, b) if k == 0 else (a, p))
+    return out
+
+
 def _window_lines(o, wall, P, s0, s1, t, u, n) -> list:
     """A window with leaves in plan: SLIDING — its leaves in two tracks
     and an arrow; CASEMENT — each leaf's swing, thin, open 90°; AWNING —
@@ -168,6 +251,32 @@ def _sliding_lines(o, wall, P, s0, s1, t) -> list:
     def box(a, b, c0, c1):
         return [(P(a, c0), P(b, c0)), (P(b, c0), P(b, c1)),
                 (P(b, c1), P(a, c1)), (P(a, c1), P(a, c0))]
+    if S.door_leaves(o) >= 3:
+        # 3 / 4 / 6 glazed panes in two tracks, an arrow on each moving one
+        # the way it opens (his ask, 21/11/2026)
+        d = 0.04
+        out = []
+        for a, b, tr, mv in S.door_panes(o, s0, s1):
+            c0, c1 = (0.0, d) if tr == "F" else (-d, 0.0)
+            out += box(a, b, c0, c1)
+            if mv:
+                m = (a + b) / 2
+                out += _arrow(P, m, m + mv * min(0.30, (b - a) * 0.4),
+                              (c0 + c1) / 2)
+        return out
+    if S.door_pocket(o):
+        # a POCKET door (support #114, 22/11/2026): its leaf shut in the
+        # wall's middle, the pocket it runs into beside it, an arrow into it
+        d = S.pocket_half(wall)
+        left = o.get("swing", "left") == "left"
+        run = S.pocket_run(o, wall, s0, s1)
+        out = box(s0, s1, -d, d)
+        out += box(s0 - run, s0, -d, d) if left else box(s1, s1 + run, -d, d)
+        inside = S.door_side(dict(o, out=False), wall)
+        w = s1 - s0
+        a, b = (s0 + w * 0.7, s0 - min(w * 0.4, run)) if left else (
+            s1 - w * 0.7, s1 + min(w * 0.4, run))
+        return out + _arrow(P, a, b, inside * (t + 0.12))
     two = int(o.get("leaves", 1) or 1) == 2
     if two or o.get("leaf") == "glass":
         # within the frame, two tracks: two leaves part from the middle; a
@@ -321,6 +430,8 @@ class OpeningTool(_PlotTool):
         self.wall_height = wall_height
         self.here = None                 # (wall, seg, record) under cursor
         self.dims = None                 # (face, lo, hi, cursor) of it
+        self.why = None                  # why it can't go there (None: ok)
+        self.arms = []                   # a corner window's two parts
 
     def on_activate(self, viewport) -> None:
         super().on_activate(viewport)
@@ -337,6 +448,8 @@ class OpeningTool(_PlotTool):
         self.diag = None
         self.here = None
         self.dims = None
+        self.why = None
+        self.arms = []
         self._sync()
 
     def _busy(self) -> bool:
@@ -352,8 +465,14 @@ class OpeningTool(_PlotTool):
         for b0, b1, span in spans.get(wall["id"], ()):
             if b0 - 1e-6 <= pos <= b1 + 1e-6:
                 return span
-        b0, b1 = S.wall_bay({"walls": self.walls()}, wall, pos)
-        span = (b0 + S.END_GAP, b1 - S.END_GAP)
+        doc = {"walls": self.walls()}
+        b0, b1 = S.wall_bay(doc, wall, pos)
+        # (lo, hi, reach): 5 cm off the corners' faces, where it is placed
+        # when it fits — and how far it may go (to a face met there,
+        # Jhonatan #116): a window as wide as the room still goes in
+        reach = S.opening_span(doc, wall, pos)
+        span = (max(b0 + S.END_GAP, reach[0]), min(b1 - S.END_GAP, reach[1]),
+                reach)
         spans.setdefault(wall["id"], []).append((b0, b1, span))
         return span
 
@@ -408,9 +527,12 @@ class OpeningTool(_PlotTool):
         if got is None:
             return None
         wall, seg, pos = got
+        cur = pos
         o = dict(self.opts())
-        lo, hi = self._span(wall, pos)
+        lo, hi, reach = self._span(wall, pos)
         half = o["w"] / 2
+        if hi - lo < 2 * half and reach[1] - reach[0] >= 2 * half - 1e-6:
+            lo, hi = reach                  # only to a face can it fit
         pos = min(max(pos, lo + half), hi - half) if hi - lo > 2 * half \
             else (lo + hi) / 2
         rec = {"kind": self.kind, "wall": wall["id"],
@@ -423,6 +545,8 @@ class OpeningTool(_PlotTool):
             rec["leaf"] = o.get("leaf", "solid")
             rec["open"] = o.get("open", 0.0)
             rec["out"] = bool(o.get("out", False))   # opens to the outside
+            if S.door_pocket(dict(rec, pocket=o.get("pocket"))):
+                rec["pocket"] = True                 # into the wall (#114)
             if rec["op"] == "swing" and o.get("top") == "arched":
                 rec["top"] = "arched"                # (0.15.0: under an arch)
             if rec["op"] == "garage":                # a garage door's kind
@@ -457,7 +581,55 @@ class OpeningTool(_PlotTool):
         rec.update(keys_of(dict(o, op=rec.get("op")), self.kind))
         from .openfinish import keys_of as finish_keys   # colours, handle
         rec.update(finish_keys(dict(o, kind=self.kind, op=rec.get("op"))))
-        return wall, seg, rec
+        return wall, seg, self._turned(wall, cur, rec) or rec
+
+    # -- a CORNER window (cornerwin.py, F2 — 20/11/2026) ------------------------------
+    def _ends(self, wall) -> dict:
+        """``cornerwin.ends_info`` of a wall, kept while the tool runs."""
+        from . import cornerwin as CW
+        ends = self.__dict__.setdefault("_ends_c", {})
+        if wall["id"] not in ends:
+            ends[wall["id"]] = CW.ends_info({"walls": self.walls()}, wall)
+        return ends[wall["id"]]
+
+    def _turned(self, wall, cur: float, rec: dict):
+        """A window with the pointer this near an end joined to another
+        straight wall (``cornerwin.SNAP``): it turns the corner — as wide
+        on each wall, measured to the corner's outside. None: it doesn't
+        (not a window that can, no corner there, or it doesn't fit round
+        it: the plain one, 5 cm off the end, as ever)."""
+        if self.kind != "window":
+            return None
+        from . import cornerwin as CW
+        from . import edition
+        if edition.lite() or CW.why_not_window(rec) is not None:
+            return None
+        L = W.drawn(wall).L
+        end = "b" if cur >= L - CW.SNAP else "a" if cur <= CW.SNAP else None
+        info = self._ends(wall).get(end) or {} if end else {}
+        if not info.get("other"):
+            return None
+        w = float(rec["w"])
+        out = CW.stored(rec, wall, end, info, w, w)
+        doc = {"walls": self.walls(), "openings": self.openings()}
+        if S.opening_room(out, wall, self.openings(),
+                          self.wall_height(wall)) or \
+                CW.clash(doc, out, self.wall_height):
+            return None
+        return out
+
+    def _why(self, got):
+        """Why ``got`` can't be placed (None: it can) — its wall's room, and
+        a corner window's round the corner."""
+        wall, _seg, rec = got
+        why = S.opening_room(rec, wall, self.openings(),
+                             self.wall_height(wall))
+        if why is None:
+            from . import cornerwin as CW
+            why = CW.clash({"walls": self.walls(),
+                            "openings": self.openings()}, rec,
+                           self.wall_height)
+        return why
 
     def _bay(self, wall, pos, face) -> tuple:
         """``wall_bay`` on the cursor's face, kept like ``_span``."""
@@ -483,9 +655,18 @@ class OpeningTool(_PlotTool):
     def on_hover(self, ctx) -> None:
         super().on_hover(ctx)
         self.here = self.record(self.hover) if self.hover else None
+        self.why, self.arms = None, []
+        try:
+            if self.here is not None:
+                self.why = self._why(self.here)
+                if self.here[2].get("corner"):
+                    from . import cornerwin as CW
+                    self.arms = CW.ghost(self.walls(), self.here[2])
+        except Exception:  # noqa: BLE001 — a preview never stops the tool
+            compat.log_error("opening tool corner")
         try:
             self.dims = self._dims(self.hover, self.here) \
-                if self.here else None
+                if self.here and not self.arms else None
         except Exception:  # noqa: BLE001 — dimensions never stop the tool
             self.dims = None
 
@@ -495,12 +676,17 @@ class OpeningTool(_PlotTool):
         """A typed distance + Enter (PLANO_COTAS_ABERTURAS.md): the edge —
         or, «…c», the centre — that far from the hot dimension's corner
         or neighbour. False: not a distance / nowhere to put it."""
-        got = D.parse(text)
+        most = (self.dims[2] - self.dims[1]) if self.dims else None
+        got = D.parse(text, most)
         if got is None or self.here is None or self.dims is None:
             return False
         d, centre = got
         wall, _seg, rec = self.here
         face, lo, hi, cur = self.dims
+        if rec.get("corner"):
+            rec = {k: v for k, v in rec.items()
+                   if k not in ("corner", "w2", "corner_join")}
+            rec["w"] = float(self.opts()["w"])
         side = D.hot_side(cur, lo, hi)
         rec = dict(rec, pos=D.pos_for(d, side, lo, hi, rec["w"], centre))
         why = S.opening_room(rec, wall, self.openings(),
@@ -517,11 +703,14 @@ class OpeningTool(_PlotTool):
 
     def on_value(self, viewport, value) -> bool:
         # (the host read the number itself: «60» = 60 m in a metres
-        # document — a door's distance over 10 m is centimetres)
+        # document — a door's distance over 10 m is centimetres, unless it
+        # fits in metres on that wall: audit #3)
         if not isinstance(value, (int, float)):
             return False
         v = float(value)
-        if compat.doc_length_unit() == "m" and v > 10:
+        most = (self.dims[2] - self.dims[1]) if self.dims else None
+        if compat.doc_length_unit() == "m" and v > 10 \
+                and not (most is not None and v <= most + 1e-9):
             v /= 100.0
         return self.place_typed(f"{v}m")
 
@@ -540,8 +729,7 @@ class OpeningTool(_PlotTool):
                          "wall of this level", 4000)
             return
         wall, _seg, rec = got
-        why = S.opening_room(rec, wall, self.openings(),
-                             self.wall_height(wall))
+        why = self._why(got)
         if why:
             compat.flash(self.viewport, f"{why} — try another place", 5000)
             return
@@ -606,11 +794,14 @@ class OpeningTool(_PlotTool):
         text = (f"{o['w']:.2f} × {o['h']:.2f} m"
                 if compat.doc_length_unit() == "m" else
                 f"{compat.fmt_len(o['w'])} × {compat.fmt_len(o['h'])}")
-        try:            # red: why, at the cursor (the flash went unseen)
-            why = S.opening_room(o, wall, self.openings(),
-                                 self.wall_height(wall))
-        except Exception:  # noqa: BLE001
-            why = None
+        if len(self.arms) == 2:        # a corner window: both its parts
+            a, b = self.arms[0][2]["w"], self.arms[1][2]["w"]
+            text = (f"{a:.2f} + {b:.2f} × {o['h']:.2f} m"
+                    if compat.doc_length_unit() == "m" else
+                    f"{compat.fmt_len(a)} + {compat.fmt_len(b)} × "
+                    f"{compat.fmt_len(o['h'])}") + "  ·  " + \
+                tr("round the corner")
+        why = self.why          # red: why, at the cursor (the flash unseen)
         return (text + (f"  —  {why}" if why else ""), None)
 
     def status_clause(self) -> str:
@@ -627,8 +818,10 @@ class OpeningTool(_PlotTool):
         if self.here is not None:
             wall, seg, rec = self.here
             try:
-                ok = S.opening_room(rec, wall, self.openings(),
-                                    self.wall_height(wall)) is None
+                ok = self.why is None
+                if len(self.arms) == 2:
+                    self._draw_arms(viewport, painter, ok)
+                    raise _Drawn
                 draw_lines(viewport, painter, symbol_lines(rec, wall, seg),
                            self.z, INK if ok else "#d23c3c", 2.2)
                 from . import place3d as P3
@@ -652,6 +845,27 @@ class OpeningTool(_PlotTool):
                     D.draw(viewport, painter, wall, face, self.z, rec["pos"],
                            rec["w"], lo, hi, D.hot_side(cur, lo, hi),
                            compat.typed_value(viewport))
+            except _Drawn:
+                pass
             except Exception:  # noqa: BLE001 — a preview never breaks paint
                 pass
         super().draw_overlay(viewport, painter)
+
+    def _draw_arms(self, viewport, painter, ok: bool) -> None:
+        """A corner window's preview: its two parts, open at the corner —
+        in plan, and standing in its walls in 3D."""
+        from . import place3d as P3
+        ink = INK if ok else "#d23c3c"
+        draw_lines(viewport, painter, _corner_lines(self.arms, True),
+                   self.z, ink, 2.2)              # as the plan draws it
+        for w, _seg, rec, _end in self.arms:
+            if P3.in_3d(viewport):
+                zb = self.z + W.opening_lift(w) + float(
+                    rec.get("sill", 0.0) or 0.0)
+                s0 = rec["pos"] - rec["w"] / 2
+                P3.draw3d(viewport, painter, P3.opening_frame(
+                    w, s0, s0 + rec["w"], zb, zb + rec["h"]), ink, 2.2)
+
+
+class _Drawn(Exception):
+    """(the corner preview drawn: the plain one's steps skipped)"""

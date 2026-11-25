@@ -65,16 +65,17 @@ def hot_side(cursor: float, lo: float, hi: float) -> str:
     return "lo" if cursor - lo <= hi - cursor else "hi"
 
 
-def parse(text: str):
+def parse(text: str, most: float | None = None):
     """A typed distance: (metres, to the centre?) or None. «60» = 60 cm
-    (a bare number over 10, as everywhere in ArchXQ), «0.6», «60cm»,
+    (a bare number over 10 that cannot be metres — over ``most``, the room
+    on that wall; audit #3: «12» on a 20 m wall is 12 m), «0.6», «60cm»,
     «2'», «1.05c» = to the centre."""
     from .library import parse_measure
     raw = (text or "").strip()
     centre = raw.lower().endswith("c") and not raw.lower().endswith("mc")
     if centre:
         raw = raw[:-1].strip()
-    v = parse_measure(raw, "m")
+    v = parse_measure(raw, "m", most)
     if v is None or not math.isfinite(v) or v < 0:
         return None
     return v, centre

@@ -824,6 +824,8 @@ def size_lines(o: dict, mode: str, style: dict) -> list[str]:
     if mode == "off":
         return []
     w = DS.length(float(o["w"]), style)
+    if o.get("_w2"):                 # a corner window: both its parts
+        w = f"{w} + {DS.length(float(o['_w2']), style)}"
     h = DS.length(float(o["h"]), style)
     out = {"wxh": [f"{w} × {h}"], "w": [w], "h": [h],
            "over": [w, h]}.get(mode, [f"{w} × {h}"])
@@ -843,6 +845,10 @@ def _leaves_key(o: dict) -> str:
     extra = "".join(f"|{k}{o[k]}" for k in ("top_h", "bars_x", "bars_z",
                                             "lw1", "lw2", "lw3", "lw4",
                                             "lw5", "lw6") if o.get(k))
+    if o["kind"] == "door" and S.door_pocket(o):
+        extra += "|pocket"                 # into the wall: another door (#114)
+    if o["kind"] == "door" and S.door_leaves(o) >= 3:
+        return str(S.door_leaves(o)) + extra     # 3 / 4 / 6 glazed panes
     if o["kind"] != "window" or o.get("op") not in S.WIN_KINDS:
         return extra
     k = S.window_leaves(o)
@@ -881,7 +887,8 @@ def opening_types(openings: list[dict]) -> tuple[dict, list]:
                snap(round(float(o["w"]), 3), "w", TYPE_TOL[0]),
                snap(round(float(o["h"]), 3), "h", TYPE_TOL[1]),
                snap(round(float(o.get("sill", 0.0)), 3), "s", TYPE_TOL[1]),
-               _leaves_key(o) + _shape_key(o))
+               _leaves_key(o) + _shape_key(o),
+               round(float(o.get("_w2", 0.0)), 3))
         g = groups.setdefault(key, {"ids": [], "raw": set()})
         g["ids"].append(o["id"])
         g["raw"].add((round(float(o["w"]), 3), round(float(o["h"]), 3),
@@ -896,7 +903,7 @@ def opening_types(openings: list[dict]) -> tuple[dict, list]:
                 tags[oid] = tag
             rows.append({"tag": tag, "kind": kind, "op": k[1], "w": k[2],
                          "h": k[3], "sill": k[4], "n": len(groups[k]["ids"]),
-                         "raw": len(groups[k]["raw"])})
+                         "raw": len(groups[k]["raw"]), "w2": k[6]})
     return tags, rows
 
 
@@ -1410,7 +1417,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
         if not swings or w.get("kind", "line") != "line":
             continue
         try:
-            segs = OT.symbol_lines(o, w, W.centre(w))[2:]
+            segs = OT.plan_lines(o, w, byid, jambs=False)
         except Exception:  # noqa: BLE001 — an opening not drawable: skip
             continue
         for j, (a, b) in enumerate(segs):
@@ -1420,7 +1427,14 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
     # with each opening's size by it (C2, the Pro's): «0,90 × 2,10», a
     # window's sill under it — the tag goes where the two fit together:
     # never on a text, a tag or a cut wall (the walls are not in ``boxes``)
-    tags, types = opening_types(openings)
+    # (a corner window — cornerwin.py: «1.50 + 1.20 × 1.20», outside)
+    from . import cornerwin as CW
+    sized = {}
+    for o in openings:
+        two = CW.sizes(walls, o)
+        sized[o["id"]] = o if two is None else dict(
+            o, w=round(two[0], 3), _w2=round(two[1], 3))
+    tags, types = opening_types(list(sized.values()))
     from shapely.geometry import Point
     from shapely.geometry import box as sbox
     tt = DS.text(style, "tag")
@@ -1432,7 +1446,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
 
     def size_block(o):
         """(lines, width, height, the stroke's gap) on paper, or None."""
-        lines_ = size_lines(o, smode, style)
+        lines_ = size_lines(sized.get(o["id"], o), smode, style)
         if not lines_:
             return None
         gap = 0.6 if smode == "over" else 0.0   # W over a stroke over H
@@ -1569,7 +1583,9 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                "E": (1.0, 0.0)}             # on the PAGE (y down)
     dmm = DS.text(style, "dim")["mm"]
     counter: dict = {}
-    for dd in outside_dims(walls, openings, U,
+    # (a corner window: its parts, each up to the corner's outside)
+    parts_ = CW.split(walls, openings, outside=True)
+    for dd in outside_dims(walls, parts_, U,
                            int(show.get("dims_out", 3))):
         s, row = dd["side"], dd["row"]
         i = counter[(s, row)] = counter.get((s, row), -1) + 1
@@ -1601,7 +1617,7 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
                 swings[oid] = [xs, ys]
         avoid = list(boxes) + [("swing", min(xs), min(ys), max(xs), max(ys))
                                for xs, ys in swings.values()]
-        for dd in inside_chains(U, rooms, walls, openings, mode == "walls",
+        for dd in inside_chains(U, rooms, walls, parts_, mode == "walls",
                                 P, lab_mm, dmm, avoid):
             pa, pb = P(dd["a"]), P(dd["b"])
             label = DS.length(math.dist(dd["a"], dd["b"]), style)
@@ -1692,8 +1708,9 @@ def make(doc: dict, elevations, sheet: dict, style: dict,
             desc = (W_["door"] if t["kind"] == "door" else W_["window"]) + \
                 (" " + W_.get("ops", {}).get(t["op"], t["op"])
                  if t["op"] else "")
-            vals = (t["tag"], f"{DS.length(t['w'], style)} × "
-                    f"{DS.length(t['h'], style)}",
+            wide = DS.length(t["w"], style) + (
+                f" + {DS.length(t['w2'], style)}" if t.get("w2") else "")
+            vals = (t["tag"], f"{wide} × {DS.length(t['h'], style)}",
                     DS.length(t["sill"], style) if t["sill"] > 0.005 else "—",
                     str(t["n"]), desc)
             for c, v, h in zip(cols, vals, ("type", "size", "sill", "qty",

@@ -359,9 +359,7 @@ class ColumnTool(OnPlane, _PlotTool):
         o = self.opts()
         ang = o["angle"] if angle is None else angle
         return {"type": "column", "x": round(p[0], 4), "y": round(p[1], 4),
-                "shape": o["section"], "w": o["w"],
-                "d": o["w"] if o["section"] == "round" else o["d"],
-                "angle": round(ang, 3), "anchor": o["anchor"]}
+                **S.column_section(o), "angle": round(ang, 3)}
 
     def columns(self, b) -> list[dict]:
         """What clicking ``b`` now makes."""
@@ -904,13 +902,97 @@ def slab_tool(base):
     Points tool — a side drawn as an ARC (A, or the bar's «Arc»): its end
     clicked, then its middle pulled out (or its radius typed + Enter)."""
     chain = base is plottools.PlotPolyTool
+    from .walltools import AxisPull
 
-    class T(base):
+    class T(AxisPull, base):
         name = "ArchXQ slab"
         axq_element = "slab"
         noun = "Slab"
         #: () → the slab bar's options ("rad", "arc") — set for a slab only
         curve_opts = None
+        #: over a wall, a corner goes on its CENTRE line (his ask,
+        #: 2026-11-20); a host snap on a face's corner keeps the face
+        axis_pull = True
+        axis_keep_hard = True
+        #: () → the level's walls (set by ui); the ghost's come too
+        existing = None
+        #: () → the level's doors and windows (set by ui): over their span
+        #: their own snaps (trim, frame, glass) no longer lead — the wall's
+        #: faces' corners do (openingpull; his corner window, 23/11/2026)
+        openings = None
+        _op = None                   # (zones, faces' corners), read once
+
+        def _axis_on(self) -> bool:
+            # a slab and its opening — not a roof (from the faces, overhung)
+            return self.axq_element == "slab" \
+                and getattr(self, "bending", None) is None
+
+        def _op_data(self):
+            if self._op is None:
+                from . import openingpull as OP
+                try:
+                    walls = list(self.existing() if callable(self.existing)
+                                 else ())
+                    ops = list(self.openings() if callable(self.openings)
+                               else ())
+                    zs = OP.zones(walls, ops)
+                    self._op = (zs, OP.corners(walls) if zs else [])
+                except Exception:  # noqa: BLE001 — never in the way
+                    self._op = ([], [])
+            return self._op
+
+        def _over_opening(self, ctx):
+            """Over a door's / window's span: the host's snap there (its
+            trim, frame, glass…) let go — the cursor's point instead — and
+            a wall face's corner near the cursor. → (ctx, corner or None)"""
+            from . import openingpull as OP
+            if self.viewport is None or not self._axis_on():
+                return ctx, None
+            zs, cs = self._op_data()
+            if not zs:
+                return ctx, None
+            snap = getattr(ctx, "snap", None)
+            kind = getattr(snap, "kind", "") or ""
+            if kind in OP.KEEP_KINDS:
+                return ctx, None
+            here = plottools._xy(ctx)
+            cur = OP.cursor_on_plane(self.viewport, ctx, self.z)
+            raw = [cur.x(), cur.y()] if cur is not None else here
+            if not (OP.inside(zs, raw) or OP.inside(zs, here)):
+                return ctx, None
+            if kind not in OP.SOFT_KINDS:
+                placed = getattr(self, "pts", None) or ()
+                if OP.on_corner(cs, here) or any(
+                        math.dist(here, q) <= OP.SAME for q in placed):
+                    return ctx, None     # the wall's own / a corner placed
+                if cur is None:
+                    return ctx, None
+                ctx = OP.Unsnapped(ctx, cur)
+            scr = getattr(ctx, "screen", None)
+            if scr is None:
+                return ctx, None
+            k = OP.nearest(cs, (scr.x(), scr.y()),
+                           lambda x, y: compat.to_pixel(self.viewport, x, y,
+                                                        self.z))
+            return ctx, k
+
+        def _pick(self, ctx) -> list[float]:
+            ctx, k = self._over_opening(ctx)
+            if k is not None:            # a wall face's corner: it holds
+                self._snap = getattr(ctx, "snap", None)
+                self.diag = None
+                self._aligned = []
+                self._axis_hit = None
+                self._ghost_hit = None
+                self._guide_hit = "cross"
+                return k
+            p = base._pick(self, ctx)
+            q = self._axis_pull(ctx, p, getattr(ctx, "snap", None))
+            return p if q is None else q
+
+        def draw_overlay(self, viewport, painter) -> None:
+            self._draw_axis(viewport, painter)
+            base.draw_overlay(self, viewport, painter)
         claimed_keys = base.claimed_keys | ({Qt.Key_A} if chain
                                             else frozenset())
 

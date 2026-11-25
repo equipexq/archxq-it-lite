@@ -783,7 +783,128 @@ def imperial_step(step: float) -> float:
     return 0.0015875
 
 
-class LengthBox(QDoubleSpinBox):
+class DecimalBox(QDoubleSpinBox):
+    """A QDoubleSpinBox that takes EITHER decimal mark: the other one is
+    turned into the system's (his screen, 20/11/2026 — Windows in
+    Portuguese wants «0,20»: «0.00» typed in a slab's «Top» was refused
+    without a word and the field went back to 0.20; the slab came out
+    20 cm high). Every number field with decimals is one."""
+
+    #: (the number the window was given, what the field then held) — see
+    #: ``value``
+    _asked = None
+
+    def __init__(self, *a) -> None:
+        super().__init__(*a)
+        # typed by the user: from then on, what the field holds
+        self.lineEdit().textEdited.connect(self._touched)
+
+    def _touched(self, *_a) -> None:
+        self._asked = None
+
+    def fixup(self, text: str) -> str:
+        """A number under the field's start typed (0.05 where 0.10 is the
+        least): the start itself, not the old value back without a word
+        (audit 20/11/2026, #16). Emptied, or not a number: as ever (the
+        value stays — and ``_finish`` says why)."""
+        t = self._bare(text)
+        if t:
+            v, ok = self.locale().toDouble(self._decimal(t))
+            if ok:
+                v = min(max(v, self.minimum()), self.maximum())
+                return self.prefix() + self.textFromValue(v) + self.suffix()
+        return super().fixup(text)
+
+    # -- a text that cannot be read: SAID (#16), the field keeps its value ------
+    def _bare(self, text: str) -> str:
+        t = text.strip()
+        for cut in (self.prefix().strip(), self.suffix().strip()):
+            if cut and t.startswith(cut):
+                t = t[len(cut):]
+            if cut and t.endswith(cut):
+                t = t[:-len(cut)]
+        return t.strip()
+
+    def _readable(self, text: str) -> bool:
+        """A number (in range or not — out of range it goes to the end)."""
+        t = self._bare(text)
+        if not t:
+            return True                  # emptied: the value stays, as Qt
+        _v, ok = self.locale().toDouble(self._decimal(t))
+        return bool(ok)
+
+    def _finish(self, before: str) -> None:
+        if self._readable(before) or self.lineEdit().text() == before:
+            return
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QToolTip
+        from .i18n import tr
+        QToolTip.showText(self.mapToGlobal(QPoint(0, self.height())),
+                          tr("«{t}» could not be read — kept {v}",
+                             t=self._bare(before),
+                             v=self.lineEdit().text().strip()), self)
+
+    def focusOutEvent(self, e) -> None:  # noqa: N802
+        before = self.lineEdit().text()
+        super().focusOutEvent(e)
+        self._finish(before)
+
+    def keyPressEvent(self, e) -> None:  # noqa: N802
+        from PySide6.QtCore import Qt
+        before = self.lineEdit().text()
+        super().keyPressEvent(e)
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._finish(before)
+
+    def stepBy(self, n: int) -> None:  # noqa: N802 — the arrows, the wheel
+        self._asked = None
+        super().stepBy(n)
+
+    def setValue(self, v) -> None:  # noqa: N802
+        super().setValue(v)
+        try:
+            self._asked = (float(v), QDoubleSpinBox.value(self))
+        except (TypeError, ValueError):
+            self._asked = None
+
+    def value(self) -> float:
+        """What the field holds — or, NOT TOUCHED, the very number it was
+        given: a window opened and closed with OK writes back what the
+        model had, never that number rounded to the field's decimals or cut
+        to its range (audit 20/11/2026, #1: a 11.5 cm wall came back 12 cm,
+        a 0.80 m wall 0.60 m, a door at 1.085 m moved to 1.09 — only a
+        name changed)."""
+        v = QDoubleSpinBox.value(self)
+        a = self._asked
+        if a is not None and v == a[1]:
+            return a[0]
+        return v
+
+    def textFromValue(self, v: float) -> str:  # noqa: N802
+        """Three decimals (a millimetre) shown as two when the third is 0:
+        «0,20 m», «0,115 m» (audit #7: 11.5 cm could not be typed)."""
+        t = super().textFromValue(v)
+        if self.decimals() == 3:
+            dp = self.locale().decimalPoint()
+            head, sep, tail = t.partition(dp)
+            if sep and len(tail) >= 3 and tail[2] == "0" \
+                    and tail[:3].isdigit():
+                t = head + sep + tail[:2] + tail[3:]
+        return t
+
+    def _decimal(self, text: str) -> str:
+        dp = self.locale().decimalPoint()
+        other = "." if dp == "," else ","
+        return text.replace(other, dp) if dp in (",", ".") else text
+
+    def valueFromText(self, text: str) -> float:  # noqa: N802
+        return super().valueFromText(self._decimal(text))
+
+    def validate(self, text: str, pos: int):
+        return super().validate(self._decimal(text), pos)
+
+
+class LengthBox(DecimalBox):
     """A QDoubleSpinBox for a LENGTH (metres inside, always): once its
     suffix is « m», in a document kept in feet / inches / mm it SHOWS the
     document's unit («3'7 5/16"») and reads what is typed as IngeTrazo's
@@ -801,7 +922,7 @@ class LengthBox(QDoubleSpinBox):
         if s.strip() == "m" and compat.doc_length_unit() != "m":
             if not self._host:
                 self._host = True
-                v = self.value()
+                v = self.value()           # (as given, if untouched)
                 super().setSuffix("")
                 super().setDecimals(6)     # 1/16" is 0.0015875 m
                 super().setSingleStep(imperial_step(self.singleStep()))
@@ -828,8 +949,8 @@ class LengthBox(QDoubleSpinBox):
         if self._host:
             from . import compat
             v = compat.parse_host_length(text.strip())
-            return self.value() if v is None else float(v)
-        return super().valueFromText(text)
+            return QDoubleSpinBox.value(self) if v is None else float(v)
+        return super().valueFromText(text)      # (either decimal mark)
 
     def validate(self, text: str, pos: int):
         if self._host:
@@ -839,12 +960,19 @@ class LengthBox(QDoubleSpinBox):
             ok = bool(t) and compat.parse_host_length(t) is not None
             return (QValidator.Acceptable if ok else QValidator.Intermediate,
                     text, pos)
-        return super().validate(text, pos)
+        return super().validate(text, pos)      # (either decimal mark)
 
     def fixup(self, text: str) -> str:
         if self._host:
-            return self.textFromValue(self.value())
+            return self.textFromValue(QDoubleSpinBox.value(self))
         return super().fixup(text)
+
+    def _readable(self, text: str) -> bool:
+        if self._host:                   # feet / inches / mm: the host reads
+            from . import compat
+            t = text.strip()
+            return not t or compat.parse_host_length(t) is not None
+        return super()._readable(text)
 
 
 class Measure(QWidget):
@@ -870,7 +998,9 @@ class Measure(QWidget):
         self.field = LengthBox()
         # millimetre steps (a riser, a nosing) show 3 decimals FROM THE
         # START: set after the value, it was already rounded to 2
-        self.field.setDecimals(3 if step < 0.01 - 1e-9 else 2)
+        # (and a millimetre always: 11.5 cm typed — audit #7, 21/11/2026;
+        # shown «0,20» when the third is 0)
+        self.field.setDecimals(3)
         self.field.setSuffix(suffix)
         # feet / inches: the bar runs inch by inch (1/4", 1/16" for the
         # fine ones), on whole multiples of it

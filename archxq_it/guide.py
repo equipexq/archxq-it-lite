@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QTextBrowser,
     QVBoxLayout,
 )
@@ -664,7 +665,9 @@ GUIDES.update({
             ("Clear", "Removes the drawing from this level."),
         ],
         "tips": [
-            "Pick the drawing's <b>Layer</b> of the walls when it has one.",
+            "Walls on several layers (A-WALL-EXTR, A-WALL-INTR…) are all "
+            "read: <b>Layer</b> says <b>All wall layers</b>; pick one there "
+            "for its walls only.",
             "Curved walls are not found yet — draw them by hand. DWG: save "
             "it as DXF first.",
         ],
@@ -776,7 +779,14 @@ GUIDES.update({
                   ("Pivot", "<b>Pivot</b> (basculante): horizontal panes, "
                    "each turning on its middle, open up to 60°. "
                    "<b>Panes</b>: Auto (by its height) or 2 to 6. Small and "
-                   "high — bathrooms, service areas.")],
+                   "high — bathrooms, service areas."),
+                  ("Round the corner", "Point at a wall's end joined to "
+                   "another straight wall: the window turns the corner (an "
+                   "L), as wide on each wall. In its window (<b>Position</b> "
+                   "tab), <b>Round the corner</b>: which end, its width on "
+                   "the other wall, a <b>post</b> or <b>glass to glass</b> "
+                   "(a fixed window). Widths are measured to the corner's "
+                   "outside.")],
         # the site manual only (tools/manual_export.py): its pictures
         "figures": [("window_types.jpg", "Windows: pivot, louvred 3 and 6, "
                      "casement", 760),
@@ -1434,6 +1444,12 @@ def page_html(key: str) -> str:
         out += [f"<tr><td class='k'>{tr(k)}</td><td>{tr_long(d)}</td></tr>"
                 for k, d in g["keys"]]
         out.append("</table>")
+    # the author's own tips and pictures (helpnotes.py, 22/11/2026), dated
+    try:
+        from . import helpnotes
+        out.append(helpnotes.page_section(key))
+    except Exception:  # noqa: BLE001 — the page without them
+        pass
     video = g.get("video") or (TERRAIN_VIDEO if phase == "Terrain" else "")
     if isinstance(video, str):
         video = [("", video)] if video else []
@@ -1462,8 +1478,22 @@ class GuideWindow(QDialog):
         self.list.setFixedWidth(210)
         self.text = QTextBrowser()
         self.text.setOpenExternalLinks(True)
+        from . import helpnotes
+        helpnotes.ImageClicks(self.text)          # a picture: bigger
         lay.addWidget(self.list)
         right = QVBoxLayout()
+        right.setSpacing(0)
+        # the author's pen: only when ArchXQ runs from its source — never
+        # in a build a customer installs (helpnotes.author_mode)
+        if helpnotes.author_mode():
+            row = QHBoxLayout()
+            row.setContentsMargins(8, 6, 8, 2)
+            row.addStretch(1)
+            pen = QPushButton("✎  Edit this page's tips (author)")
+            pen.setCursor(Qt.PointingHandCursor)
+            pen.clicked.connect(self._edit)
+            row.addWidget(pen)
+            right.addLayout(row)
         right.addWidget(self.text)
         lay.addLayout(right, 1)
         for k in keys:
@@ -1471,9 +1501,39 @@ class GuideWindow(QDialog):
             it.setData(Qt.UserRole, k)
             self.list.addItem(it)
         self.list.currentItemChanged.connect(
-            lambda it, _old: it and self.text.setHtml(
-                page_html(it.data(Qt.UserRole))))
+            lambda it, _old: it and self._show(it.data(Qt.UserRole)))
         self.list.setCurrentRow(keys.index(element) if element in keys else 0)
+
+    def _show(self, key: str, keep_place: bool = False) -> None:
+        bar = self.text.verticalScrollBar()
+        at = bar.value()
+        self.text.setHtml(page_html(key))
+        if keep_place:
+            bar.setValue(at)
+
+    def _key(self):
+        it = self.list.currentItem()
+        return it.data(Qt.UserRole) if it is not None else None
+
+    def _edit(self) -> None:
+        """The author's editor for the page shown (one at a time)."""
+        from . import helpnotes
+        from .i18n import tr
+        key = self._key()
+        if not key:
+            return
+        ed = getattr(self, "_editor", None)
+        try:
+            if ed is not None and ed.isVisible():
+                ed.raise_()
+                ed.activateWindow()
+                return
+        except RuntimeError:              # closed (deleted)
+            pass
+        self._editor = helpnotes.NoteEditor(
+            key, tr(_label(key)), self,
+            on_saved=lambda k: k == self._key() and self._show(k, True))
+        self._editor.show()
 
 
 def open_guide(element: str | None, parent=None) -> None:

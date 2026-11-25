@@ -40,7 +40,8 @@ from .i18n import tr
 #: an element kind's PARTS: (key, label). One part = the whole element.
 SLOTS = {
     "plot": (("top", "Top (the ground)"), ("side", "Sides")),
-    "dig": (("floor", "Floor"), ("wall", "Walls and slopes")),
+    "dig": (("floor", "Floor"), ("wall", "Walls and slopes"),
+            ("water", "Water")),
     "fill": (("top", "Top"), ("wall", "Slopes")),
     "column": (("all", "Column"), ("orn", "Base and capital")),
     "beam": (("all", "Beam"),),
@@ -322,6 +323,12 @@ def slots(kind: str, el_id: str | None, doc: dict) -> list:
                   if e.get("id") == el_id), None)
         if not (c and (c.get("cbase") or c.get("ccap"))):
             return SLOTS["column"][:1]
+    if kind == "dig":
+        # (its water is a part only when it has water — 20/11/2026)
+        d = next((d for d in doc.get("digs") or ()
+                  if d.get("id") == el_id), None) if el_id else None
+        if not (d and d.get("water")):
+            return SLOTS["dig"][:2]
     if kind == "wall" and el_id:
         w = _wall(doc, el_id)
         g = _grid_of(w)
@@ -595,7 +602,18 @@ def merge(doc: dict, change: dict) -> dict:
     "id", "parts": {part: ref | None}, "all": bool, "only": bool} — «only»:
     a wall of a type keeps it as its OWN, not the type's (16/11); «all»: the kind's
     material too, and the other elements of the kind follow it (their own
-    choice for that part is let go)."""
+    choice for that part is let go); «level» (a wall, 20/11): every wall of
+    its level takes it as its OWN — the other levels' stay."""
+    if change.get("level") and change["kind"] == "wall" \
+            and not change.get("all"):
+        me = next((w for w in doc.get("walls") or ()
+                   if w.get("id") == change.get("id")), None)
+        if me is not None:
+            one = dict(change, level=False, only=True)
+            for w in doc.get("walls") or ():
+                if w.get("level") == me.get("level"):
+                    doc = merge(doc, dict(one, id=w["id"]))
+            return doc
     doc = dict(doc)
     m = doc.get("materials") or {}
     els = {k: dict(v) for k, v in (m.get("el") or {}).items()}
@@ -827,7 +845,8 @@ DEFAULTS = {"stair": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
             "opening": {"sill": {"lib": "misc/dark_granite.jpg"}},
             "wall": {"all": _PLASTER},
             "plot": {"top": _GRASS, "side": _GRAVEL},
-            "dig": {"floor": _GRAVEL, "wall": _GRAVEL},
+            "dig": {"floor": _GRAVEL, "wall": _GRAVEL,
+                    "water": {"lib": "water/pool_water.png"}},
             "fill": {"top": _GRASS, "wall": _GRAVEL},
             # his own pick for every roof, 2026-10-09 (the hidden roof's
             # sheets keep SHEET_DEFAULT)
@@ -835,6 +854,12 @@ DEFAULTS = {"stair": {"top": _EXPOSED, "side": _EXPOSED, "rail": _BRUSHED,
                      "parapet": _PLASTER,
                      "gutter": {"lib": "metal/metal_brushed.png"},
                      "slab": _SMOOTH}}
+
+
+def _is_water(color) -> bool:
+    from .terrain import WATER_COLOR
+    return tuple(round(v, 3) for v in (color or ())[:3]) == \
+        tuple(round(v, 3) for v in WATER_COLOR)
 
 
 def _is_sheet(color) -> bool:
@@ -1101,6 +1126,8 @@ def paint(scene, group, kind: str, el_id: str | None, doc: dict) -> None:
                     part = street_part(f.attrs.get("color")) or "asphalt"
                 except ImportError:
                     part = None
+            elif kind == "dig" and _is_water(f.attrs.get("color")):
+                part = "water"            # (a pool's water: its colour)
             elif kind in ("stair", "ramp", "guard"):
                 # its railing's parts, told by the colours they are built
                 # with; the glass keeps its own until one is chosen
@@ -1469,14 +1496,41 @@ class MaterialTab:
             name = next((t.get("name") for t in doc.get("wall_types") or ()
                          if t.get("id") == tid), "")
             # (16/11, his ask: a wall of a type painted ALONE — unticked:
-            # the selected wall(s) only, as their own)
+            # the selected wall(s) only, as their own; 20/11, his ask:
+            # UNTICKED by default — one level's walls get their own look
+            # without the other levels' walls of the type following)
             self.of_type = W.QCheckBox(tr("All walls of type «{name}»",
                                           name=name))
-            self.of_type.setChecked(True)
+            self.of_type.setChecked(False)
             self.of_type.setToolTip(tr(
                 "Ticked: every wall of this type takes it, and the next ones "
                 "drawn with it. Unticked: only the selected walls"))
             right.addWidget(self.of_type)
+        # (20/11, his ask: one level's walls at once — the other levels'
+        # stay as they are; each wall takes it as its own)
+        self.of_level = None
+        me = next((w for w in doc.get("walls") or ()
+                   if w.get("id") == el_id), None) if kind == "wall" else None
+        if me is not None:
+            n = sum(1 for w in doc.get("walls") or ()
+                    if w.get("level") == me.get("level"))
+            self.of_level = W.QCheckBox(tr("All walls on this level ({n})",
+                                           n=n))
+            self.of_level.setToolTip(tr(
+                "Ticked: every wall of this level takes it, as its own — the "
+                "other levels' walls stay as they are"))
+            right.addWidget(self.of_level)
+            others = [b for b in (self.all, getattr(self, "of_type", None))
+                      if b is not None]
+
+            def lone(on: bool, rest=others) -> None:
+                if on:                     # (one reach at a time)
+                    for b in rest:
+                        b.setChecked(False)
+            self.of_level.toggled.connect(lone)
+            for b in others:
+                b.toggled.connect(
+                    lambda on, lv=self.of_level: on and lv.setChecked(False))
         root.addLayout(right, 1)
         self._show()
 
@@ -1921,7 +1975,7 @@ class MaterialTab:
         self.start = dict(self.now)        # applied: no longer a change
         self.all.setChecked(False)
         if getattr(self, "of_type", None) is not None:
-            self.of_type.setChecked(True)
+            self.of_type.setChecked(False)
 
     def change(self) -> dict | None:
         """What to store (``merge``), None: nothing changed."""
@@ -1931,9 +1985,11 @@ class MaterialTab:
         if not parts:
             return None
         of_type = getattr(self, "of_type", None)
+        lv = getattr(self, "of_level", None)
         return {"kind": self.kind, "id": self.el_id, "parts": parts,
                 "all": self.all.isChecked(),
-                "only": of_type is not None and not of_type.isChecked()}
+                "only": of_type is not None and not of_type.isChecked(),
+                "level": lv is not None and lv.isChecked()}
 
 
 def with_tab(dlg, tab: MaterialTab) -> None:

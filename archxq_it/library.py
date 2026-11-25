@@ -82,7 +82,29 @@ def _one_leaf(o) -> bool:
         return o.get("shop_door", "double") == "single"
     if _garage(o):
         return False
-    return o.get("op") == "sliding" or int(o.get("leaves", 1) or 1) == 1
+    if o.get("op") == "sliding":
+        # (3+ glazed panes: the middle ones open — no side to pick)
+        from .structure import door_leaves
+        return door_leaves(o) <= 2
+    return int(o.get("leaves", 1) or 1) == 1
+
+
+def _glass_sliding(o) -> bool:
+    """A glazed sliding door: 1, 2, 3, 4 or 6 leaves (21/11/2026)."""
+    return o.get("op") == "sliding" and o.get("leaf") == "glass"
+
+
+def _plain_not_glass(o) -> bool:
+    # (a pocket door: one leaf — two run into the wall as Sliding double)
+    from .structure import door_pocket
+    return _plain_door(o) and not _glass_sliding(o) and not door_pocket(o)
+
+
+def _door_pocket(p) -> None:
+    """A pocket door (support #114, 22/11/2026): its leaf half run into the
+    wall (cardpics.door_pocket)."""
+    from . import cardpics as CP
+    CP.door_pocket(p)
 
 
 def _shop(o) -> bool:
@@ -187,6 +209,58 @@ COLUMN_ORDERS = (
 )
 
 
+#: a beam's ready sections: key, label, section, width, depth, flange, web,
+#: tip (its flange and web then edited on its window's Shape tab)
+BEAM_SECTIONS = (
+    ("bL", "L beam", "L", 0.30, 0.50, 0.15, 0.15,
+     "An L beam, 30 × 50: a ledge at its foot on one side, for the slab "
+     "to sit on"),
+    ("bT", "T beam", "T", 0.60, 0.50, 0.12, 0.20,
+     "A T beam, 60 × 50: its flange at the top, its web under it"),
+    ("binvT", "Inverted T", "invT", 0.40, 0.50, 0.15, 0.20,
+     "An inverted T beam, 40 × 50: a ledge each side at its foot"),
+    ("bI", "I / H beam", "I", 0.30, 0.60, 0.10, 0.10,
+     "An I (H) beam, 30 × 60: a flange at its top and at its foot"),
+    ("bU", "U beam", "U", 0.30, 0.50, 0.10, 0.10,
+     "A U (channel) beam, 30 × 50: a flange at its top and at its foot, "
+     "its web on one side"),
+)
+
+
+#: a column's ready sections: key, label, what (sectionlib: a concrete one
+#: with its width and depth, or a steel table's name), tip — the rest of the
+#: tables, the arms' thickness and any other outline: its window's Shape tab
+COLUMN_SECTIONS = (
+    ("cL", "L column", ("L", 0.40, 0.40),
+     "An L column, 40 × 40, its arms 15 cm — for a corner"),
+    ("cT", "T column", ("T", 0.45, 0.40),
+     "A T column, 45 × 40, its arms 15 cm — where a wall meets another"),
+    ("cX", "Cross column", ("cross", 0.45, 0.45),
+     "A cross column, 45 × 45, its arms 15 cm — where walls cross"),
+    ("cIPE200", "IPE 200", "IPE 200", "Steel, 100 × 200 mm — EN 10365"),
+    ("cIPE300", "IPE 300", "IPE 300", "Steel, 150 × 300 mm — EN 10365"),
+    ("cHEA200", "HEA 200", "HEA 200", "Steel, 200 × 190 mm — EN 10365"),
+    ("cHEA300", "HEA 300", "HEA 300", "Steel, 300 × 290 mm — EN 10365"),
+    ("cHEB200", "HEB 200", "HEB 200", "Steel, 200 × 200 mm — EN 10365"),
+    ("cHEB300", "HEB 300", "HEB 300", "Steel, 300 × 300 mm — EN 10365"),
+)
+
+
+def column_prof(what) -> dict:
+    """A card's section: its corners and curves, centred."""
+    from . import sectionlib as SL
+    return SL.steel(what) if isinstance(what, str) \
+        else SL.ready(what[0], what[1], what[2])[0]
+
+
+def _column_set(what) -> dict:
+    from . import sectionshape as SS
+    r = SS.to_record({"type": "column", "x": 0.0, "y": 0.0},
+                     column_prof(what))
+    return {"section": "poly", "pts": r["pts"], "curves": r.get("curves"),
+            "w": r["w"], "d": r["d"], "cbase": "none", "ccap": "none"}
+
+
 def _size(key, label, lo, hi, step, default, snaps=(), show=None, unit="m",
           also=(), tip="") -> Part:
     """A measure dragged on a bar, its field beside it (his idea,
@@ -224,10 +298,15 @@ IMPERIAL_SNAPS = {
 }
 
 
-def parse_measure(s: str, unit: str = "m") -> float | None:
+def parse_measure(s: str, unit: str = "m",
+                  most: float | None = None) -> float | None:
     """A typed measure: «0,85» / «0.85 m» / «85 cm» / «850 mm» — a bare
     number over 10 read as centimetres (nobody means an 85 m door);
     «%» for a slope. None: not a number.
+
+    ``most``: the most the field takes, in metres (audit 20/11/2026, #3 —
+    a road's «12» is 12 m, not 12 cm): a bare number over 10 is read as
+    centimetres only when it CANNOT be metres there (over ``most``).
 
     A LENGTH in a document kept in mm / feet-inches (IngeTrazo 0.5.8 asks
     the units of every new document) — or typed with ' / ": read as the
@@ -253,7 +332,8 @@ def parse_measure(s: str, unit: str = "m") -> float | None:
         v = float(t)
     except ValueError:
         return None
-    if unit == "m" and k is None and v > 10:
+    if unit == "m" and k is None and v > 10 \
+            and not (most is not None and v <= most + 1e-9):
         k = 0.01
     return v * (k or 1.0)
 
@@ -363,6 +443,14 @@ WINDOW_SIZES = (
     _size("h", "Height", 0.30, 2.50, 0.05, 1.20,
           (0.60, 1.00, 1.20, 1.50, 2.10), _not_shop),
     _size("sill", "Sill", 0.00, 2.20, 0.05, 1.00, (0.90, 1.00, 1.10, 1.60)))
+#: an empty Opening's sizes (László #117, 23/11/2026): from the floor at
+#: first, as tall as a door or more
+VOID_SIZES = (
+    _size("w", "Width", 0.30, 4.00, 0.05, 1.00,
+          (0.60, 0.80, 0.90, 1.00, 1.20, 1.50, 2.00)),
+    _size("h", "Height", 0.30, 3.00, 0.05, 2.10,
+          (0.60, 1.00, 1.20, 1.50, 2.10, 2.40)),
+    _size("sill", "Sill", 0.00, 2.20, 0.05, 0.0, (0.0, 0.90, 1.00, 1.10)))
 #: a window's sizes again, when the next one drawn was a shop window
 WINDOW_INIT = {"w": 1.20, "h": 1.20, "sill": 1.00}
 #: the panes see-through or OPAQUE (his ask, 2026-10-14: IngeTrazo has no
@@ -683,6 +771,7 @@ def _door_set(op: str, leaf: str, leaves: int = 1, top_h: float = 0.0) -> dict:
     """What a door's card sets: everything that tells it from the others.
     (A card is a whole model: another one picked leaves nothing of the last.)"""
     return {"op": op, "leaf": leaf, "leaves": leaves, "top_h": top_h,
+            "pocket": False,
             **({"top": "square"} if op == "swing" else {})}
 
 
@@ -755,11 +844,17 @@ CATALOG = {
         Type("sliding2", "Sliding double", "door_sliding2",
              _door_set("sliding", "solid", 2), "Two leaves parting in the middle",
              {"w": 1.60, "h": 2.10, "handle": "pull"}),
+        # ONE leaf running into the wall (Scrigno — support #114, 22/11/2026)
+        Type("pocket", "Pocket", "door_pocket",
+             dict(_door_set("sliding", "solid"), pocket=True),
+             "One leaf that runs into the wall (Scrigno type)",
+             dict(DOOR_INIT, handle="pull")),
         Type("barn", "Barn", "door_barn", _door_set("sliding", "planks"),
              "A plank leaf on a rail in sight",
              {"w": 1.00, "h": 2.10, "handle": "pull"}),
         Type("glass", "Glass sliding", "door_glass",
-             {"op": "sliding", "leaf": "glass", "top_h": 0.0},
+             {"op": "sliding", "leaf": "glass", "top_h": 0.0,
+              "pocket": False},
              "Glazed leaves in a slim dark frame, in two tracks — the "
              "curtain wall's look", dict(DOOR_INIT, handle="pull")),
         Type("shop", "Shopfront", "door_shop", {"op": "shop", "leaf": "glass"},
@@ -786,7 +881,12 @@ CATALOG = {
              "springs, a half-round glass light over it",
              dict(DOOR_INIT, handle="lever"))),
         DOOR_FINISH_PARTS +
-        (Part("leaves", "Leaves", ((1, "1"), (2, "2")), _plain_door),
+        (Part("leaves", "Leaves", ((1, "1"), (2, "2")), _plain_not_glass),
+         Part("leaves", "Leaves", ((1, "1"), (2, "2"), (3, "3"), (4, "4"),
+                                   (6, "6")), _glass_sliding,
+              tip="1: one sliding over a fixed pane · 2: parting in the "
+                  "middle · 3, 4, 6: panes in two tracks, the middle ones "
+                  "open"),
          Part("swing", "Hinge · slides to", (("left", "Left"),
                                               ("right", "Right")),
               _one_leaf),
@@ -909,6 +1009,16 @@ CATALOG = {
              {"w": 1.20, "h": 1.90, "sill": 0.80})),
         SHAPE_PARTS + WINDOW_LEAF_PARTS + (GLASS_PART,) + SHOP_WINDOW_PARTS
         + WINDOW_SIZES + TRIM_PARTS + SILL_PARTS),
+    # an EMPTY OPENING (László #117, 23/11/2026): it had no library — its
+    # shapes only in its own window (Size tab), the panel blank and the
+    # manual saying «in the Library». Its shapes now as cards and the Shape
+    # row, its sizes, its trim and stone sill — the window's own parts
+    "void": Shelf("Openings", tuple(
+        Type(f"v_{s}", label, f"void_{s}", {"oshape": s},
+             "An opening with nothing in it — a passage, an arch without a "
+             "door: the wall is simply cut, from its sill to its head.")
+        for s, label in SHAPE_CHOICES),
+        SHAPE_PARTS + VOID_SIZES + TRIM_PARTS + SILL_PARTS),
     "wall": Shelf("Walls", (
         # (a ready-made card: none of YOUR types — «wtype» "" — and no
         # layers: one picked on a wall with layers makes it a plain one)
@@ -963,7 +1073,9 @@ CATALOG = {
                (1.00, 1.25, 1.50, 2.00), lambda o: bool(o.get("cw"))),
          # timber boards: their relief, so a sheet's elevation shows them
          Part("clad", "Boards", (("battens", "Battens"),
-                                 ("lap", "Lap siding"), ("none", "Flat")),
+                                 # «Smooth», not «Flat»: that word is the
+                                 # flat ROOF's (de «Flachdach»), 23/11
+                                 ("lap", "Lap siding"), ("none", "Smooth")),
               lambda o: o.get("look") in ("boards_v", "boards_h")
               or o.get("clad") in ("battens", "lap"),
               tip="Battens over the joints, or lap siding — drawn, so a "
@@ -1019,24 +1131,42 @@ CATALOG = {
         () if edition.lite() else tuple(
             Type(k, label, f"col_{k}",
                  {"section": sec, "cbase": b, "ccap": c}, tip)
-            for k, label, sec, b, c, tip in COLUMN_ORDERS)),
+            for k, label, sec, b, c, tip in COLUMN_ORDERS)) + (
+        # its SECTIONS in sight (sectionlib.py, Pro — 24/11/2026: what the
+        # Shape tab makes, on a card, as the beams')
+        () if edition.lite() else tuple(
+            Type(k, label, f"col_{k}", _column_set(what), tip)
+            for k, label, what, tip in COLUMN_SECTIONS)),
         () if edition.lite() else (
             Part("cbase", "Base", (("none", "None"), ("plinth", "Plinth"),
                                    ("tuscan", "Tuscan"), ("doric", "Doric"),
                                    ("attic", "Attic"), ("stepped", "Stepped"),
                                    ("pedestal", "Pedestal")),
+                 # (none on a section of its own: column_orders)
+                 show=lambda o: o.get("section") != "poly",
                  tip="The column's foot, sized by its width — within its "
                      "height"),
             Part("ccap", "Capital", (("none", "None"), ("slab", "Abacus"),
                                      ("tuscan", "Tuscan"), ("doric", "Doric"),
                                      ("empire", "Empire"),
                                      ("stepped", "Stepped")),
+                 show=lambda o: o.get("section") != "poly",
                  tip="The column's head, sized by its width — within its "
                      "height"))),
     "beam": Shelf("Beams", (
-        Type("b1540", "15 × 40", "beam_s", {"w": 0.15, "h": 0.40}),
-        Type("b2045", "20 × 45", "beam_m", {"w": 0.20, "h": 0.45}),
-        Type("b2060", "20 × 60", "beam_l", {"w": 0.20, "h": 0.60}))),
+        # (a rectangle: «sec» too — a shaped beam is not one of these)
+        Type("b1540", "15 × 40", "beam_s", {"w": 0.15, "h": 0.40,
+                                            "sec": "rect"}),
+        Type("b2045", "20 × 45", "beam_m", {"w": 0.20, "h": 0.45,
+                                            "sec": "rect"}),
+        Type("b2060", "20 × 60", "beam_l", {"w": 0.20, "h": 0.60,
+                                            "sec": "rect"})) + (
+        # its SECTIONS in sight (beamshape.py, Pro — his ask, 23/11/2026:
+        # what the Shape tab makes, on a card)
+        () if edition.lite() else tuple(
+            Type(k, label, f"beam_{k}",
+                 {"w": w, "h": h, "sec": sec, "tf": tf, "tw": tw}, tip)
+            for k, label, sec, w, h, tf, tw, tip in BEAM_SECTIONS))),
     "slab": Shelf("Slabs", (
         # (a plain card: none of YOUR types — «stype» "" — and no layers)
         # (and no joists: «frame» None — a «By market» floor's taken off)
@@ -1070,10 +1200,6 @@ CATALOG = {
         # a CEILING (0.15.0, B4 — Badis' plenum, 2026-10-13): a board hung
         # at its own height over the floor; drawn as a slab («Inside the
         # walls»: a room's in one click), white by default
-        Type("block", "Block", "slab_block", {"block": True, "ceiling": False},
-             "A BLOCK — a platform, a bench, a mass: drawn as a slab "
-             "(rectangle or point by point), its height and its base over "
-             "the floor on the bars below"),
         Type("ceiling", "Ceiling", "slab_ceiling",
              {"ceiling": True, "block": False, "t": 0.02},
              "A suspended ceiling: a board at its own height over the floor "
@@ -1087,8 +1213,17 @@ CATALOG = {
                (2.40, 2.50, 2.60, 2.70, 2.80, 3.00),
                lambda o: bool(o.get("ceiling")),
                tip="Its underside over the level's floor — what is seen "
-                   "from the room"),
-         _size("t", "Height", 0.05, 6.00, 0.05, 1.00,
+                   "from the room"),)),
+    # the BLOCK (Building elements ▸ Block): a platform, a bench, a mass —
+    # drawn as a slab is, but NO slab: never among the slabs' cards (his
+    # call, 20/11/2026 — a «Block» card there made his floor slabs blocks,
+    # their «Top» then not taken)
+    "block": Shelf("Block", (
+        Type("block", "Block", "slab_block", {"block": True, "ceiling": False},
+             "A BLOCK — a platform, a bench, a mass: drawn as a slab is "
+             "(rectangle or point by point), its height and its base over "
+             "the floor on the bars below"),),
+        (_size("t", "Height", 0.05, 6.00, 0.05, 1.00,
                (0.15, 0.30, 0.45, 0.50, 0.75, 1.00, 1.10, 2.00, 3.00),
                lambda o: bool(o.get("block")),
                tip="How tall the block is (type more: up to 30 m)"),
@@ -1653,7 +1788,9 @@ REC_KEYS = {"column": {"section": "shape"},
             "wall": {"wtype": "type"},
             # a window's SHAPE (2026-10-31): its option «shape» is how it
             # is drawn (on a wall)
-            "window": {"oshape": "shape"}}
+            "window": {"oshape": "shape"},
+            # an empty Opening's too (László #117, 23/11/2026)
+            "void": {"oshape": "shape"}}
 
 #: the libraries with YOUR types, and the option that keeps the one picked
 #: (a slab's: «stype», its record's too — slab layers, 2026-10-23)
@@ -1675,10 +1812,11 @@ def _same(a, b) -> bool:
 
 #: an option a record may lack, and what it then is (a door before the
 #: arch: square)
-UNSET = {"cbase": "none", "ccap": "none",
+UNSET = {"cbase": "none", "ccap": "none", "sec": "rect",
          "top": "square", "oshape": "rect", "louvred": False, "bars_x": 0,
          "bars_z": 0, "top_h": 0.0, "lw1": 0.0, "lw2": 0.0, "lw3": 0.0,
          "garage": "sectional", "leaf": "solid", "leaves": 1,
+         "pocket": False,
          # a wall without boards' relief (clad.py)
          "clad": "none"}
 #: a card's value that its variants still fit: a «solid» leaf is also a
@@ -2044,6 +2182,27 @@ def _col_round(p) -> None:
     p.drawLine(QPointF(48, 10), QPointF(48, 86))
 
 
+def _col_section(p, what) -> None:
+    """A shaped column seen from above, as built, as big as the card holds
+    it (a steel one's web a line at least)."""
+    from PySide6.QtGui import QPolygonF
+
+    from . import sectionshape as SS
+    prof = column_prof(what)
+    x0, y0, x1, y1 = SS.box(prof)
+    k = 52.0 / max(x1 - x0, y1 - y0)
+    p.setPen(_pen(ACCENT, 3.0 if isinstance(what, str) else 1.5))
+    p.setBrush(ACCENT)
+    p.drawPolygon(QPolygonF([QPointF(48 + x * k, 48 - y * k)
+                             for x, y in SS.fine(prof)]))
+    # (its axes round it only: over a steel web they hid it)
+    p.setPen(_pen(INK, 2, True))
+    w, h = (x1 - x0) * k / 2 + 5, (y1 - y0) * k / 2 + 5
+    for sx, sy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        p.drawLine(QPointF(48 + sx * w, 48 + sy * h),
+                   QPointF(48 + sx * 42, 48 + sy * 42))
+
+
 def _beam(p, w, h) -> None:
     """A beam's section under its slab."""
     p.setPen(Qt.NoPen)
@@ -2051,6 +2210,26 @@ def _beam(p, w, h) -> None:
     p.drawRect(QRectF(8, 20, 80, 10))
     p.setBrush(ACCENT)
     p.drawRect(QRectF(48 - w / 2, 20, w, h))
+
+
+def _beam_sec(p, e: dict) -> None:
+    """A shaped beam's section under its slab (seen from its end, a cm a
+    pixel — as the rectangles'): beamshape's bands, as built."""
+    from . import beamshape as BS
+    p.setPen(Qt.NoPen)
+    p.setBrush(INK)
+    p.drawRect(QRectF(8, 20, 80, 10))
+    k, depth = 100.0, float(e["h"])
+    foot = 30 + depth * k
+
+    def z(a):
+        return a[1] if a[0] == "b" else depth - a[1]
+    path = QPainterPath()
+    for lo, hi, zl, zh in BS.bands(e):
+        path.addRect(QRectF(48 - hi * k, foot - z(zh) * k, (hi - lo) * k,
+                            (z(zh) - z(zl)) * k))
+    p.setBrush(ACCENT)
+    p.drawPath(path.simplified())
 
 
 def _block(p) -> None:
@@ -2307,18 +2486,25 @@ def _profile(p, key) -> None:
 
 
 def _column_order(p, sec, cbase, ccap) -> None:
-    """A column from the front, as it comes: its base and capital in the
-    accent; its section in the corner."""
+    """A column from the front: its CAPITAL at the top of the card, its
+    BASE at the foot, the shaft between them broken off — its middle left
+    out, so both ends are drawn large enough to be told apart (his ask,
+    23/11/2026: a whole column at a card's size was «a long rectangle,
+    all alike»). Its section in the corner."""
     from . import column_orders as CO
-    half = CO.elevation(cbase, ccap, 2.2)        # (a short shaft: its ends show)
+    stub = 0.15                   # of the shaft, kept over the base / under
+    hb = CO.height(CO.BASES.get(cbase), 1.0)     # the capital (its widths)
+    half = CO.elevation(cbase, ccap, 2 * stub)
     top = max(z for _u, z in half)
-    k = 84 / top
+    gap = 12.0                                   # px: the shaft left out
     wd = max(1.0 / 2 + max(u for u, _z in half), 0.5)
-    k = min(k, 42 / wd)
+    k = min((84 - gap) / max(top, 1e-6), 42 / wd)
     r = k / 2                                    # half the shaft's width
+    foot = 48 + (top * k + gap) / 2              # centred on the card
+    yc = foot - (hb + stub) * k                  # where the shaft breaks
 
     def at(u, z, s):
-        return QPointF(48 + s * (r + u * k), 90 - z * k)
+        return QPointF(48 + s * (r + u * k), foot - z * k)
     path = QPainterPath(at(half[0][0], 0.0, 1))
     for u, z in half[1:]:
         path.lineTo(at(u, z, 1))
@@ -2327,7 +2513,22 @@ def _column_order(p, sec, cbase, ccap) -> None:
     path.closeSubpath()
     p.setPen(Qt.NoPen)
     p.setBrush(QColor("#2f7df6"))
-    p.drawPath(path)
+    for lift, clip in ((0.0, QRectF(0, yc, 96, 96)),           # the base
+                       (gap, QRectF(0, yc - 96, 96, 96))):     # the capital
+        p.save()
+        p.translate(0, -lift)
+        p.setClipRect(clip, Qt.IntersectClip)
+        p.drawPath(path)
+        p.restore()
+    # the break: a short zig-zag across the shaft at both cut ends
+    from PySide6.QtGui import QPolygonF
+    p.setPen(_pen(INK, 1.6))
+    z = min(3.0, r / 3)
+    for y in (yc, yc - gap):
+        p.drawPolyline(QPolygonF([
+            QPointF(48 - r - 3, y), QPointF(48 - z, y),
+            QPointF(48 - z / 2, y - 3), QPointF(48 + z / 2, y + 3),
+            QPointF(48 + z, y), QPointF(48 + r + 3, y)]))
     p.setBrush(QColor("#4a4f56") if sec == "rect" else INK)
     if sec == "round":
         p.drawEllipse(QRectF(2, 2, 15, 15))
@@ -2559,6 +2760,9 @@ PICS = {
     **({} if edition.lite() else {
         f"col_{k}": (lambda p, s=s, b=b, c=c: _column_order(p, s, b, c))
         for k, _l, s, b, c, _t in COLUMN_ORDERS}),
+    **({} if edition.lite() else {
+        f"col_{k}": (lambda p, what=what: _col_section(p, what))
+        for k, _l, what, _t in COLUMN_SECTIONS}),
     **{f"copy_{k}": (lambda p, k=k: _copy(p, k))
        for k in (*PF.COPY_OBJECTS, PF.COPY_MINE)},
     "roof_gable": lambda p: _roof(p, "gable"),
@@ -2592,6 +2796,10 @@ PICS = {
     "beam_s": lambda p: _beam(p, 15, 40), "beam_m": lambda p: _beam(p, 20,
                                                                     45),
     "beam_l": lambda p: _beam(p, 20, 60),
+    **({} if edition.lite() else {
+        f"beam_{k}": (lambda p, sec=sec, w=w, h=h, tf=tf, tw=tw: _beam_sec(
+            p, {"w": w, "h": h, "sec": sec, "tf": tf, "tw": tw}))
+        for k, _l, sec, w, h, tf, tw, _t in BEAM_SECTIONS}),
     "slab_12": lambda p: _slab(p, 9), "slab_15": lambda p: _slab(p, 12),
     "slab_20": lambda p: _slab(p, 16),
     "slab_ceiling": lambda p: _ceiling(p),
@@ -2647,6 +2855,9 @@ def _opening_pics() -> dict:
         "win_triangle": lambda p: CP.shaped(p, "triangle"),
         "win_trapezoid": lambda p: CP.shaped(p, "trapezoid"),
         "win_arch_casement": lambda p: CP.shaped(p, "round_arch", "casement"),
+        # an empty Opening of each shape (László #117, 23/11/2026)
+        **{f"void_{s}": (lambda p, s=s: CP.shaped(p, s, "void"))
+           for s, _l in SHAPE_CHOICES},
         "door_swing": lambda p: D(p),
         "door_panelled": lambda p: D(p, "panels"),
         "door_six": lambda p: D(p, "six"),
@@ -2662,6 +2873,7 @@ def _opening_pics() -> dict:
         "door_sliding": lambda p: D(p, op="sliding"),
         "door_sliding2": lambda p: D(p, n=2, op="sliding"),
         "door_barn": lambda p: D(p, "planks", op="sliding"),
+        "door_pocket": lambda p: CP.door_pocket(p),
         "door_arched": lambda p: CP.door_arched(p),
         "door_garage": lambda p: CP.garage(p, "sectional"),
         "door_rollup": lambda p: CP.garage(p, "rollup"),
@@ -2899,6 +3111,20 @@ class Card(QToolButton):
         self.pin = None
         self.hover_only = False
         self.on_double = None            # (YOUR type's card: its window)
+        #: its right-click (cardhelp.attach, 20/11/2026): fn() → [(text,
+        #: fn)] — Help first
+        self.on_menu = None
+
+    def contextMenuEvent(self, e) -> None:  # noqa: N802
+        if self.on_menu is None:
+            super().contextMenuEvent(e)
+            return
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        for text, fn in self.on_menu():
+            m.addAction(text).triggered.connect(lambda _c=False, fn=fn: fn())
+        e.accept()
+        m.exec(e.globalPos())
 
     def mouseDoubleClickEvent(self, e) -> None:  # noqa: N802
         if self.on_double is not None and e.button() == Qt.LeftButton:
@@ -3201,9 +3427,15 @@ class LibraryPanel(QWidget):
         # ramp's 6 m landing could not reach the façade) — the bar is the
         # usual sizes; the field, what you mean (a slope / angle: not past)
         typed_hi = hi if pct else hi * 4
+        # …and a move's bar (−1…1, «Move across»): «−2» goes 2 m back, as
+        # «3» goes 3 m on (audit 20/11/2026, #6 — the low end was not
+        # widened). A size's low end stays: a 0.4 m door bar starting at
+        # 0.50 still takes 0.50 (cut in silence, his rule of 19/11).
+        typed_lo = lo * 4 if lo < 0 and not pct else lo
 
         def fitted(v, typed=False):
-            v = min(max(v, lo), typed_hi if typed else hi)
+            v = min(max(v, typed_lo if typed else lo),
+                    typed_hi if typed else hi)
             if self.fit is not None:
                 v = self.fit(self.key, part.key, v - sh) + sh
             return v
@@ -3286,7 +3518,7 @@ class LibraryPanel(QWidget):
         s.sliderReleased.connect(lambda: keep(s.value() / K))
 
         def typed():
-            v = parse_measure(f.text(), part.unit)
+            v = parse_measure(f.text(), part.unit, typed_hi)
             if v is None:
                 f.setText(text(s.value() / K))
                 return
@@ -3343,6 +3575,8 @@ class LibraryPanel(QWidget):
                 self.key, {opt: tid}))
             b.on_double = lambda tid=t["id"]: self.on_pick(
                 self.key, {"_types": "edit", "_tid": tid})
+            from . import cardhelp as CH          # its right-click: Help
+            CH.attach(b, self.key, mine=t)
             p = b.add_pin("", tr("Delete this profile from your library — "
                                  "the ones placed stay") if prof else
                           tr("Delete this type — its elements keep its "
@@ -3560,6 +3794,8 @@ class LibraryPanel(QWidget):
             b.setChecked(t.key == cur)
             b.setToolTip(card_tip(t)
                          + ("  (ArchXQ IT Pro)" if pro_locked else ""))
+            from . import cardhelp as CH          # its right-click: Help
+            CH.attach(b, self.key, t)
             ch = type_changes(t, opts, picked)
             b.clicked.connect(lambda _c=False, ch=ch:
                               self.on_pick(self.key, ch))
@@ -3839,6 +4075,8 @@ class AllTypesDialog(QDialog):
                 return b
             b.setToolTip(card_tip(t))
             ch = type_changes(t, self.opts, self.picked)
+        from . import cardhelp as CH              # its right-click: Help
+        CH.attach(b, self.key, t, mine)
         b.setCheckable(True)
         b.setChecked(on)
         b.clicked.connect(lambda _c=False, ch=ch: self._pick(ch))

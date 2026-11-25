@@ -270,7 +270,7 @@ class OptionsBar(QFrame):
         else:                                        # a length (m)
             from .look import LengthBox   # feet / inches in such a document
             w = LengthBox()
-            w.setDecimals(2)
+            w.setDecimals(3)      # a millimetre: 11.5 cm (audit #7)
             w.setRange(float(o.get("min", -1000.0)),
                        float(o.get("max", 1000.0)))
             w.setSingleStep(float(o.get("step", 0.05)))

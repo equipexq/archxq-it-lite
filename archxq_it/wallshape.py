@@ -56,6 +56,10 @@ WHY_TOP_ONLY = ("A grid, clad or light-framed wall takes a shape cut from "
 TOP_ONLY = ("gw", "frame", "clad")
 STEP = 0.001            # m: a sheer step in such a top, 1 mm wide
 WHY_POINT = "No such point"
+#: a Notch dragged where the wall is not (his click in the cut's hole,
+#: 20/11/2026: «No such point» told nothing)
+WHY_NOTCH_MISS = ("Nothing of the wall there — drag the rectangle over an "
+                  "edge of the wall (to move a point: drag the point)")
 WHY_FEW = "A shape needs three points at least"
 
 
@@ -160,6 +164,25 @@ def profile_of(w: dict | None) -> dict | None:
         return None
     p = w["profile"]
     return p if isinstance(p, dict) and p.get("ctrl") else None
+
+
+def match_heights(wall: dict, others) -> list:
+    """The heights, off THIS wall's foot, of the corners of the shapes of
+    the walls joined to it (``others``) — its Shape tab's snap lines. His
+    L balcony (23/11/2026): the second wall's cut had to be typed the same
+    as the first's, from memory; now it lands on the first's, exactly."""
+    base = float(wall.get("base", 0.0) or 0.0)
+    out = []
+    for x in others or ():
+        p = profile_of(x)
+        if p is None:
+            continue
+        b = float(x.get("base", 0.0) or 0.0)
+        for _s, z in p["ctrl"]:
+            h = round(b + float(z) - base, 4)
+            if h > 1e-3 and all(abs(h - k) > 1e-3 for k in out):
+                out.append(h)
+    return sorted(out)
 
 
 def peak(prof: dict) -> float:
@@ -581,7 +604,7 @@ def notch(prof: dict, s0: float, z0: float, s1: float, z1: float,
     P = _poly(prof)
     B = box(s0, z0, s1, z1)
     if not P.intersects(B) or P.intersection(B).area < 1e-9:
-        return None, WHY_POINT
+        return None, WHY_NOTCH_MISS
     if P.buffer(-1e-6).contains(B):
         return None, WHY_NOTCH_INSIDE
     for zone in _curve_zones(prof):
@@ -604,6 +627,29 @@ def notch(prof: dict, s0: float, z0: float, s1: float, z1: float,
 def to_rect(prof: dict):
     """«Back to rectangle»: the height it gives back (``was``)."""
     return prof.get("was", "level")
+
+
+def mirrored(prof: dict) -> tuple:
+    """The shape turned end for end (s → L − s): a «C» open at end B opens
+    at end A, a rounded end goes to the other end… (his L balcony,
+    23/11/2026: the ready «C» opened one way only). Its foot stays corners
+    0 and 1, still anti-clockwise: new corner k is old corner 1 − k, new
+    side k old side −k walked backwards — a radius goes with its corner,
+    an arc with its side, its sagitta unchanged (a mirror and a reversed
+    walk: still bulging the same way into or out of the shape)."""
+    ctrl = prof["ctrl"]
+    n = len(ctrl)
+    if n < 3:
+        return None, WHY_FEW
+    Lw = float(prof["L"])
+    pts = [[round(Lw - float(ctrl[(1 - k) % n][0]), 6) + 0.0,
+            float(ctrl[(1 - k) % n][1])] for k in range(n)]
+    old = C.clean(prof.get("curves"))
+    curves = {"r": {str(k): old["r"][str((1 - k) % n)] for k in range(n)
+                    if str((1 - k) % n) in old["r"]},
+              "arc": {str(k): old["arc"][str((-k) % n)] for k in range(n)
+                      if str((-k) % n) in old["arc"]}}
+    return _done(_copy(prof, ctrl=pts, curves=curves))
 
 
 # ---- the length, a scale, a split -------------------------------------------------------------
@@ -688,10 +734,32 @@ PRESETS = (("gable", "Gable"), ("stepped", "Stepped parapet"),
            ("c", "«C» open at its end"))
 
 
-def preset(kind: str, L: float, h: float) -> tuple:
+def joined_cut(wall: dict, joins) -> tuple | None:
+    """(z0, z1, end): the «C» of a wall joined at a corner of this one, as
+    it stands at that corner — its sill and head, off THIS wall's foot —
+    and this wall's end there ("a" / "b"). ``joins``: [(this wall's end,
+    the other wall, its end at the corner)]. None: no such cut. His L
+    balcony, 23/11/2026: the ready «C» opens at that corner, as high."""
+    base = float(wall.get("base", 0.0) or 0.0)
+    for end, x, xe in joins or ():
+        p = profile_of(x)
+        if p is None:
+            continue
+        iv = slice_at(p, 0.0 if xe == "a" else float(p["L"]))
+        if len(iv) < 2:
+            continue
+        b = float(x.get("base", 0.0) or 0.0)
+        return (round(b + iv[0][1] - base, 4), round(b + iv[1][0] - base, 4),
+                end)
+    return None
+
+
+def preset(kind: str, L: float, h: float, cut=None) -> tuple:
     """A ready shape for a wall ``L`` long, ``h`` tall (from its foot):
     (profile, None) or (None, why). Each one a starting point — its
-    points drag and its sizes type as any shape's."""
+    points drag and its sizes type as any shape's. ``cut`` (the «C»
+    only): (z0, z1, end) — its sill and head and the end it opens at
+    (joined_cut); one that doesn't fit this wall: as it ever was."""
     L, h = float(L), float(h)
     if L < 4 * MIN_PART or h < 4 * MIN_PART:
         return None, WHY_LENGTH
@@ -721,17 +789,19 @@ def preset(kind: str, L: float, h: float) -> tuple:
         if prof is None:
             return None, why
         return bend_side(prof, 2, -round(min(L / 6, MAX_PEAK - h), 3))
-    if kind == "c":                     # cut open at end B, curved inside
-        z0, z1 = h * 0.3, h * 0.7
+    if kind == "c":                     # cut open at end B, SQUARE inside
+        # (square, as most are — his ask, 23/11/2026: it came rounded, and
+        # making it square meant Round corner at 0, twice; to round it,
+        # Round corner and Chamfer are right there)
+        z0, z1, end = h * 0.3, h * 0.7, "b"
+        if cut:
+            c0, c1, ce = float(cut[0]), float(cut[1]), cut[2]
+            if MIN_PART <= c0 and c1 - c0 >= MIN_PART \
+                    and c1 <= h - MIN_PART:
+                z0, z1, end = c0, c1, ce
         prof, why = make([[0, 0], [L, 0], [L, z0], [L * 0.4, z0],
                           [L * 0.4, z1], [L, z1], [L, h], [0, h]])
-        if prof is None:
-            return None, why
-        r = round(min(0.3, (z1 - z0) / 2 - 0.01), 3)
-        for i in (3, 4):
-            got, why = round_corner(prof, i, r)
-            if got is None:
-                return None, why
-            prof = got
-        return prof, None
+        if prof is None or end != "a":
+            return prof, why
+        return mirrored(prof)           # open at end A
     return None, WHY_POINT

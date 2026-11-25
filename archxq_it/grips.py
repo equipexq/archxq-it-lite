@@ -75,11 +75,103 @@ def straight(w: dict) -> bool:
     return w.get("kind", "line") == "line" and "a" in w and "b" in w
 
 
+# ---- a wall BENT into an arc by its middle (idea #15, le duc — support #115,
+# his go 23/11/2026): the straight wall's middle pulled out makes it an arc
+# through its two ends; on a curved wall the same grip sets how far its
+# middle stands off the line between its ends — 0: straight again.
+BEND_TIP = ("Bend it — pull its middle out: an arc through its two ends "
+            "(back to the line = straight), or type its radius (0 = "
+            "straight)")
+
+
+def bend_of(w: dict) -> float:
+    """How far the middle of the line DRAWN stands off its chord, signed
+    (+ to the LEFT of a → b); 0 for a straight wall."""
+    if w.get("kind", "line") != "arc" or "a" not in w or "b" not in w:
+        return 0.0
+    a, b = w["a"], w["b"]
+    L = math.dist(a, b)
+    if L < 1e-9:
+        return 0.0
+    u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+    n = (-u[1], u[0])
+    m = W.drawn(w).at(0.5)
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    return (m[0] - mid[0]) * n[0] + (m[1] - mid[1]) * n[1]
+
+
+def bend_why(w: dict, openings=()) -> str | None:
+    """Why this wall can't be bent (None = it can): only a plain wall
+    drawn as a line or an arc — never its doors / windows guessed."""
+    if w.get("kind", "line") not in ("line", "arc") or "a" not in w:
+        return "A round wall is bent by its radius, in its window"
+    if w.get("cw") or w.get("gw"):
+        return "A grid wall stays straight"
+    if w.get("profile"):
+        return "A wall with its own shape stays straight — «Back to " \
+               "rectangle» in its Shape tab first"
+    if W.top_of(w) is not None:
+        return "A sloped or gable top stays straight — make its top flat " \
+               "first"
+    if w.get("clad") in ("battens", "lap"):
+        # its boards' relief is made on a straight wall only (clad.py):
+        # bent, it would lose them without a word
+        return "A wall of boards stays straight — «Boards: Smooth» in its " \
+               "window first"
+    for o in openings:
+        if o.get("wall") == w["id"]:
+            return (f"«{o.get('name', 'An opening')}» is in this wall — a "
+                    "curved wall takes no doors or windows yet: move or "
+                    "delete it first")
+    return None
+
+
+def with_bend(w: dict, s: float) -> dict:
+    """``w`` through its two ends, its middle ``s`` off the line between
+    them (+ to the left of a → b) — at most a half circle; |s| under 5 mm:
+    straight."""
+    a, b = list(w["a"]), list(w["b"])
+    L = math.dist(a, b)
+    s = max(-L / 2, min(L / 2, float(s)))
+    if abs(s) < 0.005 or L < 1e-9:
+        out = {k: v for k, v in w.items() if k != "m"}
+        out["kind"] = "line"
+        return out
+    u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+    n = (-u[1], u[0])
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    return dict(w, kind="arc", m=[round(mid[0] + n[0] * s, 4),
+                                  round(mid[1] + n[1] * s, 4)])
+
+
+def _bend_grip(w: dict, z: float, at_s=None) -> Grip | None:
+    """The bend grip: on the arc's middle (a curved wall), or on a straight
+    wall's top a little off its middle (its middle holds the arrow across)."""
+    from . import edition
+    if edition.lite() or bend_why(w) is not None:
+        return None
+    a, b = tuple(w["a"]), tuple(w["b"])
+    L = math.dist(a, b)
+    if L < 0.30:
+        return None
+    u = _unit2((b[0] - a[0], b[1] - a[1]))
+    n = (-u[1], u[0])
+    if w.get("kind") == "arc":
+        m = W.drawn(w).at(0.5)
+    else:
+        s = at_s if at_s is not None else L / 2 + min(0.40, L / 5)
+        m = (a[0] + u[0] * s, a[1] + u[1] * s)
+    return Grip("bend", (m[0], m[1], z), (n[0], n[1], 0.0), bend_of(w),
+                tip=BEND_TIP, extra={"chord": L})
+
+
 def wall_grips(w: dict, z0: float, top: float) -> list[Grip]:
     """A straight wall's: its two ends (the length) and an arrow across,
-    on its top (seen in 3D, in the plan and in the elevations)."""
+    on its top (seen in 3D, in the plan and in the elevations) — and its
+    bend (a curved wall: only that one)."""
     if not straight(w):
-        return []
+        g = _bend_grip(w, z0 + top) if w.get("kind") == "arc" else None
+        return [g] if g is not None else []
     a, b = tuple(w["a"]), tuple(w["b"])
     L = math.dist(a, b)
     if L < 1e-6:
@@ -106,6 +198,11 @@ def wall_grips(w: dict, z0: float, top: float) -> list[Grip]:
                 "stretch")]
     if w.get("cw") or shp is not None:
         return out
+    if own is None:                     # (a flat top: it can be bent)
+        s = L / 2 + min(0.40, L / 5)
+        g = _bend_grip(w, hz(s), s)
+        if g is not None:
+            out.append(g)
     # its TOP (PLANO_PAREDE_TOPO, 2026-10-31): an arrow up at each end — a
     # flat wall dragged there becomes sloped — and a gable's ridge (up,
     # and along the wall); a little in from the ends (the length's grips)
@@ -126,11 +223,17 @@ def wall_grips(w: dict, z0: float, top: float) -> list[Grip]:
     return out
 
 
-def opening_grips(o: dict, w: dict, z0: float) -> list[Grip]:
+def opening_grips(o: dict, w: dict, z0: float,
+                  doc: dict | None = None) -> list[Grip]:
     """A door's / window's: its sides (width), its top (height), its
-    bottom (sill — not a door's) and its centre (along the wall)."""
+    bottom (sill — not a door's) and its centre (along the wall). A
+    CORNER window (``doc`` given): ``corner_grips``."""
     if not straight(w):
         return []
+    if doc is not None and o.get("corner"):
+        got = corner_grips(o, w, z0, doc)
+        if got is not None:
+            return got
     seg = W.centre(w)
     u = seg.u
     pos, ow = float(o["pos"]), float(o["w"])
@@ -151,6 +254,44 @@ def opening_grips(o: dict, w: dict, z0: float) -> list[Grip]:
                         tip="Its sill — the top stays"))
     out.append(Grip("pos", at(pos, zm), (u[0], u[1], 0.0), 0.0, "move",
                     tip="Slide it along its wall"))
+    return out
+
+
+def corner_grips(o: dict, w: dict, z0: float, doc: dict):
+    """A corner window's (cornerwin.py, F2): its outer jamb on each wall —
+    its width there, to the corner's OUTSIDE («left»/«right» on its wall,
+    «w2» on the other) —, its top and its sill. No centre: the corner
+    holds it. None: it doesn't turn now (a plain window's grips)."""
+    from . import cornerwin as CW
+    arms = CW.ghost([x for x in doc.get("walls") or []
+                     if x.get("level") == w.get("level")], o)
+    if len(arms) != 2:
+        return None
+    sill, h = float(o.get("sill", 0.0)), float(o["h"])
+    z0 += W.opening_lift(w)
+    zm = z0 + sill + h / 2
+    out = []
+    for (_w, seg, rec, end), key in zip(arms, (None, "w2")):
+        u = seg.u
+        if end == "hi":          # the corner at its high end: its jamb low
+            s, ax = rec["pos"] - rec["w"] / 2, (-u[0], -u[1], 0.0)
+            key = key or "left"
+        else:
+            s, ax = rec["pos"] + rec["w"] / 2, (u[0], u[1], 0.0)
+            key = key or "right"
+        out.append(Grip(key, (seg.p0[0] + u[0] * s, seg.p0[1] + u[1] * s,
+                              zm), ax, rec["w"],
+                        tip="Its width on this wall, to the corner's "
+                            "outside" if key != "w2" else
+                            "Its width on the other wall, to the corner's "
+                            "outside"))
+    _w, seg, rec, _e = arms[0]
+    u = seg.u
+    mid = (seg.p0[0] + u[0] * rec["pos"], seg.p0[1] + u[1] * rec["pos"])
+    out.append(Grip("top", (mid[0], mid[1], z0 + sill + h),
+                    (0.0, 0.0, 1.0), h, tip="Its height"))
+    out.append(Grip("bottom", (mid[0], mid[1], z0 + sill), (0.0, 0.0, 1.0),
+                    sill, tip="Its sill — the top stays"))
     return out
 
 
@@ -2184,6 +2325,24 @@ def opening_changed(doc: dict, oid: str, key: str, v: float,
         return doc, "Gone"
     pos, ow = float(o["pos"]), float(o["w"])
     sill, h = float(o.get("sill", 0.0)), float(o["h"])
+    if o.get("corner") in ("a", "b") and key in ("left", "right", "w2"):
+        # a corner window's width on either wall, to the corner's outside
+        from . import cornerwin as CW
+        info = CW.ends_info(doc, w).get(o["corner"]) or {}
+        if not info.get("other"):
+            return doc, "Not joined to another wall there"
+        if v < 0.3:
+            return doc, "Too small for an opening"
+        w_out = ow + info["eh"]
+        w2_out = float(o.get("w2", ow)) + info["eo"]
+        n = CW.stored(o, w, o["corner"], info,
+                      w_out if key == "w2" else v,
+                      v if key == "w2" else w2_out)
+        why = S.opening_room(n, w, ops, wall_height)
+        if why:
+            return doc, why
+        return dict(doc, openings=[n if x["id"] == oid else x
+                                   for x in ops]), None
     n = dict(o)
     if key == "left":
         n.update(w=v, pos=pos + ow / 2 - v / 2)
@@ -2203,7 +2362,8 @@ def opening_changed(doc: dict, oid: str, key: str, v: float,
     why = S.opening_room(n, w, ops, wall_height)
     if why:
         return doc, why
-    if key in ("left", "right", "pos") and w.get("kind", "line") == "line":
+    if key in ("left", "right", "pos") and w.get("kind", "line") == "line" \
+            and not o.get("corner"):
         # 5 cm off a corner's face (0.15.0, S.opening_span) — an edge
         # already nearer may only move away from it
         lo, hi = S.opening_span(doc, w, pos)
@@ -2277,14 +2437,28 @@ def wall_changed(doc: dict, wid: str, key: str, v: float,
     """(the document with the wall's grip ``key`` at value ``v``, why not
     or None). An END: the wall's new length; the corner's walls follow —
     one in line with it keeps its line (it gets shorter / longer), one at
-    an angle is MOVED (wallmove: the walls joined to it stretch, the
-    rectangle stays a rectangle). ACROSS: moved by v (wallmove). Its TOP
+    an angle TURNS on its other end, as «Edit walls ▸ Move points» does
+    (his call, 2026-11-19: «the end of a line twists it; its middle pulls
+    it straight» — moving it across was what its own arrow does: two
+    grips, one effect). ACROSS: moved by v (wallmove). Its TOP
     (h0 / h1 / hp / at): ``flat_h(wall)`` = a flat wall's height now;
     ``carry`` (Shift when taken): the joined walls' end at that corner
     goes up / down with it."""
     from . import wallmove
     walls = doc.get("walls") or []
     w = next((x for x in walls if x["id"] == wid), None)
+    if w is not None and key == "bend":   # bent into an arc / straight again
+        why = bend_why(w, doc.get("openings") or ())
+        if why:
+            return doc, why
+        new_w = with_bend(w, v)
+        if new_w == w:
+            return doc, None
+        why = W.why_not(new_w)
+        if why:
+            return doc, why
+        return dict(doc, walls=[new_w if x["id"] == wid else x
+                                for x in walls]), None
     if w is None or not straight(w):
         return doc, "Gone"
     if key in ("h0", "h1", "hp", "at") and w.get("profile"):
@@ -2320,35 +2494,27 @@ def wall_changed(doc: dict, wid: str, key: str, v: float,
     d = (En[0] - E[0], En[1] - E[1])
     if math.hypot(*d) < 1e-6:
         return doc, None
-    inline, turned = [], []
+    # every straight wall ending at that corner: its end goes there too —
+    # one in line gets shorter / longer, one at an angle turns on its
+    # other end (which stays, and so do the walls joined there)
+    ends = {(wid, key)}
     for x in walls:
         if x["id"] == wid or x["level"] != w["level"] or not straight(x):
             continue
         for end in ("a", "b"):
             if math.dist(x[end], E) <= TOL:
-                ux = _unit2((x["b"][0] - x["a"][0], x["b"][1] - x["a"][1]))
-                cross = abs(uk[0] * ux[1] - uk[1] * ux[0])
-                (inline if cross < 0.05 else turned).append((x["id"], end))
-    new, notes = doc, []
-    if turned:
-        new, notes = wallmove.move(doc, {i: d for i, _e in turned})
-        why = _short(notes)
-        if why:
-            return doc, why
-    # the wall itself (and one in line at that corner): the end goes there
-    # — wallmove may have stretched it already; then this changes nothing
-    ends = {(wid, key)} | set(inline)
+                ends.add((x["id"], end))
     out, slid = [], {}
-    for x in new["walls"]:
+    for x in walls:
         hit = [e for i, e in ends if i == x["id"]]
         if hit:
             x = dict(x)
             for e in hit:
                 if e == "a" and list(x["a"]) != list(En):
-                    ux = _unit2((x["b"][0] - x["a"][0],
-                                 x["b"][1] - x["a"][1]))
-                    slid[x["id"]] = (En[0] - x["a"][0]) * ux[0] + \
-                        (En[1] - x["a"][1]) * ux[1]
+                    # its start moved: the openings keep their distance
+                    # from its end that stays (in line: their place)
+                    slid[x["id"]] = math.dist(x["a"], x["b"]) - \
+                        math.dist(En, x["b"])
                 x[e] = [En[0], En[1]]
             if math.dist(x["a"], x["b"]) < max(float(x.get("t", 0.1)), 0.10):
                 return doc, f"«{x.get('name', 'Wall')}» would get too short"
@@ -2359,8 +2525,8 @@ def wall_changed(doc: dict, wid: str, key: str, v: float,
     out, why = reshaped(out)
     if why:
         return doc, why
-    new = dict(new, walls=out)
-    if slid:     # their start slid: openings keep their place in the world
+    new = dict(doc, walls=out)
+    if slid:     # their start moved: openings keep their place on the wall
         new["openings"] = [dict(o, pos=round(float(o["pos"]) - slid[o["wall"]],
                                              4)) if o["wall"] in slid else o
                            for o in new.get("openings") or []]
@@ -3060,6 +3226,7 @@ class GripControl(QObject):
                 # from the hot dimension's corner — «…c»: the centre
                 v = self._opening_typed(typed)
                 if v is None:
+                    self._not_a_measure(typed)
                     return True
                 self.drag["stuck"], self.drag["anchor"] = False, None
                 self._set(v)
@@ -3072,6 +3239,7 @@ class GripControl(QObject):
             v = parse_measure(typed, "m" if self.drag["kind"] == "opening"
                               else "len")
             if v is None:
+                self._not_a_measure(typed)
                 return True
             if g.extra.get("per") or g.extra.get("chord"):
                 # a slab's rounded corner / arc (curved.py, F1): the RADIUS
@@ -3157,14 +3325,29 @@ class GripControl(QObject):
             return None
         return w, face, z0, pos, float(o["w"]), lo, hi
 
+    def _not_a_measure(self, typed: str) -> None:
+        """A typed measure that cannot be read + Enter: SAID, the drag goes
+        on (audit 20/11/2026, #12 — the text was dropped without a word).
+        Nothing typed (Enter alone): nothing to say."""
+        if not typed:
+            return
+        from . import compat
+        from .i18n import tr
+        how = "3'6\" · 42\"" if compat.imperial() else "1.20 · 120 cm · 1200 mm"
+        compat.flash(self.owner.viewport, tr(
+            "«{t}» is not a measure — type it as {how}", t=typed, how=how),
+            4000)
+
     def _opening_typed(self, typed: str):
         """The middle grip's move for a typed distance (no sign), or None."""
         from . import opendims as D
-        got = D.parse(typed)
         dims = self._opening_dims(self.drag["id"], self.drag["v"] or 0.0)
-        if got is None or dims is None:
+        if dims is None:
             return None
         _w, _f, _z, pos, ow, lo, hi = dims
+        got = D.parse(typed, hi - lo)
+        if got is None:
+            return None
         base = pos - (self.drag["v"] or 0.0)
         new = D.pos_for(got[0], D.hot_side(pos, lo, hi), lo, hi, ow, got[1])
         return round(new - base, 4)

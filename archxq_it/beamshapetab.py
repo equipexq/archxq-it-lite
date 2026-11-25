@@ -1,7 +1,7 @@
 # ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The «Shape» tab of a beam's window (the shape editor, phase 2 —
-17/11/2026): its section (rectangle, L, inverted T, I), its shape seen from
+17/11/2026): its section (rectangle, L, T, inverted T, I, U), its shape seen from
 the side (a haunch, a notch at its ends, an arched soffit) and its curve
 in plan — with a drawing of both views. The data and every refusal are
 beamshape.py's; this only draws and asks.
@@ -25,7 +25,8 @@ WHY_ROW = ("One of a column row's beams: it takes the row's — a shaped "
            "beam is a beam of its own")
 
 SECTIONS = (("rect", "Rectangle"), ("L", "L"), ("Lr", "L (other side)"),
-            ("invT", "Inverted T"), ("I", "I"))
+            ("T", "T"), ("invT", "Inverted T"), ("I", "I"),
+            ("U", "U (channel)"))
 ELEVS = (("none", "Straight"), ("haunch", "Haunch"), ("notch", "Notch"),
          ("arch", "Arched soffit"))
 ENDS = (("both", "Both ends"), ("a", "End A"), ("b", "End B"))

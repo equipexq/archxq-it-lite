@@ -71,14 +71,17 @@ ELEMENTS: dict[str, Element] = {e.key: e for e in (
                              ("Point by point", "geopath")),
        # («From survey points» comes back once it is made: a survey mixes
        # boundary and inner points — which ones close the plot is his call)
-       Prop("Ground level", L, 0.0)),
+       # (no «Ground level» field here: a prototype's that nothing read —
+       # audit 20/11/2026, #10; the project's own is in «Edit project»)
+       ),
     _e("plot_edit", "Edit plot", (("Move points", "move"),
                                   ("Add point", "add_point"),
                                   ("Delete point", "eraser"),
                                   ("Sides & heights…", "comp_nivel"),
                                   ("Fold line", "line"),
-                                  ("Delete plot", "eraser")),
-       Prop("Snap to", C, "Grid", ("Grid", "Survey points", "None"))),
+                                  ("Delete plot", "eraser"))),
+    # (no «Snap to» choice either — nothing read it, #10: the grid's snap
+    # is the plan's own switch, the survey points always pull)
     # the ground as measured: points inside the plot (a file, or clicked)
     _e("survey", "Survey points", (("Add point", "add_point"),
                                    ("Delete point", "eraser"),

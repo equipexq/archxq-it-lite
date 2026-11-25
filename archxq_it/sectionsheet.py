@@ -219,7 +219,10 @@ def opening_marks(doc: dict, elevations, G: dict, info: dict) -> dict:
     order = [lv["id"] for lv in doc.get("levels") or []]
     byid = {w["id"]: w for w in doc.get("walls") or []}
     seen, probe = [], []
-    for o in doc.get("openings") or []:
+    # (a corner window — cornerwin.py: each of its parts on its own wall)
+    from . import cornerwin as CW
+    split = CW.split(doc.get("walls") or [], doc.get("openings") or [])
+    for o in split:
         w = byid.get(o.get("wall"))
         if w is None or w.get("level") not in levels or \
                 w.get("kind", "line") != "line":
@@ -230,6 +233,9 @@ def opening_marks(doc: dict, elevations, G: dict, info: dict) -> dict:
             continue
         s0 = float(o["pos"]) - float(o["w"]) / 2
         s1 = float(o["pos"]) + float(o["w"]) / 2
+        if o.get("_out"):               # a corner window's part: as SEEN,
+            side, e = o["_out"]         # up to the corner's outside
+            s0, s1 = (s0, s1 + e) if side == "hi" else (s0 - e, s1)
         if plane:
             (qx, qy), (nx, ny) = plane["point"][:2], plane["normal"][:2]
             un = seg.u[0] * nx + seg.u[1] * ny
@@ -251,7 +257,7 @@ def opening_marks(doc: dict, elevations, G: dict, info: dict) -> dict:
         z0 = li["z0"]
         top = li["under"] if w.get("height", "level") == "level" \
             else z0 + float(w["height"])
-        ops = [x for x in doc.get("openings") or [] if x.get("wall") == w["id"]]
+        ops = [x for x in split if x.get("wall") == w["id"]]
         f = S.fitted(o, w, ops, top - z0)
         if f is None:
             continue

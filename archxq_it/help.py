@@ -306,7 +306,11 @@ HELP: dict[str, tuple[str, str]] = {
         "room and the kitchen of an open plan become two rooms, each with "
         "its own <b>name</b>, <b>area</b> and <b>floor</b>.<br><br>"
         "<b>Draw</b>: click from wall to wall (more clicks bend it), Enter "
-        "to finish. <b>Delete</b>: click its dashed line.<br><br>"
+        "to finish. <b>Delete</b>: pick «Delete» (the eraser) under «Room "
+        "separator» on the left, then click its dashed line. It is a line "
+        "between ROOMS: outside the house it makes no floor and takes no "
+        "material — a path or a patio on the ground is a Terrain ▸ «Fill / "
+        "Platform».<br><br>"
         "<b>Its shape</b> (the bar on top): point by point, a rectangle "
         "(also from its centre, or rotated) or a circle — type «3.6;2.8» "
         "or the radius + Enter. Drawn inside a room without touching its "
@@ -510,7 +514,13 @@ HELP: dict[str, tuple[str, str]] = {
         "width × height is the shape's box; an arch's or a gable top's "
         "<b>Rise</b>, a trapezoid's <b>Top width</b>. Under an arch or a "
         "gable top the leaves stay in the rectangle, a fixed light over "
-        "them; the other shapes are fixed glass."),
+        "them; the other shapes are fixed glass."
+        "<br><br><b>Round the corner</b>: a window can go on round a corner "
+        "into the wall joined there — in its window (<b>Position</b> tab), "
+        "or placed from the library with the pointer at a joined end. Both "
+        "walls are opened through the corner; its width on each wall is "
+        "measured to the corner's outside. A fixed one meets glass to "
+        "glass; one that opens has a post at the corner."),
     "void": (
         "Opening",
         "An opening with nothing in it — a passage, an arch without a "

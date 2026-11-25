@@ -1552,7 +1552,8 @@ class RampDialog(QDialog):
             form = self.fold_place.form(self.d_dial)
             self.f_x = _metres(float(rec["x"]), -10000.0, 10000.0)
             self.f_y = _metres(float(rec["y"]), -10000.0, 10000.0)
-            self.f_a = QDoubleSpinBox()
+            from .look import DecimalBox        # «12.5» or «12,5»
+            self.f_a = DecimalBox()
             self.f_a.setRange(-360.0, 360.0)
             self.f_a.setDecimals(1)
             self.f_a.setSingleStep(15.0)

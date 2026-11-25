@@ -70,6 +70,24 @@ class Hub(QFrame):
         # (its right-click «placement» menu is gone: ONE interface, over the
         # 3D view — his call, 2026-10-07)
         row.addWidget(self.power)
+        # the version, always in sight (idea #3, Sept — to follow a
+        # tutorial, to tell support): a quiet label; a click = the About
+        from .about import _version, version_line
+        ver = _version()
+        self.ver = QToolButton()
+        self.ver.setObjectName("axq_ver")
+        self.ver.setText("dev" if ver.startswith("dev") else "v" + ver)
+        self.ver.setStyleSheet(
+            "QToolButton#axq_ver { color: #9aa5b1; font-size: 11px; "
+            "border: none; background: transparent; padding: 0 4px; }"
+            "QToolButton#axq_ver:hover { color: #d6d9dd; }")
+        self.ver.setCursor(Qt.PointingHandCursor)
+        try:
+            self.ver.setToolTip(version_line())   # names and numbers only
+        except Exception:  # noqa: BLE001 — the label alone
+            pass
+        self.ver.clicked.connect(lambda: self._about(self.ver))
+        row.addWidget(self.ver)
 
         self.env = QWidget()                  # everything hidden when off
         env = QHBoxLayout(self.env)

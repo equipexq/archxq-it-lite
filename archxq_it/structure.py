@@ -410,6 +410,81 @@ def poly_sized(e: dict, key: str, v: float) -> dict:
     return dict(e, pts=pts, **{key: round(float(v), 4)})
 
 
+# ---- a column's section from its options (the bar, the Library's cards) -----
+def column_section(o: dict) -> dict:
+    """What the options (``section`` + ``w`` / ``d`` + a shaped one's
+    ``pts`` / ``curves``) make of a column's record: its shape and size.
+    A shaped one the Lite can't make, or a broken one: its box."""
+    if o.get("section") == "poly":
+        from . import edition
+        pts, cv = o.get("pts"), o.get("curves") or None
+        try:
+            good = not edition.lite() and bool(pts) \
+                and poly_why(pts, cv) is None
+        except (TypeError, ValueError, KeyError, IndexError):
+            good = False
+        if good:
+            r = {"shape": "poly", "pts": [list(map(float, p)) for p in pts],
+                 "anchor": "centre"}
+            if cv:
+                r["curves"] = CV.clean(cv)
+            x0, y0, x1, y1 = poly_box(r)
+            return dict(r, w=round(x1 - x0, 4), d=round(y1 - y0, 4))
+        return {"shape": "rect", "w": o["w"], "d": o["d"],
+                "anchor": o["anchor"]}
+    rnd = o["section"] == "round"
+    return {"shape": o["section"], "w": o["w"],
+            "d": o["w"] if rnd else o["d"], "anchor": o["anchor"]}
+
+
+def column_pick(o: dict, changes: dict) -> None:
+    """The options take another section (a card's, the bar's, a selected
+    column's): a shaped one keeps the size the plain ones had for when
+    they come back; a plain one has no outline."""
+    was, now = o.get("section"), changes.get("section", o.get("section"))
+    if now == "poly" and was != "poly":
+        o["_wd"] = (o["w"], o["d"])
+    o.update(changes)
+    if now != "poly":
+        o["pts"] = o["curves"] = None
+        if was == "poly" and "w" not in changes and o.get("_wd"):
+            o["w"], o["d"] = o["_wd"]
+        o.pop("_wd", None)
+
+
+def column_stretch(o: dict, key: str, v: float) -> None:
+    """The options' shaped section given another width / depth."""
+    r = poly_sized(dict(column_section(o), x=0.0, y=0.0), key, float(v)) \
+        if o.get("pts") else {}
+    if r.get("pts"):
+        o.update(pts=r["pts"], curves=r.get("curves"))
+        got = column_section(o)
+        o.update(w=got["w"], d=got["d"])
+
+
+def column_carded(e: dict, ch: dict) -> dict:
+    """A column that takes a card's section: no outline left of the one it
+    had, its middle where it was."""
+    r = dict(e, **{k: ([list(p) for p in v] if k == "pts" and v else v)
+                   for k, v in ch.items()})
+    if not is_poly(r):
+        r.pop("pts", None)
+    if not is_poly(r) or not r.get("curves"):
+        r.pop("curves", None)
+    if not is_poly(e) and not is_poly(r):
+        return r
+    if is_poly(e):
+        x0, y0, x1, y1 = poly_box(e)
+        mid = _to_plan(e, [((x0 + x1) / 2, (y0 + y1) / 2)])[0]
+    else:
+        mid = column_centre(e)
+    r.update(x=round(mid[0], 4), y=round(mid[1], 4), anchor="centre")
+    r.pop("fit", None)
+    if is_poly(r) and r.get("hollow") and why_not(r):
+        r.pop("hollow")              # (no tube in a steel section's web)
+    return r
+
+
 def poly_to_rect(e: dict) -> dict:
     """«Back to rectangle»: the box round its outline, in its own frame —
     where the outline was (a pad: square, its larger side)."""
@@ -1421,6 +1496,9 @@ LEAF_COLOR = (0.58, 0.42, 0.28, 1.0)
 END_GAP = 0.05          # m kept between an opening and its wall's end
 #                         (0.10 → 0.05 in 0.15.0: Marko, support #49 — a
 #                          door 50 mm off a corner; the frame still fits)
+HEAD_GAP = 0.0          # m kept between an opening's head and the wall's
+#                         top (0.05 → 0 — Jhonatan #116, 23/11/2026: a
+#                         window / door / Opening may go up to the ceiling)
 
 
 def voids_with_free_grid(doc: dict) -> set:
@@ -1454,6 +1532,21 @@ def voids_with_free_grid(doc: dict) -> set:
     return out
 
 
+def end_gaps(wall: dict) -> tuple:
+    """(g0, g1): how near its drawn ends (a, b) an opening of ``wall`` may
+    come — END_GAP, or less where the face of a wall met there is nearer
+    (``W.REACH``: a wall drawn on its inside face has its corners right on
+    its drawn ends — Jhonatan #116, 2026-11-23). Never more than END_GAP:
+    whatever fitted before still fits (an opening never vanishes)."""
+    L = W.drawn(wall).L
+    got = W.REACH.get(wall.get("id"))
+    if not got:
+        return END_GAP, END_GAP
+    sa, sb = got
+    return (min(END_GAP, max(float(sa), 0.0)),
+            min(END_GAP, max(L - float(sb), 0.0)))
+
+
 def opening_room(o: dict, wall: dict, others: list[dict],
                  wall_height: float) -> str | None:
     """Why an opening can't go there (None = it can): it must sit on a
@@ -1465,8 +1558,13 @@ def opening_room(o: dict, wall: dict, others: list[dict],
     half = float(o["w"]) / 2
     if float(o["w"]) < 0.2 or float(o["h"]) < 0.2:
         return "Too small for an opening"
-    if o["pos"] - half < END_GAP - 1e-6 or \
-            o["pos"] + half > L - END_GAP + 1e-6:
+    # (a CORNER window — cornerwin.py: up to its wall's end at the corner)
+    turn = o.get("corner") if o.get("kind") == "window" else None
+    g0, g1 = end_gaps(wall)
+    lo_gap = -1e-6 if turn == "a" else g0
+    hi_gap = -1e-6 if turn == "b" else g1
+    if o["pos"] - half < lo_gap - 1e-6 or \
+            o["pos"] + half > L - hi_gap + 1e-6:
         return "It doesn't fit in that wall"
     # (1e-6: a 2.75 door in a 2.80 wall read 2.7499999… and was refused)
     # — a RAISED wall: from its raised floor (W.opening_lift; László #65)
@@ -1479,8 +1577,10 @@ def opening_room(o: dict, wall: dict, others: list[dict],
         if room <= 0.0:
             return "It doesn't fit in that wall"
         wall_height = float(o.get("sill", 0)) + W.opening_lift(wall) + room
+    # (up to the wall's very top — a window or door to the ceiling, the
+    # slab over it: Jhonatan #116, 23/11/2026; it stopped 5 cm under it)
     if float(o.get("sill", 0)) + float(o["h"]) > \
-            wall_height - W.opening_lift(wall) - 0.05 + 1e-6:
+            wall_height - W.opening_lift(wall) - HEAD_GAP + 1e-6:
         return "Too tall for that wall"
     for p in others:
         if p.get("id") == o.get("id") or p["wall"] != o["wall"]:
@@ -1615,7 +1715,7 @@ def _shape_faces(piece: dict, seg, shape: tuple, split_c=None,
 
 
 def _profile_parts(w: dict, prof: dict, pieces, openings: list, z0: float,
-                  drop: float, runs=()):
+                  drop: float, runs=(), extra=()):
     """wall_parts for a wall with a shape: its shape from clear end to
     clear end, each end's slice carried on over its corner (no step);
     its openings cut out; its layers as ever. No corner caps (the corner
@@ -1633,7 +1733,9 @@ def _profile_parts(w: dict, prof: dict, pieces, openings: list, z0: float,
                                     if o["wall"] == w["id"]) if f is not None]
     ops += ramp_voids(w, pieces, runs, z0, b, top)
     outline, arcs = WS.outline(prof, zf, b)
-    shape = (outline, span, opening_loops(ops, z0, b, top, drop > 0), arcs)
+    # (``extra``: a corner window's holes — on through the wall's end)
+    shape = (outline, span, opening_loops(ops, z0, b, top, drop > 0)
+             + _corner_loops(extra, z0, b, top), arcs)
     if len(W.layers_of(w)) > 1:
         faces = layered_faces(w, pieces, seg, ops, z0, b, top, drop > 0,
                               shape=shape)
@@ -1649,6 +1751,44 @@ def _profile_parts(w: dict, prof: dict, pieces, openings: list, z0: float,
         if parts:
             made.append((o, parts))
     return faces, made
+
+
+def _corner_loops(extra, z0: float, b: float, top: float) -> list:
+    """A corner window's holes (cornerwin.resolve: (s0, s1, z_lo, z_hi),
+    heights from the level's floor) as (s, z) loops — up to the wall's top
+    (HEAD_GAP, as ``opening_room``: 5 cm kept until 23/11/2026, #116)."""
+    out = []
+    for s0, s1, zl, zh in extra or ():
+        lo = max(b, z0 + zl)
+        hi = min(z0 + zh, top - HEAD_GAP)
+        if hi - lo <= 0.01:
+            continue
+        lo -= 1e-4 if lo <= b + 1e-4 else 0.0
+        hi += 1e-4 if hi >= top - 1e-4 else 0.0    # through the top
+        out.append([(s0, lo), (s1, lo), (s1, hi), (s0, hi)])
+    return out
+
+
+def _corner_rect(w: dict, pieces, z0: float, under: float):
+    """The shape a wall with a corner window is built from: its own (the
+    Shape tab's), its top's (sloped, a gable — ``wallshape.from_top``) or
+    its plain rectangle — None: it can't be (its foot over its top)."""
+    from . import wallshape as WS
+    prof = shape_now(w) if w.get("profile") else None
+    if prof is not None:
+        return prof
+    if W.top_of(w) is not None:
+        return WS.from_top(w, W.clear_span(w, pieces))
+    base = float(w.get("base", 0.0) or 0.0)
+    top = under if w.get("height", "level") == "level" \
+        else z0 + float(w["height"])
+    H = top - z0 - base
+    L = W.drawn(w).L
+    if H < 0.05 or L < 0.05:
+        return None
+    return {"ctrl": [[0.0, 0.0], [L, 0.0], [L, H], [0.0, H]],
+            "curves": {"r": {}, "arc": {}}, "L": round(L, 4),
+            "was": w.get("height", "level")}
 
 
 def _clip(poly, p0, u, s, keep_more: bool) -> list:
@@ -1984,7 +2124,88 @@ def door_opens_sides(o: dict) -> bool:
     garage door and a shopfront have their own."""
     op = o.get("op", "swing")
     return op == "swing" or (op == "sliding"
-                             and int(o.get("leaves", 1) or 1) == 1)
+                             and int(o.get("leaves", 1) or 1) == 1
+                             and not door_pocket(o))
+
+
+#: a POCKET door's leaf (support #114, 22/11/2026): 3 cm into its pocket
+#: when shut, 1 cm still out wide open — no face shared with the jamb
+POCKET_IN, POCKET_OUT = 0.03, 0.01
+
+
+def door_pocket(o: dict) -> bool:
+    """A POCKET door (Scrigno — support #114, 22/11/2026): ONE leaf that
+    runs into the wall, in its middle. (Two sliding leaves always did.)"""
+    return (o.get("op") == "sliding" and o.get("pocket") is True
+            and o.get("leaf") != "glass" and door_leaves(o) == 1)
+
+
+def pocket_run(o: dict, wall, a: float, b: float) -> float:
+    """How far a pocket door's leaf runs into its wall, wide open — its
+    clear opening, as far as the wall lets it (10 cm short of its end)."""
+    back, on = _room(wall, a, b)
+    room = back if o.get("swing", "left") == "left" else on
+    return max(min(b - a - 0.002 - POCKET_OUT, room - POCKET_IN), 0.0)
+
+
+def pocket_leaf(o: dict, wall, a: float, b: float, opn: float) -> tuple:
+    """A pocket door's leaf along its wall, ``opn`` (0…1) open: (s0, s1)."""
+    left = o.get("swing", "left") == "left"
+    s = opn * pocket_run(o, wall, a, b) * (-1.0 if left else 1.0)
+    return ((a - POCKET_IN + s, b - 0.002 + s) if left
+            else (a + 0.002 + s, b + POCKET_IN + s))
+
+
+def pocket_half(wall) -> float:
+    """Half a pocket door leaf's thickness: the leaf's, in a wall thick
+    enough — a thin one keeps 1 cm of it each side."""
+    t = float(wall["t"]) if wall else 1.0
+    return max(min(LEAF, t - 0.02), 0.01) / 2
+
+
+#: a GLAZED sliding door's leaves (his ask, 21/11/2026: «não há uma porta
+#: com mais de dois painéis?»): 1 = one sliding over a fixed pane, 2 = two
+#: parting in the middle, 3 / 4 / 6 panes in two tracks, as the sliding
+#: window's
+GLASS_DOOR_LEAVES = (1, 2, 3, 4, 6)
+#: 3+ panes: each one's track (B back, F front) and which slide, which way
+#: (−1 left, +1 right) — the middle ones open; never two in one track over
+#: each other (coplanar faces flicker)
+DOOR_PANE_TRACKS = {3: "FBF", 4: "BFBF", 6: "BFBFBF"}
+DOOR_PANE_MOVES = {3: {0: 1}, 4: {1: -1, 2: 1}, 6: {2: -1, 3: 1}}
+PANE_LAP = 0.05          # m, two panes over each other when shut
+
+
+def door_leaves(o: dict) -> int:
+    """How many leaves a door has: a glazed sliding one 1, 2, 3, 4 or 6
+    (``GLASS_DOOR_LEAVES``), any other 1 or 2 — whatever the record says."""
+    try:
+        k = int(o.get("leaves", 1) or 1)
+    except (TypeError, ValueError):
+        k = 1
+    if o.get("op") == "sliding" and o.get("leaf") == "glass":
+        if k in GLASS_DOOR_LEAVES:
+            return k
+        return 4 if k == 5 else 6 if k > 6 else 1
+    return 2 if k == 2 else 1
+
+
+def door_panes(o: dict, a: float, b: float, opn: float = 0.0) -> list:
+    """A glazed sliding door of 3+ panes within ``a``..``b``: [(s0, s1,
+    track, move)] — equal panes 5 cm over each other, the moving ones
+    ``opn`` (0…1) of their run: over their neighbour (4 panes), or up to
+    just short of the next pane of their own track (3, 6)."""
+    k = door_leaves(o)
+    tracks, moves = DOOR_PANE_TRACKS[k], DOOR_PANE_MOVES[k]
+    lw = (b - a + (k - 1) * PANE_LAP) / k
+    run = lw - PANE_LAP if k == 4 else lw - 2 * PANE_LAP - 0.005
+    out = []
+    for i in range(k):
+        s0 = a + i * (lw - PANE_LAP)
+        mv = moves.get(i, 0)
+        s = mv * opn * run
+        out.append((s0 + s, s0 + lw + s, tracks[i], mv))
+    return out
 
 
 class _Frame:
@@ -2019,7 +2240,9 @@ def opening_parts(o: dict, seg, z0: float, wall: dict | None = None,
         # (an arch: its trim follows the arch — trim._arch_trim)
         faces = faces + TR.parts(o, seg, z0, wall, top)
     except Exception:  # noqa: BLE001 — the opening without them
-        pass
+        # …written down (audit 20/11/2026, #11: its trim gone, no trace)
+        from . import compat as _C
+        _C.log_error(f"trim of «{o.get('name', '?')}»")
     if o.get("glass") != "opaque":
         return faces
     glass = [i for i, f in enumerate(faces) if isinstance(f, dict)
@@ -2144,31 +2367,48 @@ def _opening_parts(o: dict, seg, z0: float, wall: dict | None = None,
         # on site (his ask, 2026-10-22: «cover the cement at least»); 2 mm
         # in from each face: the trim's back (1 mm in) never shares it
         hd = float(wall["t"]) / 2 - LINING_IN
-    parts = [_box(p0, u, n, s0, s0 + f, -hd, hd, zs, zt, fc),
-             _box(p0, u, n, s1 - f, s1, -hd, hd, zs, zt, fc),
-             _box(p0, u, n, s0 + f, s1 - f, -hd, hd, zt - f, zt, fc)]
+    # a CORNER window's part (cornerwin.py): no jamb on its corner's end —
+    # the post, or the other part, is there («_pane_end»: its pane's end
+    # there, glass to glass). Any other opening: both jambs, as ever.
+    oe = o.get("_open_end")
+    fa = 0.0 if oe == "lo" else f
+    fb = 0.0 if oe == "hi" else f
+    parts = [_box(p0, u, n, s0 + f, s1 - f, -hd, hd, zt - f, zt, fc)
+             if oe is None else
+             _box(p0, u, n, s0 + fa, s1 - fb, -hd, hd, zt - f, zt, fc)]
+    if oe != "lo":
+        parts.insert(0, _box(p0, u, n, s0, s0 + f, -hd, hd, zs, zt, fc))
+    if oe != "hi":
+        parts.insert(1 if oe != "lo" else 0,
+                     _box(p0, u, n, s1 - f, s1, -hd, hd, zs, zt, fc))
     # a TOP LIGHT (bandeira, 04/11/2026): a transom and a fixed pane over the
     # leaves; they keep what is under it
     from . import openfinish as OF
     th = OF.top_light(o)
     head, under = zt - f, zt
+    ga, gb = s0 + fa, s1 - fb             # a pane's ends
+    pe = o.get("_pane_end")
+    if pe is not None:
+        ga, gb = (float(pe), gb) if oe == "lo" else (ga, float(pe))
     if th:
         zl = zt - f - th
-        parts.append(_box(p0, u, n, s0 + f, s1 - f, -hd, hd, zl - f, zl, fc))
-        parts.append(_box(p0, u, n, s0 + f, s1 - f, -0.005, 0.005, zl, zt - f,
+        parts.append(_box(p0, u, n, s0 + fa, s1 - fb, -hd, hd, zl - f, zl,
+                          fc))
+        parts.append(_box(p0, u, n, ga, gb, -0.005, 0.005, zl, zt - f,
                           GLASS_COLOR))
         head, under = zl - f, zl
     if o["kind"] == "window":
-        parts.append(_box(p0, u, n, s0 + f, s1 - f, -hd, hd, zs, zs + f, fc))
+        parts.append(_box(p0, u, n, s0 + fa, s1 - fb, -hd, hd, zs, zs + f,
+                          fc))
         if o.get("op") in WIN_KINDS:      # sliding / casement / awning / pivot
             return [face for p in parts for face in p] + _window_leaves(
-                o, p0, u, n, s0 + f, s1 - f, zs + f, head, wall)
-        parts.append(_box(p0, u, n, s0 + f, s1 - f, -0.005, 0.005,
+                o, p0, u, n, s0 + fa, s1 - fb, zs + f, head, wall)
+        parts.append(_box(p0, u, n, ga, gb, -0.005, 0.005,
                           zs + f, head, GLASS_COLOR))
         bx, bz = OF.bars_of(o)
         if bx or bz:                      # a fixed one's glazing bars
-            parts += OF.bars(p0, u, n, s0 + f, s1 - f, zs + f, head, 0.0, bx,
-                             bz, fc)
+            parts += OF.bars(p0, u, n, s0 + fa, s1 - fb, zs + f, head, 0.0,
+                             bx, bz, fc)
     else:                                            # a door: its leaves
         parts += _door_leaves(o, p0, u, n, s0 + f, s1 - f, zs + 0.01,
                               head, under, wall)
@@ -2549,6 +2789,20 @@ def _door_leaves(o, p0, u, n, a, b, za, zb, zt, wall) -> list:
                 OF.leaf(F, m - lap + sr, b + sr, g, LEAF + g, za, zb, style,
                         lc, GLASS_COLOR)
                 + pull(m - lap + sr + 0.08, LEAF + g, 1.0)]
+    if door_pocket(o):
+        # ONE leaf running INTO the wall, in its middle (a pocket door,
+        # Scrigno — support #114, 22/11/2026); its pull on both faces, by
+        # the edge that leads as it shuts
+        d = pocket_half(wall)
+        s0, s1 = pocket_leaf(o, wall, a, b, op)
+        left = o.get("swing", "left") == "left"
+        edge = s1 - 0.08 if left else s0 + 0.08
+        leaf = OF.leaf(F, s0, s1, -d, d, za, zb, style, lc, GLASS_COLOR)
+        # (run into the wall, its pulls with it: never one standing out of
+        # the wall's face — the real ones are flush)
+        if (edge >= a + 0.03) if left else (edge <= b - 0.03):
+            leaf += pull(edge, d, 1.0) + pull(edge, -d, -1.0)
+        return [leaf]
     # one leaf on the inside face, on a rail that runs on past the side it
     # slides to — the length of the leaf again
     t = float(wall["t"]) / 2 if wall else FRAME_DEPTH / 2
@@ -2763,6 +3017,18 @@ def _glass_leaves(o, p0, u, n, a, b, za, zb, zt, wall, two) -> list:
     def pull(s, c_face, sign):               # on the leaf's stile
         return [OF.handle(F, s, c_face, sign, zh, OF.handle_of(o),
                           OF.hw_rgb(o))]
+    if door_leaves(o) >= 3:
+        # 3 / 4 / 6 panes in two tracks (his ask, 21/11/2026): a pull on
+        # each moving one, by the edge that opens
+        out = []
+        for s0, s1, tr, mv in door_panes(o, a, b, op):
+            c0, c1 = (g, d + g) if tr == "F" else (-d - g, -g)
+            out += _leaf(p0, u, n, s0, s1, c0, c1, za, zb, True, ac)
+            if mv:
+                edge = s1 - ALU / 2 if mv < 0 else s0 + ALU / 2
+                out += pull(edge, c1 if tr == "F" else c0,
+                            1.0 if tr == "F" else -1.0)
+        return out
     if two:                                  # open: into the wall
         back, on = _room(wall, a, b)
         sl, sr = min(op * (m - a), back), min(op * (m - a), on)
@@ -5290,6 +5556,27 @@ def wall_parts(w: dict, pieces, openings: list, z0: float, under: float,
     if not pieces:
         return None
     caps = list(caps or ())
+    # a CORNER window in it (cornerwin.py — marked by ``build``): built as a
+    # shaped wall is, its hole on through its end (the corner piece cut,
+    # as a «C» of the Shape tab); the window, if it is this wall's, in L
+    holes = w.get("_corner_holes") or ()
+    turning = [o for o in openings
+               if o.get("_corner") and o["wall"] == w["id"]]
+    if holes or turning:
+        prof = _corner_rect(w, pieces, z0, under)
+        got = None if prof is None else _profile_parts(
+            w, prof, pieces, [o for o in openings if not o.get("_corner")],
+            z0, drop, runs, extra=holes)
+        if got is not None:
+            from . import cornerwin as CW
+            from . import wallshape as WS
+            faces, made = got
+            top = z0 + float(w.get("base", 0.0) or 0.0) + WS.peak(prof)
+            for o in turning:
+                parts = CW.parts(W.lifted(o, w), z0, top)
+                if parts:
+                    made.append((o, parts))
+            return faces, made
     if w.get("profile"):
         # its SHAPE seen from the front (F2): built from it — or, one that
         # no longer fits its length, a plain wall at its height (the shape
@@ -5559,16 +5846,64 @@ def wall_bay(doc: dict, wall: dict, pos: float,
     return (0.0, L)
 
 
+def bay_faces(doc: dict, wall: dict, pos: float) -> tuple:
+    """(f0, f1, met0, met1): ``wall_bay``'s stretch with its ends EXACT —
+    on the faces of the walls met there (``wall_bay`` reads them 2 mm in,
+    its polygons grown to close hairline gaps) — and whether a wall is met
+    at each end (False: the wall runs free there, its end in the open)."""
+    seg = W.drawn(wall)
+    L = seg.L
+    b0, b1 = wall_bay(doc, wall, pos)
+    met0, met1 = b0 > 1e-6, b1 < L - 1e-6
+    f0, f1 = b0, b1
+    if not (met0 or met1):
+        return f0, f1, met0, met1
+    try:
+        from shapely.geometry import LineString, Polygon
+        from shapely.ops import unary_union
+        mine = [x for x in doc["walls"] if x["level"] == wall["level"]]
+        plans = W.plan(mine)
+        raw = [Polygon(pc["outer"])
+               for wid, pcs in plans.items() if wid != wall["id"]
+               for pc in pcs]
+        side = -1.0 if float(wall.get("side", 1)) < 0 else 1.0
+        c = W.centre(wall).offset(side * (float(wall["t"]) / 2 + 0.005))
+        line = LineString([c.p0, c.p1])
+        free = line.difference(unary_union(raw)) if raw else line
+        for part in getattr(free, "geoms", [free]):
+            if part.is_empty:
+                continue
+            ss = sorted((p[0] - c.p0[0]) * c.u[0] + (p[1] - c.p0[1]) * c.u[1]
+                        for p in part.coords)
+            s0, s1 = ss[0], ss[-1]
+            if not s0 - 1e-6 <= (b0 + b1) / 2 <= s1 + 1e-6:
+                continue
+            # the same stretch, its ends a hair farther out: the faces
+            if met0 and 0.0 <= b0 - s0 < 0.01:
+                f0 = max(s0, 0.0)
+            if met1 and 0.0 <= s1 - b1 < 0.01:
+                f1 = min(s1, L)
+            break
+    except Exception:  # noqa: BLE001 — not read: wall_bay's, 2 mm in
+        pass
+    return f0, f1, met0, met1
+
+
 def opening_span(doc: dict, wall: dict, pos: float) -> tuple:
     """(lo, hi) along a straight wall: where an opening at ``pos`` may
-    reach — its bay (``wall_bay``), END_GAP inside each end: 5 cm off a
-    corner's FACE, not off the drawn line's end (0.15.0, Marko #49: a wall
-    drawn on its outer face has its corner 20 cm in, and a door slid into
-    the other wall). Only the tools keep to it; ``opening_room`` (the
-    build) still reads the drawn ends, so an opening already nearer a
-    corner stays where it is."""
-    b0, b1 = wall_bay(doc, wall, pos)
-    return (b0 + END_GAP, b1 - END_GAP)
+    reach — its bay (``wall_bay``): up to the FACE of a wall met at an end
+    (Jhonatan #116, 2026-11-23: a window as wide as the room, face to face
+    — 5 cm stayed at each corner), END_GAP inside a free end. Never nearer
+    a drawn end than ``opening_room`` (the build) lets it: what this gives,
+    the build takes. (0.15.0, Marko #49: off the corner's FACE, not off the
+    drawn line's end — a wall drawn on its outer face has its corner 20 cm
+    in, and a door slid into the other wall.)"""
+    f0, f1, met0, met1 = bay_faces(doc, wall, pos)
+    L = W.drawn(wall).L
+    g0, g1 = end_gaps(wall)            # (W.REACH: filled by wall_bay's plan)
+    lo = f0 if met0 else f0 + END_GAP
+    hi = f1 if met1 else f1 - END_GAP
+    return (max(lo, g0), min(hi, L - g1))
 
 
 def opening_live(doc: dict, elevations, o: dict, openings=None):
@@ -5636,14 +5971,21 @@ def walls_live(doc: dict, elevations, wall_ids, openings: list,
         if runs is None:
             runs = ramp_runs(doc, elevations)
         grid_ctx = {}
+        # (its corner windows, as ``build`` — cornerwin.py)
+        lv_ops, turn = _corners_marked(openings, mine,
+                                       W.corners(mine)[1] if any(
+                                           o.get("corner") for o in openings)
+                                       else [])
         for w in mine:
             if w["id"] in want:
                 if w["id"] in fix:
                     w = dict(w, _fix=fix[w["id"]])
                 w = _grid_marked(doc, w, lid, li["z0"], li, grid_ctx, info)
+                if w["id"] in turn:
+                    w = dict(w, _corner_holes=turn[w["id"]])
                 # (its layers hidden in the 3D — layerview.py)
                 out[w["id"]] = wall_parts(LV.mark(doc, "wall", w),
-                                          plans.get(w["id"]), openings,
+                                          plans.get(w["id"]), lv_ops,
                                           li["z0"], li["under"],
                                           drops.get(w["id"], 0.0), runs,
                                           caps.get(w["id"], ()))
@@ -5678,6 +6020,19 @@ def elements_live(doc: dict, elevations, ids) -> dict:
         if e["id"] in want and e.get("kind") != "wall":
             out[e["id"]] = out.get(e["id"], []) + list(e["faces"])
     return out
+
+
+def _corners_marked(openings: list, mine: list, found: list) -> tuple:
+    """(the openings as built — a corner window turning, or straight where
+    it can't —, {wall id: its corner windows' holes}). No corner window:
+    the very same list, nothing marked (cornerwin.py)."""
+    if not any(o.get("corner") for o in openings):
+        return openings, {}
+    from . import cornerwin as CW
+    got, holes = CW.resolve(mine, found, openings)
+    if not got:
+        return openings, {}
+    return [got.get(o["id"], o) for o in openings], holes
 
 
 def frame_marks(doc: dict, lid: str, mine: list, plans: dict) -> dict:
@@ -5801,6 +6156,9 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
             except Exception:  # noqa: BLE001 — the slab whole, as before
                 pass
         sill = _sill_on_masonry(walls, mine, plans, order, lid)
+        # its CORNER windows (cornerwin.py): turning where they can — each
+        # of the two walls marked with the hole it gets
+        lv_ops, turn = _corners_marked(openings, mine, found)
         # (T / beam studs, 4a — only when one of its framed walls is built:
         # a guard / a glass grid dragged builds none of them)
         fix = frame_marks(doc, lid, mine, plans) if any(
@@ -5813,9 +6171,11 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
             if w["id"] in fix:
                 w = dict(w, _fix=fix[w["id"]])
             w = _grid_marked(doc, w, lid, z0, li, grid_ctx, info)
+            if w["id"] in turn:
+                w = dict(w, _corner_holes=turn[w["id"]])
             # (its layers hidden in the 3D: the eye — layerview.py)
             made = wall_parts(LV.mark(doc, "wall", w), plans.get(w["id"]),
-                              openings, z0, under,
+                              lv_ops, z0, under,
                               drops.get(w["id"], 0.0), runs,
                               caps.get(w["id"], ()))
             if made is None:
@@ -6030,7 +6390,8 @@ def build(doc: dict, elevations, only: set | None = None) -> list[dict]:
                 GD.opt(r, "on") == "roof" for r in gds) else []
             for r in gds:
                 out.append(_el(r, lid, GD.faces(r, z0, union, ground, slabs,
-                                                roofs, under)))
+                                                roofs, under,
+                                                GD.raised(doc, lid))))
         # glass grids (glazing.py, Pro): free, or filling a wall's Opening
         gzs = [e for e in els if e["type"] == "glazing" and not skip(e)]
         try:

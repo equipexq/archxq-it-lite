@@ -148,6 +148,12 @@ DEFAULT_DOC = {
     # what each element / part is made of (materials.py): {"el": {id:
     # {part: ref}}, "type": {kind: {part: ref}}} — painted at every rebuild
     "materials": {"el": {}, "type": {}},
+    # records the file holds that could not be read (a field this version
+    # does not know, one written by hand or by the AI): kept AS THEY ARE,
+    # tried again at every reading — never dropped by the next save (audit
+    # 20/11/2026, #13: a wall read wrong vanished from the model)
+    # [{"part": "walls" | "structure" | "openings", "rec": {…}}]
+    "unread": [],
     "plot": None,    # {"corners": [[x, y], ...], "uid": str, "thickness",
                         #  "heights": [z per corner], "closing": side index,
                         #  "breaks": [[i, j], ...] fold lines,
@@ -228,21 +234,35 @@ def load(raw) -> dict:
             doc["plot"]["contour"] = round(min(max(step, 0.05), 50.0), 3)
     doc["digs"] = _digs(raw.get("digs"))
     doc["wall_types"] = wall_types(raw.get("wall_types"))
-    doc["walls"] = _walls(raw.get("walls"),
+    # (the records kept aside last time are tried again with the rest — a
+    # newer version may read them; what still cannot be read stays aside)
+    aside = {"walls": [], "structure": [], "openings": []}
+    for u in raw.get("unread") or []:
+        if isinstance(u, dict) and u.get("part") in aside \
+                and isinstance(u.get("rec"), dict):
+            aside[u["part"]].append(u["rec"])
+
+    def _with_aside(part):
+        got = raw.get(part)
+        return (list(got) if isinstance(got, list) else []) + aside[part]
+    lost = []
+    doc["walls"] = _walls(_with_aside("walls"),
                           {r["id"] for r in doc["levels"]},
-                          {t["id"]: t for t in doc["wall_types"]})
+                          {t["id"]: t for t in doc["wall_types"]}, lost)
     doc["slab_types"] = wall_types(raw.get("slab_types"))
     from . import profiles as PF
     doc["profile_types"] = PF.clean_user(raw.get("profile_types"))
-    doc["structure"] = _structure(raw.get("structure"),
+    doc["structure"] = _structure(_with_aside("structure"),
                                   {r["id"] for r in doc["levels"]},
                                   {t["id"]: t for t in doc["slab_types"]},
-                                  {t["id"] for t in doc["profile_types"]})
+                                  {t["id"] for t in doc["profile_types"]},
+                                  lost)
     from . import colrows
     doc["colrows"] = colrows.clean(raw.get("colrows"), doc["structure"],
                                    {r["id"] for r in doc["levels"]})
-    doc["openings"] = _openings(raw.get("openings"),
-                                {w["id"] for w in doc["walls"]})
+    doc["openings"] = _openings(_with_aside("openings"),
+                                {w["id"] for w in doc["walls"]}, lost)
+    doc["unread"] = lost
     doc["sections"] = _sections(raw.get("sections"))
     doc["docs"] = _docs(raw.get("docs"))
     doc["rooms"] = _rooms(raw.get("rooms"), {r["id"] for r in doc["levels"]})
@@ -307,6 +327,28 @@ def load(raw) -> dict:
     return doc
 
 
+def healed_digs(doc: dict) -> dict:
+    """(support #93 again, 23/11/2026) An excavation of a file from before
+    0.21 keeps its corners on the boundary 2 cm inside it (terrain.OLD_RIM)
+    — put ON the boundary. The SAME dict when none moved (``is`` tells).
+    Called once as a file opens (ui: the terrain and the slabs that follow
+    the pit rebuilt then, one step); never part of ``load``, which runs
+    many times a frame. Never blocks opening a file."""
+    plot = doc.get("plot")
+    if not plot or not doc.get("digs"):
+        return doc
+    try:
+        from . import terrain
+        digs = [dict(d, corners=terrain.healed_rim(plot["corners"],
+                                                   d["corners"]))
+                for d in doc["digs"]]
+    except Exception:  # noqa: BLE001 — the file opens as it was
+        return doc
+    if digs == doc["digs"]:
+        return doc
+    return dict(doc, digs=digs)
+
+
 SETBACKS = {"front": 5.0, "back": 3.0, "sides": 1.5}      # m, the defaults
 
 
@@ -333,7 +375,9 @@ def _digs(raw) -> list[dict]:
             if mode == "depth":
                 bottom["d"] = min(max(float(b.get("d", 3.0)), 0.05), 100.0)
             elif mode == "height":
-                bottom["h"] = min(max(float(b.get("h", 1.0)), 0.05), 100.0)
+                # (1 cm at least: a path, a patio laid on the ground —
+                # his ask, 21/11/2026; 5 cm stood over the doors' sill)
+                bottom["h"] = min(max(float(b.get("h", 1.0)), 0.01), 100.0)
             elif mode == "level":
                 bottom.update(level=str(b.get("level") or ""),
                               offset=float(b.get("offset", -0.30)))
@@ -358,13 +402,35 @@ def _digs(raw) -> list[dict]:
         if len(angles) != n:
             angles = [90.0] * n              # vertical walls
         kind = "fill" if d.get("kind") == "fill" else "cut"
-        out.append({"id": did, "kind": kind,
-                    "name": str(d.get("name") or f"Excavation {len(out) + 1}"),
-                    "corners": corners, "bottom": bottom,
-                    "bottoms": [round(z, 3) for z in bots],
-                    "angles": angles,
-                    "uid": str(d.get("uid") or "")})
+        rec = {"id": did, "kind": kind,
+               "name": str(d.get("name") or f"Excavation {len(out) + 1}"),
+               "corners": corners, "bottom": bottom,
+               "bottoms": [round(z, 3) for z in bots],
+               "angles": angles,
+               "uid": str(d.get("uid") or "")}
+        # WATER in a pit (a pool, 20/11/2026): its surface this far under
+        # the edge — a cut's only (1 cm at least: never in the ground's
+        # plane)
+        w = d.get("water")
+        if kind == "cut" and isinstance(w, dict):
+            try:
+                below = float(w.get("below", WATER_BELOW))
+            except (TypeError, ValueError):
+                below = WATER_BELOW
+            # how much you see through it (0 = opaque, as the glass)
+            try:
+                seen = float(w.get("seen", WATER_SEEN))
+            except (TypeError, ValueError):
+                seen = WATER_SEEN
+            rec["water"] = {"below": round(min(max(below, 0.01), 100.0), 3),
+                            "seen": round(min(max(seen, 0.0), 1.0), 2)}
+        out.append(rec)
     return out
+
+
+WATER_BELOW = 0.15        # m: a pool's water under its edge (a new one)
+WATER_SEEN = 0.3          # its transparency (a new one): 30 % of the slider
+#                           (terrain.water_opacity: 0 = opaque, 1 = almost clear)
 
 
 def new_dig(digs: list[dict], corners, bottom: dict,
@@ -444,7 +510,8 @@ def typed(w: dict, ty: dict) -> dict:
                 frame=dict(ty["frame"]) if ty.get("frame") else None)
 
 
-def _walls(raw, level_ids: set, types: dict | None = None) -> list[dict]:
+def _walls(raw, level_ids: set, types: dict | None = None,
+           lost: list | None = None) -> list[dict]:
     """The walls, whatever the file holds: a known kind with its points,
     a thickness, an alignment, a level that exists, a unique id. A wall of
     one of YOUR types (``types``: id → type) takes its layers and
@@ -499,6 +566,8 @@ def _walls(raw, level_ids: set, types: dict | None = None) -> list[dict]:
                 rec["cw"] = True
                 rec.update(curtain.clean(w))   # its own sizes and colours
         except (TypeError, ValueError, KeyError, IndexError):
+            if lost is not None:             # kept aside, untouched (#13)
+                lost.append({"part": "walls", "rec": w})
             continue
         # its LAYERS (0.15.0): outside → inside, one core; ``t`` is their
         # sum — a thickness changed elsewhere (a bar, the Geometry tab) goes
@@ -923,7 +992,9 @@ def _underlays(raw, level_ids: set) -> dict:
         layer = str(u.get("layer") or "")
         out[str(lid)] = {"name": str(u.get("name") or "")[:120],
                          "layers": layers, "segs": segs,
-                         "layer": layer if layer in layers else "",
+                         # (importdxf.ALL_WALLS: all the walls' layers)
+                         "layer": layer if layer in layers
+                         or layer == "*walls" else "",
                          # what else the drawing says (importdxf: blocks,
                          # texts, closed outlines — the «Import CAD»)
                          "blocks": _drawing_list(u.get("blocks"), (
@@ -1027,7 +1098,8 @@ def _outline_curves(e: dict) -> dict | None:
 
 def _structure(raw, level_ids: set,
                slab_types: dict | None = None,
-               profile_ids: set | None = None) -> list[dict]:
+               profile_ids: set | None = None,
+               lost: list | None = None) -> list[dict]:
     """Columns, beams, slabs and footings, whatever the file holds: a
     known type with its own fields, a level that exists, a unique id. A
     slab of one of YOUR slab types (``slab_types``: id → type) takes its
@@ -1636,6 +1708,8 @@ def _structure(raw, level_ids: set,
                 except (TypeError, ValueError):
                     pass                     # (as under the slab)
         except (TypeError, ValueError, KeyError, IndexError):
+            if lost is not None:             # kept aside, untouched (#13)
+                lost.append({"part": "structure", "rec": e})
             continue
         if t in ("column", "beam"):
             rec["fit"] = bool(e.get("fit", False))   # hidden in a wall
@@ -1680,7 +1754,7 @@ def _structure(raw, level_ids: set,
 _OP_LABEL = {"door": "Door", "window": "Window", "void": "Opening"}
 
 
-def _openings(raw, wall_ids: set) -> list[dict]:
+def _openings(raw, wall_ids: set, lost: list | None = None) -> list[dict]:
     """Doors, windows, voids, whatever the file holds: a kind, a wall that
     exists (an opening goes with its wall), sizes, a unique id."""
     out, ids = [], set()
@@ -1711,11 +1785,17 @@ def _openings(raw, wall_ids: set) -> list[dict]:
                         got = o.get(k, v)
                         rec[k] = type(v)(got) if not isinstance(v, bool) \
                             else bool(got)
-                rec["leaves"] = 2 if str(o.get("leaves")) == "2" else 1
+                # 1 or 2 — a glazed sliding one up to 6 (21/11/2026)
+                from .structure import door_leaves
+                rec["leaves"] = door_leaves(dict(o, op=rec["op"]))
                 # solid (plain) / panels / half glass / glass (2026-10-27)
                 from .openfinish import LEAF_STYLES
                 rec["leaf"] = o.get("leaf") if o.get("leaf") in LEAF_STYLES \
                     else "solid"
+                # one leaf running into the wall (a pocket door, #114)
+                from .structure import door_pocket
+                if door_pocket(dict(rec, pocket=o.get("pocket"))):
+                    rec["pocket"] = True
                 # it opens to its wall's other side (a CAD's swing read)
                 rec["out"] = bool(o.get("out"))
                 rec["open"] = round(min(max(float(o.get("open", 0.0)),
@@ -1745,6 +1825,8 @@ def _openings(raw, wall_ids: set) -> list[dict]:
                     rec[k] = type(v)(got) if not isinstance(v, bool) \
                         else bool(got)
         except (TypeError, ValueError, KeyError):
+            if lost is not None:             # kept aside, untouched (#13)
+                lost.append({"part": "openings", "rec": o})
             continue
         if o.get("glass") == "opaque":       # opaque panes (2026-10-14)
             rec["glass"] = "opaque"
@@ -1763,6 +1845,9 @@ def _openings(raw, wall_ids: set) -> list[dict]:
         # set: none kept (an old house as it was)
         from .openfinish import keys_of as finish_keys
         rec.update(finish_keys(dict(o, kind=rec["kind"], op=rec.get("op"))))
+        # a CORNER window (cornerwin.py, 20/11/2026) — none: nothing kept
+        from .cornerwin import keys_of as corner_keys
+        rec.update(corner_keys(o, rec))
         oid = str(o.get("id") or "") or uuid.uuid4().hex[:8]
         while oid in ids:
             oid = uuid.uuid4().hex[:8]

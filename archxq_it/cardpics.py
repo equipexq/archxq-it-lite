@@ -150,8 +150,13 @@ def _hinge_h(p, x0, y0, x1, y1) -> None:
 
 def shaped(p, shape: str, op: str = "fixed") -> None:
     """A window with a shape: its outline, glass in it — ``op`` casement: the
-    leaves under the spring."""
+    leaves under the spring; ``op`` «void»: an EMPTY Opening, the hole cut
+    in a piece of wall (László #117, 23/11/2026)."""
     from . import shapes as SH
+    if op == "void":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#5c6168"))           # the wall round it
+        p.drawRect(QRectF(6.0, 6.0, 84.0, 84.0))
     o = {"kind": "window", "shape": shape, "pos": 0.5, "sill": 0.0,
          "w": 0.72 if shape == "oval" else 1.0, "h": 1.0}
     o.update(SH.clean(o))
@@ -171,7 +176,7 @@ def shaped(p, shape: str, op: str = "fixed") -> None:
         path.moveTo(q) if i == 0 else path.lineTo(q)
     path.closeSubpath()
     p.setPen(_pen(INK, 3.2))
-    p.setBrush(_glass())
+    p.setBrush(QColor("#1f2327") if op == "void" else _glass())
     p.drawPath(path)
     if op == "casement":
         zp = SH.spring(o, 0.0)
@@ -259,6 +264,25 @@ def door(p, style="solid", n=1, op="swing", top=False, wide=False) -> None:
         p.drawLine(QPointF(m + 1.5, zh), QPointF(m + 5, zh))
     else:
         p.drawLine(QPointF(x1 - 9, zh), QPointF(x1 - 3, zh))
+
+
+def door_pocket(p) -> None:
+    """A pocket door from the front (support #114, 22/11/2026): its leaf
+    half run into the wall — the pocket dashed in it, an arrow into it."""
+    y0, y1 = 10, 90
+    x0, x1 = 46, 84
+    p.setPen(_pen(INK, 2.5))
+    p.drawLine(QPointF(6, y1), QPointF(90, y1))
+    p.setPen(_pen(INK, 1.6, True))           # the pocket, in the wall
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(QRectF(10, y0 + 3, x0 - 12, y1 - y0 - 3))
+    _leaf(p, x0, y0 + 3, x0 + 18, y1, "solid")
+    p.setPen(_pen(INK, 3))                   # the jambs and the head
+    p.drawLine(QPointF(x0, y1), QPointF(x0, y0))
+    p.drawLine(QPointF(x0, y0), QPointF(x1, y0))
+    p.drawLine(QPointF(x1, y0), QPointF(x1, y1))
+    zh = y0 + (y1 - y0) * .56
+    _arrow(p, x1 - 6, zh, x0 - 14, zh)
 
 
 def door_arched(p) -> None:

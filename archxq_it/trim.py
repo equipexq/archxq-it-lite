@@ -145,8 +145,17 @@ def parts(o: dict, seg, z0: float, wall: dict | None,
                                            and own_sill(o) > 0)
     stone = k["sill_k"] == "stone"
     out = []
+    # a CORNER window's part (cornerwin.py): at its corner's end no jamb
+    # trim; the pieces along it end where ``_ext(ca, cb)`` says (on over
+    # the corner, or short of the other part's) — any other: as ever
+    oe, ext = o.get("_open_end"), o.get("_ext")
+    if ext is None:
+        oe = None
 
-    def box(sa, sb, ca, cb, za, zb, color):
+    def box(sa, sb, ca, cb, za, zb, color, along=False):
+        if along and oe is not None:
+            e = ext(min(ca, cb), max(ca, cb))
+            sa, sb = (e, sb) if oe == "lo" else (sa, e)
         if sb - sa < 1e-4 or zb - za < 1e-4:
             return
         out.extend(S._box(p0, u, n, sa, sb, min(ca, cb), max(ca, cb), za, zb,
@@ -162,7 +171,7 @@ def parts(o: dict, seg, z0: float, wall: dict | None,
         c_frame = -inside * hd               # the frame's outer face
         c_out = -inside * (t / 2 + xd + k["sill_d"])
         box(s0 - xw - k["sill_x"], s1 + xw + k["sill_x"], c_frame, c_out,
-            zs - k["sill_t"], zs + GAP, SILL_COLOR)
+            zs - k["sill_t"], zs + GAP, SILL_COLOR, along=True)
     # ---- the trim: on the outer face (and the inner one) ------------------
     if k["trim"] != "none":
         tw, td = k["trim_w"], k["trim_d"]
@@ -181,13 +190,16 @@ def parts(o: dict, seg, z0: float, wall: dict | None,
                 zb = zs + GAP
             else:                             # a piece under it too
                 zb = zs - tw
-                box(s0 - tw, s1 + tw, ca, cb, zb, zs, TRIM_COLOR)
+                box(s0 - tw, s1 + tw, ca, cb, zb, zs, TRIM_COLOR, along=True)
                 zb = zs
-            box(s0 - tw + ov, s0 + ov, ca, cb, zb, zt + tw - ov,
-                TRIM_COLOR)                                        # jambs
-            box(s1 - ov, s1 + tw - ov, ca, cb, zb, zt + tw - ov, TRIM_COLOR)
+            if oe != "lo":
+                box(s0 - tw + ov, s0 + ov, ca, cb, zb, zt + tw - ov,
+                    TRIM_COLOR)                                    # jambs
+            if oe != "hi":
+                box(s1 - ov, s1 + tw - ov, ca, cb, zb, zt + tw - ov,
+                    TRIM_COLOR)
             box(s0 + ov, s1 - ov, ca, cb, zt - ov, zt + tw - ov,
-                TRIM_COLOR)                                        # head
+                TRIM_COLOR, along=True)                            # head
     return out
 
 

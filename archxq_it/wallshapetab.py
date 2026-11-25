@@ -15,8 +15,8 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QWidget)
+from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QPushButton,
+                               QSizePolicy, QWidget)
 
 from . import look as L
 from . import walls as W
@@ -38,8 +38,10 @@ def fixed_side(k: int, n: int) -> bool:
 
 TOOLS = (("select", "Points"), ("round", "Round corner"),
          ("chamfer", "Chamfer"), ("notch", "Notch"), ("bend", "Bend side"))
+#: (the Notch starts SQUARE — 0, as most are: his ask, 23/11/2026; he had
+#: to type 0 over the 0.30 every time. A radius: type it, or Round corner)
 SIZE_OF = {"round": ("Radius", WS.ROUND_R), "chamfer": ("Size", WS.CHAMFER),
-           "notch": ("Corner radius", WS.NOTCH_R),
+           "notch": ("Corner radius", 0.0),
            "bend": ("Bulge", 0.30)}
 TIPS = {"select": "Drag a corner or the middle of a side · Double-click a "
                   "side: a new point · Del: delete the point",
@@ -79,11 +81,16 @@ class ShapeCanvas(QWidget):
 
     def to_px(self, s: float, z: float) -> QPointF:
         k, x0, y0 = self._frame()
+        if self.tab.mirror:              # seen from the other face: B left
+            s = self.tab.prof["L"] - s
         return QPointF(x0 + s * k, y0 - z * k)
 
     def to_sz(self, pt) -> tuple:
         k, x0, y0 = self._frame()
-        return ((pt.x() - x0) / k, (y0 - pt.y()) / k)
+        s = (pt.x() - x0) / k
+        if self.tab.mirror:
+            s = self.tab.prof["L"] - s
+        return (s, (y0 - pt.y()) / k)
 
     # -- what is under the mouse ------------------------------------------------------------
     def corner_at(self, pt) -> int | None:
@@ -140,10 +147,23 @@ class ShapeCanvas(QWidget):
         prof = self.tab.prof
         Lw = prof["L"]
         # the floor, the slab over the level, the joined walls' tops
-        for z, dash in [(0.0, False)] + [(z, True) for z in self.tab.lines]:
+        for z, dash in [(0.0, False)] + [(z, True) for z in self.tab.lines
+                                          if z not in self.tab.match]:
             a, b = self.to_px(-0.3, z), self.to_px(Lw + 0.3, z)
             p.setPen(L.pen(L.DIM, 1.0, dash))
             p.drawLine(a, b)
+        # the joined walls' cuts: blue, their height written at the left
+        for z in self.tab.match:
+            a, b = self.to_px(-0.3, z), self.to_px(Lw + 0.3, z)
+            if a.x() > b.x():
+                a, b = b, a
+            # (on a whole pixel: between two, the antialiasing halved it —
+            # 1.10 came out grey beside a blue 2.40)
+            y = round(a.y()) + 0.5
+            a, b = QPointF(a.x(), y), QPointF(b.x(), y)
+            p.setPen(L.pen(BLUE, 1.0, True))
+            p.drawLine(a, b)
+            L.text(p, a.x(), a.y() - 3, f"{z:.2f}", BLUE)
         # the wall
         pts, _arcs = WS.outline(prof, 0.0)
         path = QPainterPath()
@@ -162,7 +182,7 @@ class ShapeCanvas(QWidget):
             half = float(o["w"]) / 2
             a = self.to_px(float(o["pos"]) - half, zs + float(o["h"]))
             b = self.to_px(float(o["pos"]) + half, zs)
-            p.drawRect(QRectF(a, b))
+            p.drawRect(QRectF(a, b).normalized())
         # A and B
         for s, label in ((0.0, "A"), (Lw, "B")):
             q = self.to_px(s, 0.0)
@@ -223,8 +243,15 @@ class ShapeCanvas(QWidget):
         pt = e.position()
         tool = self.tab.tool
         i = self.corner_at(pt)
-        if tool == "notch":
+        if tool == "notch" and (i is None or i in FIXED):
             self.drag = ("notch", self.to_sz(pt), None)
+            return
+        if tool == "notch":
+            # a POINT taken with the Notch on: it moves, as with «Points»
+            # (his cut, 20/11/2026: the inner corners of a C could not be
+            # moved — the press began another notch, «No such point»)
+            self.tab.select(i)
+            self.drag = ("corner", i, self.tab.prof)
             return
         if tool in ("round", "chamfer"):
             if i is not None:
@@ -267,6 +294,12 @@ class ShapeCanvas(QWidget):
             if hv != self.hover:
                 self.hover = hv
                 self.update()
+            return
+        if not (e.buttons() & Qt.LeftButton):
+            # the button was let go and its release never came here (his
+            # Notch, 20/11/2026: the rectangle went on following the pen,
+            # nothing cut, nothing said) — finished now, as a release
+            self.mouseReleaseEvent(e)
             return
         kind = self.drag[0]
         if kind == "corner":
@@ -316,6 +349,27 @@ class ShapeCanvas(QWidget):
 
 
 # ---- the tab ----------------------------------------------------------------------------
+def seen_mirrored(wall: dict, eye=None) -> bool:
+    """The wall drawn with B on the LEFT: the face it is seen from is the
+    one on the LEFT of a → b (looking at it from there, A is on the right).
+    That face is where the 3D camera stands (``eye`` = its (x, y), given
+    when the window opens out of the plan) — else the OUTSIDE face (its
+    inside is ``side``: +1 left, −1 right). His wall 57, 21/11/2026: a «C»
+    cut at end B, the 3D seen from outside — the editor drew it from the
+    inside, the cut looked the wrong way round."""
+    try:
+        (ax, ay), (bx, by) = wall["a"][:2], wall["b"][:2]
+    except (KeyError, TypeError, ValueError):
+        return False
+    L = math.hypot(bx - ax, by - ay)
+    if eye is not None and L > 1e-9:
+        ex, ey = float(eye[0]), float(eye[1])
+        cross = ((bx - ax) * (ey - ay) - (by - ay) * (ex - ax)) / L
+        if abs(cross) > 0.05:            # (on its line: no side to tell)
+            return cross > 0
+    return float(wall.get("side", 1) or 1) < 0
+
+
 class ShapeTab:
     """The tab's state: the shape being made (``prof``), the tool, the
     corner selected; whether it changed; whether it is back to a
@@ -331,6 +385,14 @@ class ShapeTab:
         under = float(level.get("_under", level.get("height", 3.0)))
         self.ref_h = under
         self.lines = [under - float(wall.get("base", 0.0) or 0.0)]
+        # the cuts of the walls joined to it (WS.match_heights): lines to
+        # snap to, their height written — his L balcony, 23/11/2026
+        self.match = [h for h in level.get("_match") or ()
+                      if all(abs(h - k) > 1e-3 for k in self.lines)]
+        self.lines += self.match
+        # the «C» of the wall joined at a corner (WS.joined_cut): the ready
+        # «C» opens there, as high — None: as it ever was
+        self.cut = level.get("_cut")
         self.why_kind = WS.why_no_shape(wall)
         self.editable = self.why_kind is None and not edition.lite()
         prof = S.shape_now(wall) if self.why_kind is None else None
@@ -357,6 +419,7 @@ class ShapeTab:
         self.size_label = None
         self.f_s = self.f_z = None
         self.on_change = None           # the window's numbers, kept in step
+        self.mirror = seen_mirrored(wall, level.get("_eye"))
 
     # -- checks beyond the shape's own ---------------------------------------------------------
     def _context_why(self, prof: dict) -> str | None:
@@ -372,8 +435,10 @@ class ShapeTab:
                           name=o.get("name", "Opening"))
         for end, s in (("a", 0.0), ("b", prof["L"])):
             if end in self.joined:
+                # (a «C» cut there is fine: the corner stands whole —
+                # profilecut._base; its foot must be whole all the same)
                 sl = WS.slice_at(prof, s)
-                if len(sl) != 1 or sl[0][0] > 1e-6:
+                if not sl or sl[0][0] > 1e-6:
                     return tr("That end is joined to another wall — keep it "
                               "whole up to one height there")
         return None
@@ -439,8 +504,18 @@ class ShapeTab:
     def typed(self, *_a) -> None:
         if self.sel is None:
             return
-        self.attempt(WS.move_point(self.prof, self.sel, self.f_s.value(),
-                                   self.f_z.value()))
+        s, z = self.f_s.value(), self.f_z.value()
+        Lw = float(self.prof["L"])
+        # a millimetre from an end: ON the end (5.457 typed on a 5.4572 m
+        # wall slid the point 0.2 mm off a joined end — refused)
+        if abs(s) <= 1e-3:
+            s = 0.0
+        elif abs(s - Lw) <= 1e-3:
+            s = Lw
+        # (refused: the reason is said under the drawing; the fields keep
+        # what was typed — the other one may make it fit, a point moved
+        # on a slant)
+        self.attempt(WS.move_point(self.prof, self.sel, s, z))
 
     def ready(self, kind: str) -> None:
         """A ready shape (a card): over this wall's length, at its height
@@ -449,11 +524,18 @@ class ShapeTab:
         sl = WS.slice_at(self.prof, 0.0)
         if sl:
             h = sl[-1][1]
-        got = WS.preset(kind, self.prof["L"], h)
+        got = WS.preset(kind, self.prof["L"], h,
+                        cut=self.cut if kind == "c" else None)
         if got[0] is not None:
             got = (dict(got[0], was=self.prof.get("was", "level")), None)
         self.sel = None
         self.attempt(got)
+
+    def flip(self) -> None:
+        """«Mirror»: the shape end for end (WS.mirrored) — refused, as any
+        edit, when it wouldn't hold its openings or a joined end."""
+        self.sel = None
+        self.attempt(WS.mirrored(self.prof))
 
     def to_rect(self) -> None:
         was = WS.to_rect(self.prof)
@@ -510,18 +592,26 @@ def add_tab(dlg, wall: dict, level: dict, openings=(), joined=()) -> None:
     elif not st.editable:
         fl.addRow(L.hint(tr("Editing the shape is in ArchXQ IT Pro")))
     if st.editable:
-        tools = L.Chips(width=96)
+        # (3 a row, as the column's and the beam's Shape tabs: in one row
+        # the tools and the ready cards made the tab 816 px wide — cut on
+        # the right, the drawing pushed right, «Arched top» and «C» out of
+        # sight; his screen, 23/11/2026)
+        tools = L.Chips(wrap=3, width=120)       # («Arredondar canto» whole)
         for v, text in TOOLS:
             tools.addItem(text, v)
         tools.setCurrentIndex(0)
-        fl.addRow("Tool", tools)
+        tools.lay.setColumnStretch(3, 1)         # (packed to the left)
+        # (their names over them, not beside: the labels' column took the
+        # width the cards need — «Ferra…» cut, 23/11/2026)
+        fl.addRow(QLabel(tr("Tool")))
+        fl.addRow(tools)
         # READY SHAPES (phase 3): a card each, a click puts it on
         cards = QWidget()
-        cl = QHBoxLayout(cards)
+        cl = QGridLayout(cards)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
         top_only = WS.top_only(wall)
-        for key, text in WS.PRESETS:
+        for n, (key, text) in enumerate(WS.PRESETS):
             b = QPushButton(tr(text))
             b.setObjectName("axqChip")
             b.setIcon(_preset_icon(key))
@@ -534,9 +624,10 @@ def add_tab(dlg, wall: dict, level: dict, openings=(), joined=()) -> None:
                                 "length and at its height — then drag "
                                 "and type as any shape"))
             b.clicked.connect(lambda _c=False, k=key: st.ready(k))
-            cl.addWidget(b)
-        cl.addStretch(1)
-        fl.addRow(tr("Ready"), cards)
+            cl.addWidget(b, n // 3, n % 3)
+        cl.setColumnStretch(3, 1)
+        fl.addRow(QLabel(tr("Ready")))
+        fl.addRow(cards)
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -544,8 +635,15 @@ def add_tab(dlg, wall: dict, level: dict, openings=(), joined=()) -> None:
         st.size = L.metres(0.30, -5.0, 10.0, 0.05)
         rl.addWidget(st.size_label)
         rl.addWidget(st.size, 1)
-        st.f_s = L.metres(0.0, 0.0, 1000.0, 0.01)
-        st.f_z = L.metres(0.0, 0.0, 50.0, 0.01)
+        # their bars over THIS wall: along its length, up to twice its top
+        # (0…1000 m made the bar useless — a pixel was metres)
+        Lw = float(st.prof["L"])
+        st.f_s = L.metres(0.0, 0.0, max(Lw, 0.01), 0.01)
+        st.f_z = L.metres(0.0, 0.0, max(10.0, round(
+            2.0 * WS.peak(st.prof), 2)), 0.01)
+        for f in (st.f_s, st.f_z):
+            f.setToolTip(tr("Click a point of the shape, then type where "
+                            "it goes"))
         rl.addWidget(QLabel(tr("Point along")))
         rl.addWidget(st.f_s, 1)
         rl.addWidget(QLabel(tr("up")))
@@ -556,7 +654,20 @@ def add_tab(dlg, wall: dict, level: dict, openings=(), joined=()) -> None:
         back.setToolTip(tr("Its shape goes: a plain wall at the height it "
                            "had before"))
         back.clicked.connect(st.to_rect)
-        fl.addRow(back)
+        # «Mirror», beside it (his L balcony, 23/11/2026: the «C» opened
+        # one way only — any shape now turns end for end, in one click)
+        flip = QPushButton(tr("Mirror"))
+        flip.setObjectName("axqChip")
+        flip.setToolTip(tr("Turns the shape end for end: what is at end A "
+                           "goes to end B — a «C» opens the other way"))
+        flip.clicked.connect(st.flip)
+        ends = QWidget()
+        el = QHBoxLayout(ends)
+        el.setContentsMargins(0, 0, 0, 0)
+        el.setSpacing(6)
+        el.addWidget(flip, 1)
+        el.addWidget(back, 1)
+        fl.addRow(ends)
         tools.currentIndexChanged.connect(
             lambda _i: st.set_tool(tools.currentData()))
         st.f_s.valueChanged.connect(st.typed)

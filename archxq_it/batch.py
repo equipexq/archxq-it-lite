@@ -22,7 +22,8 @@ NEVER = frozenset({
 
 #: …and by family: an opening's kind (door ↔ window: the library's), a
 #: wall's (line ↔ arc), a structural element's type (a column stays one)
-NEVER_BY = {"opening": frozenset({"kind", "wall"}),
+NEVER_BY = {"opening": frozenset({"kind", "wall", "corner", "w2",
+                                  "corner_join"}),
             "wall": frozenset({"kind"}),
             "struct": frozenset({"type", "op"})}
 

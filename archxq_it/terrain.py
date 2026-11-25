@@ -356,6 +356,45 @@ def snug(doc: dict, corners, reach: float = 0.05):
     return out if plotgeo.covered(out, plot["corners"]) else corners
 
 
+#: the old rim (support #93 again, 23/11/2026): before 0.21 a corner on
+#: the plot's side was stored 2 cm INSIDE it — files from then still hold
+#: it, and the ground, the pit and its slabs stopped 2 cm short of the
+#: boundary («a strip at both boundaries»). A corner this far in (± RIM_TOL)
+#: is read as ON the side when the file is opened (model.load).
+OLD_RIM = 0.02
+RIM_TOL = 0.002
+
+
+def healed_rim(outer, corners) -> list:
+    """``corners`` with those lying OLD_RIM (± RIM_TOL) inside one of
+    ``outer``'s sides (within its length) put exactly ON it — the rest as
+    they are (the same list when none moved)."""
+    n = len(outer)
+    if n < 3 or len(corners) < 3:
+        return corners
+    area2 = sum(outer[i][0] * outer[(i + 1) % n][1]
+                - outer[(i + 1) % n][0] * outer[i][1] for i in range(n))
+    sign = 1.0 if area2 > 0 else -1.0                # inside = the left
+    out, moved = [], False
+    for p in corners:
+        q = [float(p[0]), float(p[1])]
+        for i in range(n):
+            a, b = outer[i], outer[(i + 1) % n]
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(ex, ey)
+            if L < 1e-9:
+                continue
+            t = ((q[0] - a[0]) * ex + (q[1] - a[1]) * ey) / (L * L)
+            if not -1e-9 <= t <= 1 + 1e-9:
+                continue
+            d = sign * (ex * (q[1] - a[1]) - ey * (q[0] - a[0])) / L
+            if abs(d - OLD_RIM) <= RIM_TOL:
+                q = [round(a[0] + t * ex, 4), round(a[1] + t * ey, 4)]
+                moved = True
+        out.append(q)
+    return out if moved else corners
+
+
 def _onto_sides(outer, corners, tol: float = 1e-4) -> list:
     """Corners within ``tol`` of a side put EXACTLY on its line (no
     rounding): the ground's pieces and the pit then share that side, with
@@ -418,6 +457,78 @@ def _nudged(outer, corners, gap: float, reach: float) -> list:
                 break
         out.append([round(q[0], 4), round(q[1], 4)])
     return out
+
+
+#: a pit's WATER (20/11/2026): built in this colour (its part «water» is
+#: told by it), as see-through as its «seen» says (0 = opaque)
+WATER_COLOR = (0.16, 0.45, 0.66)
+
+
+def water_level(dig: dict, doc: dict) -> float | None:
+    """A pit's water surface (project elevation): its lowest edge on the
+    ground minus «below» — None: no water, or none left above its floor."""
+    w = dig.get("water")
+    plot = doc.get("plot")
+    if not w or is_fill(dig) or not plot:
+        return None
+    rim = min(ground_at(plot, q) for q in top_of(dig, doc))
+    z = rim - float(w.get("below", model.WATER_BELOW))
+    return z if z > min(dig_bottoms(dig, doc)) + 0.01 else None
+
+
+def water_outline(dig: dict, doc: dict):
+    """(its outline at the water, its level) — a sloped side's line moved
+    out as far as the slope climbs to that level; (None, None): none."""
+    z = water_level(dig, doc)
+    if z is None:
+        return None, None
+    pts = dig["corners"]
+    tans = slope_tans(dig)
+    if all(t is None for t in tans):
+        return pts, z
+    bots = dig_bottoms(dig, doc)
+    n = len(pts)
+    offs = []
+    for i, t in enumerate(tans):
+        if t is None:
+            offs.append(0.0)
+            continue
+        j = (i + 1) % n
+        offs.append((-max(z - bots[i], 0.0) / t, -max(z - bots[j], 0.0) / t))
+    out = plotgeo.buildable(pts, offs)
+    return (out, z) if out else (None, None)
+
+
+def water_face(dig: dict, doc: dict) -> dict | None:
+    """The water's face, facing up, with its colour and see-through."""
+    pts, z = water_outline(dig, doc)
+    if pts is None:
+        return None
+    seen = float((dig.get("water") or {}).get("seen", model.WATER_SEEN))
+    return {"loop": [(p[0], p[1], z) for p in _ccw([tuple(p[:2])
+                                                    for p in pts])],
+            "holes": [],
+            "attrs": {"color": (*WATER_COLOR, 1.0),
+                      "opacity": water_opacity(seen)}}
+
+
+#: the opacities the host SHOWS a difference in (measured on his pool,
+#: 20/11): above 0.8 it looks opaque (only the lines behind show), under
+#: 0.25 the water is almost gone. The slider's 1–100 % spans just these,
+#: so every step of it changes what is seen (his ask, 20/11: «de 20 para
+#: baixo não tem efeito… de 70 para cima também não»).
+WATER_NEAR_OPAQUE = 0.8
+WATER_NEAR_CLEAR = 0.25
+
+
+def water_opacity(seen: float) -> float:
+    """The face's opacity for the window's Transparency (0–1): 0 = opaque
+    exactly, as the glass; 1 %–100 % from almost opaque to almost clear."""
+    seen = min(max(float(seen), 0.0), 1.0)
+    if seen <= 0.0:
+        return 1.0
+    return round(WATER_NEAR_OPAQUE
+                 - (WATER_NEAR_OPAQUE - WATER_NEAR_CLEAR) * seen, 3)
 
 
 def top_of(dig: dict, doc: dict):
@@ -485,6 +596,39 @@ def _key(p) -> tuple:
 #: meeting nothing. Kept as a switch to compare on screen.
 BOUNDARY_EARTH = False
 ON_SIDE = 1e-4          # m: a point this close to a plot side is on it
+
+
+def _in_region(r, p) -> bool | None:
+    """``p`` in region ``r`` (its outline, not its holes) — None: a region
+    with no outline (the ground outside)."""
+    if not r.get("outer"):
+        return None
+    if not plotgeo.inside_polygon(p, [tuple(q[:2]) for q in r["outer"]]):
+        return False
+    return not any(plotgeo.inside_polygon(p, [tuple(q[:2]) for q in h])
+                   for h in r.get("holes") or ())
+
+
+def _low_on_right(a, b, low, high) -> bool:
+    """Whether the LOWER of the two regions an edge parts lies on the
+    right of a → b — by a point just off the edge's middle (his screen,
+    20/11/2026: an L-shaped pool's step faced the earth, grey, untextured:
+    the region's «inside point» lay BEHIND that wall — never for a
+    convex pit, always for an L)."""
+    nx, ny = (b[1] - a[1]), -(b[0] - a[0])       # right of a → b
+    n = math.hypot(nx, ny) or 1.0
+    mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    for d in (1e-3, 1e-2):
+        right = (mx + nx / n * d, my + ny / n * d)
+        left = (mx - nx / n * d, my - ny / n * d)
+        for r, want in ((low, True), (high, False)):
+            ir, il = _in_region(r, right), _in_region(r, left)
+            if ir is not None and ir != il:
+                return ir if want else il
+    # (as before: by the region's inside point)
+    if low["ip"] is not None:
+        return (low["ip"][0] - mx) * nx + (low["ip"][1] - my) * ny >= 0
+    return (high["ip"][0] - mx) * nx + (high["ip"][1] - my) * ny <= 0
 
 
 def _on_side(p, a, b) -> bool:
@@ -823,16 +967,15 @@ def build(doc: dict, z0: float, earcut, arrange) -> dict:
         if len(loop) < 3:
             continue
         # it faces the lower side: toward the open pit, or away from the
-        # raised fill (the ground outside has no inside point)
-        nx, ny = (b[1] - a[1]), -(b[0] - a[0])       # right of a → b
-        mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-        if low["ip"] is not None:
-            toward = (low["ip"][0] - mx) * nx + (low["ip"][1] - my) * ny
-        else:
-            toward = -((high["ip"][0] - mx) * nx + (high["ip"][1] - my) * ny)
-        if toward < 0:
+        # raised fill (the ground outside has no outline)
+        if not _low_on_right(a, b, low, high):
             loop = list(reversed(loop))
         by_dig[owner["id"]].append(loop)
+    # -- a pit's water (a pool): one face at its level -------------------------------
+    for d in digs:
+        f = water_face(d, doc)
+        if f is not None:
+            by_dig[d["id"]].append(f)
 
     # -- the block: sides down to a flat bottom under everything ---------------------
     if thick > 0:

@@ -49,6 +49,8 @@ BODY_TOL = 0.02          # m: an end this far off another wall's body still
 SNAP_TOL = 0.03          # m: an end this short of a wall is pulled onto it
 MITER_LIMIT = 4.0        # × thickness: past this a mitre is cut square
 THROUGH_TOL = math.radians(25.0)   # off straight, still running THROUGH
+STEP_T = 0.001           # m: two walls in line this much apart in thickness
+                         #    step — at an L corner the thinner one butts
 CONTINUE_TOL = math.radians(10.0)  # off straight, still CONTINUING a wall
 CHORD = 0.002            # m: a curve becomes segments this close to it
 MAX_STEP = math.radians(10.0)      # …and never coarser than this
@@ -239,6 +241,26 @@ def centre(w: dict) -> Seg:
 #: build, drag and sheet runs before its openings are read; read by
 #: ``opening_lift`` only while the wall's base is still that one.
 SUNK: dict = {}
+
+#: {wall id: (sa, sb)} — its ``clear_span`` as its plan was last joined
+#: (``plan`` / ``corners``): where the faces of the walls met at its ends
+#: stand along its drawn line. ``structure.opening_room`` lets an opening
+#: reach them, as near its drawn ends as they are (Jhonatan #116,
+#: 2026-11-23: a wall drawn on its inside face kept 5 cm at each corner,
+#: its corners right on its drawn ends). Never farther than END_GAP: a
+#: wall not here (or its plan stale) keeps the 5 cm, as before.
+REACH: dict = {}
+
+
+def _keep_reach(good: list, out: dict) -> None:
+    """Fill ``REACH`` for the straight walls just joined."""
+    for w in good:
+        pcs = out.get(w["id"])
+        if pcs and w.get("kind", "line") == "line":
+            try:
+                REACH[w["id"]] = clear_span(w, pcs)
+            except Exception:  # noqa: BLE001 — not read: the 5 cm stay
+                REACH.pop(w["id"], None)
 
 
 def opening_lift(w: dict | None) -> float:
@@ -1052,8 +1074,13 @@ def _resolve(node, group):
             if off > THROUGH_TOL:
                 continue
             # a wall only PASSING here must be the one through (we may not
-            # touch it); then the thickest, then the straightest
+            # touch it); then the pair thick ALL ALONG (its thinner one the
+            # thickest: two 20 cm walls in line go through a crossing of a
+            # 20 and a 15 — his cross, 2026-11-19: the 20 + 15 went through,
+            # cut square in the middle, split the 20 + 20 and left two
+            # 2.5 cm notches), then the thickest, then the straightest
             score = (a["ghost"] and b["ghost"],
+                     min(a["pc"].t, b["pc"].t),
                      max(a["pc"].t, b["pc"].t), -off)
             if score_best is None or score > score_best:
                 best, score_best = (i, j), score
@@ -1062,6 +1089,25 @@ def _resolve(node, group):
         return
     i, j = best
     a, b = group[i], group[j]
+    if n == 3 and not (a["ghost"] or b["ghost"]) \
+            and abs(a["pc"].t - b["pc"].t) > STEP_T:
+        # in line but of two thicknesses, at the CORNER of an L: the third
+        # wall as thick as one of them makes the L with it (it stays
+        # mitred) and the other one BUTTS on that corner's face — a step,
+        # but walls already joined stay joined (his ask, 2026-11-19: a
+        # 15 cm wall going on from a 20 cm L corner pushed in between and
+        # split it: the corner lost a 2.5 × 10 cm notch, 25 cm² overlapped).
+        # A third as thick as neither (a partition at a step of the outside
+        # wall): the two in line go on through, as before.
+        c = group[3 - i - j]
+        same = [e for e in (a, b) if abs(e["pc"].t - c["pc"].t) <= STEP_T]
+        if len(same) == 1:
+            keep = same[0]
+            other = b if keep is a else a
+            _mitre(node, keep, c)
+            _mitre(node, c, keep)
+            _trim(node, other, c)
+            return
     _mitre(node, a, b)
     _mitre(node, b, a)
     for k, s in enumerate(group):
@@ -1385,6 +1431,7 @@ def corners(walls: list[dict]) -> tuple:
     out: dict = {w["id"]: [] for w in good}
     for pc in pieces:
         out[pc.w["id"]].append(_outline(pc))
+    _keep_reach(good, out)
     found = []
     for e1, e2 in pairs:
         if e1["ghost"] or e2["ghost"]:
@@ -1417,6 +1464,7 @@ def plan(walls: list[dict]) -> dict:
     out: dict = {w["id"]: [] for w in good}
     for pc in pieces:
         out[pc.w["id"]].append(_outline(pc))
+    _keep_reach(good, out)
     return out
 
 
@@ -1695,6 +1743,7 @@ def continues(w: dict, others: list[dict]):
         return None
     u = d.tangent(0.0)
     best = None
+    meet = 0                     # the walls ending where this one starts
     for o in others:
         if is_closed(o) or why_not(o) is not None:
             continue
@@ -1703,8 +1752,13 @@ def continues(w: dict, others: list[dict]):
                        (od.at(1.0), od.tangent(1.0))):
             if _dist(p, d.at(0.0)) > JOIN_TOL:
                 continue
+            meet += 1
             dot = max(-1.0, min(1.0, _dot(u, way)))
             if math.acos(dot) <= CONTINUE_TOL and (best is None
                                                    or o["t"] > best):
                 best = o["t"]
-    return best
+    # from a CORNER already made (an L: two walls end there) it is a
+    # branch, not a wall carried on: it keeps the thickness chosen (his
+    # 15 cm from a 20 cm L's corner, 2026-11-19, came out 20 cm — and,
+    # the three alike, it ran through the L and split it)
+    return best if meet == 1 else None

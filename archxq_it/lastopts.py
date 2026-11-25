@@ -21,6 +21,9 @@ NAMES = ("wall_opts", "col_opts", "beam_opts", "slab_opts", "foot_opts",
 #: keys never kept (the document's own — an object copied along a path,
 #: taken from the model: «src»)
 DROP = frozenset({"wtype", "stype", "src"})
+#: keys kept as they are, a dict too, over a default of none (a shaped
+#: column's curves — 24/11/2026; checked where it is used)
+WHOLE = frozenset({"curves"})
 
 
 def _fits(default, value) -> bool:
@@ -52,7 +55,7 @@ def merge(defaults: dict, saved) -> dict:
         d = defaults[k]
         if isinstance(d, dict):
             out[k] = merge(d, v)
-        elif _fits(d, v):
+        elif _fits(d, v) or (k in WHOLE and isinstance(v, dict)):
             out[k] = float(v) if isinstance(d, float) \
                 and not isinstance(v, bool) else v
     return out

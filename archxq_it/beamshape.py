@@ -1,7 +1,7 @@
 # ArchXQ IT — Copyright (C) 2026 Orlando Souza · XQ (www.xq.com.br)
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A beam's SHAPE (the shape editor, phase 2 — 17/11/2026): curved in plan,
-inclined, its section (L, inverted T, I) and its shape in elevation (a
+inclined, its section (L, T, inverted T, I, U) and its shape in elevation (a
 haunch, a notch at its ends, an arched soffit).
 
 The beam record keeps, besides ``a``, ``b``, ``w``, ``h``:
@@ -14,7 +14,10 @@ The beam record keeps, besides ``a``, ``b``, ``w``, ``h``:
                lean-to's beam on posts of two heights;
     ``sec``  — its section: "L" (its web on its left, a → b), "Lr" (on its
                right), "invT" (an inverted T: a ledge each side, at its
-               foot), "I" (a flange at its top and at its foot); ``tf`` the
+               foot), "I" (a flange at its top and at its foot), "T" (a
+               flange at its top — the classic T beam; 23/11/2026), "U" (a
+               channel: a flange at its top and at its foot, its web on its
+               left; 23/11/2026); ``tf`` the
                flange's thickness, ``tw`` the web's width (``w`` stays the
                whole width — its flange's);
     ``elev`` — its shape seen from the side: "haunch" (deeper towards its
@@ -38,7 +41,7 @@ MAX_SLOPE = 60.0        # °: steeper is refused (a beam, not a post)
 MIN_PART = 0.03         # m: a flange, a web, what is left under a notch
 ARCH_STEPS = 24         # an arched soffit: so many flat pieces
 
-SECTIONS = ("rect", "L", "Lr", "invT", "I")
+SECTIONS = ("rect", "L", "Lr", "invT", "I", "T", "U")
 ELEVS = ("none", "haunch", "notch", "arch")
 ENDS = ("both", "a", "b")
 
@@ -174,8 +177,8 @@ def default_tf(e: dict) -> float:
 
 
 def default_tw(e: dict) -> float:
-    """A web: half its width (a third for an I), 3 cm at least."""
-    k = 3 if e.get("sec") == "I" else 2
+    """A web: half its width (a third for an I, a U), 3 cm at least."""
+    k = 3 if e.get("sec") in ("I", "U") else 2
     return round(max(float(e["w"]) / k, MIN_PART), 2)
 
 
@@ -197,6 +200,13 @@ def bands(e: dict) -> list:
         lo, hi = (half - tw, half) if s == "L" else (-half, -half + tw)
         return [(-half, half, ("b", 0.0), ("b", tf)),
                 (lo, hi, ("b", tf), ("t", 0.0))]
+    if s == "T":                                  # its flange at its top
+        return [(-tw / 2, tw / 2, ("b", 0.0), ("t", tf)),
+                (-half, half, ("t", tf), ("t", 0.0))]
+    if s == "U":                                  # its web on its left
+        return [(-half, half, ("b", 0.0), ("b", tf)),
+                (half - tw, half, ("b", tf), ("t", tf)),
+                (-half, half, ("t", tf), ("t", 0.0))]
     return [(-half, half, ("b", 0.0), ("b", tf)),            # I
             (-tw / 2, tw / 2, ("b", tf), ("t", tf)),
             (-half, half, ("t", tf), ("t", 0.0))]
@@ -207,7 +217,7 @@ def flanges_depth(e: dict) -> float:
     s = section(e)
     if s == "rect":
         return 0.0
-    return flange(e) * (2 if s == "I" else 1)
+    return flange(e) * (2 if s in ("I", "U") else 1)
 
 
 def section_area(e: dict, depth: float) -> float:
@@ -217,7 +227,7 @@ def section_area(e: dict, depth: float) -> float:
     if s == "rect":
         return w * depth
     tf, tw = flange(e), web(e)
-    if s == "I":
+    if s in ("I", "U"):
         return 2 * w * tf + tw * (depth - 2 * tf)
     return w * tf + tw * (depth - tf)
 
@@ -230,7 +240,7 @@ def why_section(e: dict) -> str | None:
     if tf < MIN_PART - 1e-9:
         return WHY_FLANGE
     if tw < MIN_PART - 1e-9 or tw > w - 2 * MIN_PART + 1e-9 \
-            and s in ("invT", "I") or tw > w - MIN_PART + 1e-9:
+            and s in ("invT", "I", "T") or tw > w - MIN_PART + 1e-9:
         return WHY_WEB
     if min_depth(e) - flanges_depth(e) < MIN_PART - 1e-9:
         return WHY_FLANGE
@@ -462,10 +472,19 @@ def _cut(seg: W.Seg, f: float, half: float) -> list:
             (p[0] + n[0] * lo, p[1] + n[1] * lo)]
 
 
-def _faces(loop: list, ztop, zbot) -> list:
+def _curved(loop: list) -> dict:
+    """A face of a surface that bends (its edges drawn soft — compat's
+    «curve»: under 25° to its neighbour, no line)."""
+    return {"loop": loop, "holes": [], "curve": True}
+
+
+def _faces(loop: list, ztop, zbot, soft_under: bool = False) -> list:
     """A plan loop raised: its top at ztop(p), its underside at zbot(p),
     plumb sides; the top / underside one face when it lies in one plane,
-    else triangles. Outward, as walls.solid."""
+    else triangles — drawn as one bending surface, no line over each
+    (a curved beam's arched soffit showed its triangles, 22/11/2026).
+    ``soft_under``: its underside is a piece of a curve (an arched
+    soffit): drawn soft to its neighbours too. Outward, as walls.solid."""
     loop = list(loop)
     if W._area(loop) < 0:
         loop.reverse()
@@ -480,11 +499,12 @@ def _faces(loop: list, ztop, zbot) -> list:
         pl = W._plane_of(ring)
         if pl is not None and all(abs(sum(pl[0][j] * t[j] for j in range(3))
                                       - pl[1]) < 1e-6 for t in ring):
-            faces.append(list(reversed(ring)) if flip else list(ring))
+            cap = list(reversed(ring)) if flip else list(ring)
+            faces.append(_curved(cap) if flip and soft_under else cap)
             continue
         for a, b, c in _tri(loop):
-            faces.append([ring[c], ring[b], ring[a]] if flip
-                         else [ring[a], ring[b], ring[c]])
+            faces.append(_curved([ring[c], ring[b], ring[a]] if flip
+                                 else [ring[a], ring[b], ring[c]]))
     return faces
 
 
@@ -529,6 +549,7 @@ def faces(e: dict, pieces: list, za: float, zb: float, depth: float) -> list:
     pts = depth_points(e, depth)
     w = float(e["w"])
     half = w / 2 + 0.1
+    soft_under = elev(e) == "arch"       # (its pieces read as one curve)
     breaks = {f for f, _ in pts if 1e-9 < f < 1 - 1e-9}
     if seg.kind == "arc" and (abs(zb - za) > 1e-9 or len(pts) > 2):
         # curved AND its top or its underside not level: cut in short
@@ -588,7 +609,8 @@ def faces(e: dict, pieces: list, za: float, zb: float, depth: float) -> list:
                         continue
                     caps, sd = _solid(
                         loop, lambda pt, b=b, fc=fc: z_of(b[3], pt, fc),
-                        lambda pt, b=b, fc=fc: z_of(b[2], pt, fc))
+                        lambda pt, b=b, fc=fc: z_of(b[2], pt, fc),
+                        soft_under)
                     out.extend(caps)
                     for key, face in sd:
                         sides.setdefault(key, []).append(face)
@@ -606,9 +628,9 @@ def _key(p, q) -> tuple:
     return (a, c) if a <= c else (c, a)
 
 
-def _solid(loop: list, ztop, zbot) -> tuple:
+def _solid(loop: list, ztop, zbot, soft_under: bool = False) -> tuple:
     """_faces, its sides apart: (caps, [(plan edge key, side)])."""
-    faces = _faces(loop, ztop, zbot)
+    faces = _faces(loop, ztop, zbot, soft_under)
     k = len(loop)
     lp = list(loop)
     if W._area(lp) < 0:

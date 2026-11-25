@@ -248,7 +248,7 @@ def hide_button(dlg: QDialog) -> QPushButton:
 def _metres(value: float, lo: float, hi: float, step: float = 0.05):
     from .look import LengthBox          # feet / inches in such a document
     w = LengthBox()
-    w.setDecimals(2)
+    w.setDecimals(3)                     # a millimetre (audit #7)
     w.setRange(lo, hi)
     w.setSingleStep(step)
     w.setSuffix(" m")
@@ -367,7 +367,8 @@ class ProjectDialog(QDialog):
                                 "reads every measure in them.")
         form.addRow("Units", self.f_units)
 
-        self.f_north = QDoubleSpinBox()
+        from .look import DecimalBox            # «12.5» or «12,5»
+        self.f_north = DecimalBox()
         self.f_north.setRange(-360.0, 360.0)
         self.f_north.setDecimals(1)
         self.f_north.setSuffix("°")
@@ -2133,7 +2134,8 @@ class WallDialog(QDialog):
         self.f_top_rows = []
         if kind == "line" and not wall.get("cw"):
             self.f_top = L.Chips(width=86)
-            for v, text in (("flat", "Flat"), ("slope", "Sloped"),
+            # «Flat top»: «Flat» alone is the flat ROOF's (de «Flachdach»)
+            for v, text in (("flat", "Flat top"), ("slope", "Sloped"),
                             ("gable", "Gable")):
                 self.f_top.addItem(text, v)
             self.f_top.setCurrentIndex(
@@ -3022,13 +3024,13 @@ class WallDialog(QDialog):
     def result_data(self):
         w = dict(self.wall)
         w["name"] = self.f_name.text().strip() or self.wall["name"]
-        w["t"] = round(self.f_t.value(), 3)
+        w["t"] = round(self.f_t.value(), 4)
         w["align"] = self.f_align.currentData()
         if self.f_flip.isEnabled() and self.f_flip.isChecked():
             w["side"] = -int(self.wall.get("side", 1))
         w["height"] = "level" if self.f_hmode.currentIndex() == 0 \
-            else round(self.f_h.value(), 3)
-        w["base"] = round(self.f_base.value(), 3)
+            else round(self.f_h.value(), 4)
+        w["base"] = round(self.f_base.value(), 4)
         w.pop("top", None)
         tk = self.f_top.currentData() if self.f_top is not None else "flat"
         if tk != "flat":                 # its own top: height = its peak
@@ -3080,11 +3082,12 @@ class WallDialog(QDialog):
             from . import gridwin
             w["gw"] = gridwin.values(self)
         if self.f_ends:              # Start / End (Length is kept in step)
-            # a coordinate counts as changed only if it differs from what
-            # the field SHOWED (2 decimals): opening and pressing OK must
-            # never move a wall by the rounding
+            # a coordinate counts as changed only if it differs from the
+            # model's or from what the field SHOWED (3 decimals): opening
+            # and pressing OK must never move a wall by the rounding
             for end in ("a", "b"):
-                w[end] = [round(v, 4) if abs(v - round(o, 2)) > 1e-4 else o
+                w[end] = [o if abs(v - o) <= 1e-9
+                          or abs(v - round(o, 3)) <= 1e-9 else round(v, 4)
                           for v, o in zip(self._end_pt(end), self.wall[end])]
         elif self.f_len is not None and \
                 abs(self.f_len.value() - self.length0) > 1e-4:
@@ -4551,7 +4554,14 @@ class ElementDialog(QDialog):
                     poly and not to_rect and key == "d"
                     and e["type"] == "column"):
                 continue                  # (its outline's box: read only)
-            e[key] = round(w.value(), 3)
+            e[key] = round(w.value(), 4)    # (as it was, untouched)
+        if e["type"] == "slab" and e.get("block") and "offset" in e \
+                and abs(float(e["offset"])
+                        - float(self.el.get("offset", 0.0))) > 1e-6:
+            # a BLOCK's top is its base + its height: the «Top» typed moves
+            # its base (his file, 20/11/2026: Top 0 typed, it went back to
+            # 0.20 — base 0 + 20 cm — without a word)
+            e["base"] = round(float(e["offset"]) - float(e["t"]), 3)
         if to_rect:
             # «Back to rectangle / square»: the box round its outline, where
             # the outline was — its sizes from the fields from now on
@@ -5103,6 +5113,7 @@ class _Front(QWidget):
 #: the types in the window's chips: (value, label, library picture)
 DOOR_TYPES = ((("swing", "solid"), "Swing", "_door_swing"),
               (("sliding", "solid"), "Sliding", "_door_sliding"),
+              (("pocket", "solid"), "Pocket", "_door_pocket"),
               (("sliding", "glass"), "Glass sliding", "_door_glass"),
               (("shop", "glass"), "Shopfront", "_door_shop"),
               (("garage", "solid"), "Garage door", "_door_garage"))
@@ -5126,13 +5137,17 @@ class OpeningDialog(QDialog):
     — a door — NBR 9050's free width. The record is the old window's (+ the
     library's keys it now edits too: open, the shopfront's)."""
 
-    def __init__(self, op: dict, wall: dict, parent=None) -> None:
+    def __init__(self, op: dict, wall: dict, parent=None,
+                 corners: dict | None = None) -> None:
+        """``corners``: ``cornerwin.ends_info`` of its wall — a window's
+        «Round the corner» (none: not offered)."""
         from . import library as LB
         from . import look as L
         from . import structure as S
         from . import walls as W
         super().__init__(parent)
         self.op = copy.deepcopy(op)
+        self.wall = wall
         self.action = "apply"
         self.kind = op["kind"]
         label = S.OPENING_LABEL[op["kind"]]
@@ -5165,8 +5180,10 @@ class OpeningDialog(QDialog):
             for val, text, pic in types:
                 self.f_type.addItem(text, val, pic=_lib_pic(getattr(LB, pic)))
             if self.kind == "door":
+                from .structure import door_pocket
                 cur = ("shop", "glass") if op.get("op") == "shop" else (
                     ("garage", "solid")) if op.get("op") == "garage" else (
+                    ("pocket", "solid")) if door_pocket(op) else (
                     ("sliding", "glass" if op.get("leaf") == "glass"
                      else "solid") if op.get("op") == "sliding"
                     else ("swing", "solid"))
@@ -5181,9 +5198,9 @@ class OpeningDialog(QDialog):
             self.f_leaves = L.Chips(width=48)
             for k in (1, 2, 3, 4, 5, 6):          # a casement 1–6; 6: a
                 self.f_leaves.addItem(str(k), k)  # louvred one's too
-            from .structure import window_leaves
-            n = window_leaves(op) if self.kind == "window" else (
-                2 if int(op.get("leaves", 1) or 1) == 2 else 1)
+            from .structure import door_leaves, window_leaves
+            n = window_leaves(op) if self.kind == "window" else \
+                door_leaves(op)
             self.f_leaves.setCurrentIndex(self.f_leaves.findData(n))
             self.r_leaves = QLabel("Leaves")
             form.addRow(self.r_leaves, self.f_leaves)
@@ -5418,6 +5435,11 @@ class OpeningDialog(QDialog):
                                    f"({compat.fmt_len(self.wall_L)})"))
         self.d_pos.link(self.f_pos, "pos")
         pl.addWidget(self.fold_pos)
+        # its corner (cornerwin.py, F2 — 20/11/2026): a window that turns it
+        self.f_corner = None
+        self.corners = corners or {}
+        if self.kind == "window" and self.corners:
+            self._corner_section(pl, op)
         pl.addStretch(1)
         self.tabs.addTab(pg, "Position", "position")
         self._own = self.tabs.count()
@@ -5458,6 +5480,10 @@ class OpeningDialog(QDialog):
         for w_ in (self.f_w, self.f_h, self.f_pos) + (
                 (self.f_sill,) if self.f_sill is not None else ()):
             w_.valueChanged.connect(self._sync)
+        if self.f_corner is not None:
+            self.f_corner.currentIndexChanged.connect(self._on_corner)
+            self.f_w2.valueChanged.connect(self._sync)
+            self.f_join.currentIndexChanged.connect(self._sync)
         # the trim / sill fields
         self.f_trim.currentIndexChanged.connect(self._sync)
         for w_ in (self.f_trim_w, self.f_trim_d):
@@ -5513,11 +5539,11 @@ class OpeningDialog(QDialog):
     def _record(self) -> dict:
         o = dict(self.op)
         o["name"] = self.f_name.text().strip() or self.op["name"]
-        o["w"] = round(self.f_w.value(), 3)
-        o["h"] = round(self.f_h.value(), 3)
-        o["pos"] = round(self.f_pos.value(), 3)
+        o["w"] = round(self.f_w.value(), 4)
+        o["h"] = round(self.f_h.value(), 4)
+        o["pos"] = round(self.f_pos.value(), 4)
         if self.f_sill is not None:
-            o["sill"] = round(self.f_sill.value(), 3)
+            o["sill"] = round(self.f_sill.value(), 4)
         # its trim and stone sill (trim.py) — none: the keys go
         from . import trim as TR
         for key in TR.DEFAULTS:
@@ -5538,6 +5564,12 @@ class OpeningDialog(QDialog):
         t = self.f_type.currentData()
         if self.kind == "door":
             o["op"], o["leaf"] = t
+            # a pocket door: one sliding leaf into the wall (#114)
+            o["pocket"] = o["op"] == "pocket"
+            if o["pocket"]:
+                o["op"] = "sliding"
+            elif "pocket" not in self.op:
+                o.pop("pocket", None)
             # its leaf style (the library's: panels, half glass, a french
             # door's glass) stays while it stays a hinged / sliding door
             was = self.op.get("leaf")
@@ -5546,7 +5578,11 @@ class OpeningDialog(QDialog):
                                                       "planks", "dutch"))
                     or (o["op"] == "swing" and was == "glass")):
                 o["leaf"] = was
-            o["leaves"] = 2 if self.f_leaves.currentData() == 2 else 1
+            from .structure import door_leaves
+            o["leaves"] = door_leaves(dict(o, leaves=self.f_leaves
+                                           .currentData()))
+            if o.get("pocket"):
+                o["leaves"] = 1              # (two: Sliding double)
             if o["op"] == "garage":
                 o["garage"] = self.f_garage.currentData()
                 o["gfinish"] = self.f_gfinish.currentData()
@@ -5581,12 +5617,152 @@ class OpeningDialog(QDialog):
         for key in TR.DEFAULTS:
             o.pop(key, None)
         o.update(kept)
-        return self._with_shape(o)
+        return self._with_corner(self._with_shape(o))
+
+    # -- its corner (cornerwin.py) ---------------------------------------------------
+    def _corner_section(self, pl, op: dict) -> None:
+        """«Round the corner»: No / at its start / at its end (the ends
+        joined to another straight wall), how far on the other wall, and
+        what stands at the corner. Measured to the corner's OUTSIDE."""
+        from . import cornerwin as CW
+        from . import look as L
+        self.fold_corner = L.Fold("Round the corner", "window.corner")
+        form = self.fold_corner.form()
+        c = L.Chips()
+        c.addItem("No", "none", tip="A window on this wall only")
+        for end, say in (("a", "At its start"), ("b", "At its end")):
+            info = self.corners.get(end) or {}
+            other = info.get("other")
+            c.addItem(f"{tr(say)} — «{other['name']}»" if other else say,
+                      end,
+                      tip=tr("On round the corner, into «{w}»",
+                             w=other["name"]) if other
+                      else tr(info.get("why") or "No wall joined there"))
+            c.setItemEnabled(c.findData(end), other is not None)
+        cur = op.get("corner") if op.get("corner") in CW.ENDS else "none"
+        c.button(c.findData(cur)).setChecked(True)
+        if cur != "none" and not (self.corners.get(cur) or {}).get("other"):
+            # not joined now (built straight): kept as it is
+            c.setItemEnabled(c.findData(cur), True)
+        form.addRow("Turns the corner", c)
+        self.f_corner = c
+        info = self.corners.get(cur) or {}
+        eh, eo = info.get("eh", 0.0), info.get("eo", 0.0)
+        w2 = float(op.get("w2", op["w"])) + eo if cur != "none" \
+            else float(op["w"])
+        self.f_w2 = L.metres(w2, 0.3, 5.0)
+        self.f_w2.field.setMaximum(20.0)
+        self.f_w2.setValue(w2)
+        self.f_w2.setToolTip(tr("Its width on the other wall, to the "
+                                "corner's outside"))
+        form.addRow("On the other wall", self.f_w2)
+        self.f_join = L.chips((("post", "A post"),
+                               ("glass", "Glass to glass")),
+                              CW.join_of(op))
+        self.f_join.button(1).setToolTip(tr(
+            "Glass to glass: a fixed window only (a leaf closes on a post)"))
+        form.addRow("At the corner", self.f_join)
+        form.addRow(L.hint("Its width (Size) and this one are measured to "
+                           "the corner's outside."))
+        if cur != "none":                  # shown to the outside corner
+            self.f_w.setValue(float(op["w"]) + eh)
+        self._corner_was = cur
+        pl.addWidget(self.fold_corner)
+
+    def _corner_end(self) -> str:
+        return self.f_corner.currentData() if self.f_corner is not None \
+            else "none"
+
+    def _on_corner(self, *_a) -> None:
+        """Its corner changed — back to a plain window: as wide, 5 cm off
+        that end (its centre field free again); turning: as far on the
+        other wall as on this one."""
+        from . import structure as S
+        end, was = self._corner_end(), getattr(self, "_corner_was", "none")
+        self._corner_was = end
+        if end == "none" and was != "none":
+            w = min(self.f_w.value(), max(self.wall_L - 2 * S.END_GAP, 0.2))
+            pos = (self.wall_L - S.END_GAP - w / 2 if was == "b"
+                   else S.END_GAP + w / 2)
+            for f, v in ((self.f_w, w), (self.f_pos, pos)):
+                f.blockSignals(True)
+                f.setValue(v)
+                f.blockSignals(False)
+        elif end != "none" and was == "none":
+            self.f_w2.blockSignals(True)
+            self.f_w2.setValue(self.f_w.value())
+            self.f_w2.blockSignals(False)
+        self._sync()
+
+    def _with_corner(self, o: dict) -> dict:
+        """The record with its corner: its width and the other's to the
+        outside corner, kept to the lines drawn (``cornerwin.stored``)."""
+        if self.f_corner is None:
+            return o
+        from . import cornerwin as CW
+        for key in ("corner", "w2", "corner_join"):
+            o.pop(key, None)
+        end = self._corner_end()
+        if end not in CW.ENDS or CW.why_not_window(o) is not None:
+            return o
+        info = self.corners.get(end) or {}
+        if not info.get("other"):          # not joined now: as kept
+            info = {"eh": 0.0, "eo": 0.0}
+        o = CW.stored(o, self.wall, end, info, self.f_w.value(),
+                      self.f_w2.value())
+        if self.f_join.currentData() == "post":
+            o["corner_join"] = "post"
+        return o
+
+    def _corner_sync(self, o: dict) -> None:
+        """Its corner's fields: its centre set by it; glass to glass only
+        for a fixed window; one that can't turn (a shape, a shop): «No»."""
+        from . import cornerwin as CW
+        from . import structure as S
+        end = self._corner_end()
+        why = CW.why_not_window(o)
+        for i in range(1, self.f_corner.count()):
+            info = self.corners.get(self.f_corner.itemData(i)) or {}
+            b = self.f_corner.button(i)
+            b.setEnabled(why is None and (
+                bool(info.get("other"))
+                or self.f_corner.itemData(i) == self.op.get("corner")))
+            if why is not None:
+                b.setToolTip(tr(why))
+        on = end in CW.ENDS and why is None
+        free = self.f_name.isEnabled()     # (several selected: one at a time)
+        self.f_pos.setEnabled(free and not on)
+        self.f_pos.setToolTip(tr(
+            "A corner window: its width from the corner sets where it is")
+            if on else tr("Its centre, from the start of the wall"))
+        if on:
+            self.f_pos.blockSignals(True)
+            self.f_pos.setValue(o["pos"])
+            self.f_pos.blockSignals(False)
+        self.f_w2.setEnabled(on)
+        fixed = o.get("op") not in S.WIN_KINDS
+        self.f_join.button(1).setEnabled(on and fixed)
+        self.f_join.button(0).setEnabled(on)
+        if not fixed and self.f_join.currentData() == "glass":
+            self.f_join.button(0).setChecked(True)
+        self.f_w.setToolTip(tr("On this wall, to the corner's outside")
+                            if on else "")
+        other = (self.corners.get(end) or {}).get("other")
+        if not on:
+            pick = tr("no")
+        elif other is not None:
+            pick = f"{compat.fmt_len(self.f_w2.value())} " + tr(
+                "on «{w}»", w=other["name"])
+        else:
+            pick = tr("not joined now: built straight")
+        self.fold_corner.set_pick(pick)
 
     def _sync(self, *_a) -> None:
         o = self._record()
         if self.f_type is not None:
             self._shown(o)
+        if self.f_corner is not None:
+            self._corner_sync(o)
         # the trim's / sill's sizes: only with one
         on = self.f_trim.currentData() != "none"
         self.f_trim_w.setEnabled(on)
@@ -5617,6 +5793,10 @@ class OpeningDialog(QDialog):
         name = self.f_type.currentText() if self.f_type is not None \
             else self.label
         parts = [name, "{" + compat.fmt_wh(o['w'], o['h']) + "}"]
+        if o.get("corner") and self.f_corner is not None:
+            # a corner window: both its parts, to the corner's outside
+            parts[1] = "{" + compat.fmt_len(self.f_w.value()) + " + " + \
+                compat.fmt_wh(self.f_w2.value(), o['h']) + "}"
         if self.kind != "door":
             parts.append("sill {" + compat.fmt_len(o.get('sill', 0.0)) + "}")
         if self.f_type is not None and o.get("op") not in ("shop", "fixed"):
@@ -5674,9 +5854,16 @@ class OpeningDialog(QDialog):
         garage = t == "garage"
         if self.kind == "door":
             leaves = not shop and not garage
-            ok_n = (1, 2)
-            swing = not shop and not garage and (t == "sliding"
-                                                 or o["leaves"] == 1)
+            from .structure import GLASS_DOOR_LEAVES, door_leaves
+            # a glazed sliding one: up to 6 panes (21/11/2026)
+            ok_n = GLASS_DOOR_LEAVES if (t == "sliding" and o.get("leaf")
+                                         == "glass") else (1, 2)
+            from .structure import door_pocket
+            if door_pocket(o):
+                ok_n = (1,)                  # two: Sliding double (#114)
+            swing = not shop and not garage and (
+                (t == "sliding" and door_leaves(o) <= 2)
+                or (t != "sliding" and o["leaves"] == 1))
             # a sliding one with ONE leaf too (support #113, 19/11/2026):
             # its leaf (a barn's, a glass one's moving pane) on the wall's
             # inside or outside — two leaves run inside the wall: no side
@@ -5993,7 +6180,9 @@ class DigDialog(QDialog):
             self.f_mode.addItem(text, key)
         row.addWidget(self.f_mode)
         # a pit's depth, or a fill's height (same field)
-        self.f_d = _metres(1.0 if self.fill else 3.0, 0.05, 100.0, 0.10)
+        # (a fill from 1 cm: a path, a patio — his ask, 21/11/2026)
+        self.f_d = _metres(1.0 if self.fill else 3.0,
+                           0.01 if self.fill else 0.05, 100.0, 0.10)
         self.f_level = QComboBox()
         for r in reversed(doc["levels"]):
             if r["kind"] in ("ground", "basement"):
@@ -6029,6 +6218,44 @@ class DigDialog(QDialog):
             w.valueChanged.connect(self._on_bottom)
         self.f_mode.currentIndexChanged.connect(self._on_mode)
         self.f_level.currentIndexChanged.connect(self._on_bottom)
+
+        # WATER in it (a pool — his ask, 20/11/2026): a surface this far
+        # under the edge, exact on its walls; its look on the Material tab
+        # (20/11, his test: a bare row up here was too discreet — a titled
+        # section of its own, under the corners' table)
+        self.f_water = self._water_fold = None
+        if not self.fill:
+            from PySide6.QtWidgets import QCheckBox
+            from . import look as L
+            self._water_fold = L.Fold(tr("Water"), opened=True)
+            form = self._water_fold.form()
+            self.f_water = QCheckBox(tr("Fill with water"))
+            self.f_water.setToolTip(tr(
+                "A pool: a water surface in it, its edge exact on the walls. "
+                "Its look: «Water» on the Material tab"))
+            w = self.dig.get("water") or {}
+            self.f_below = _metres(float(w.get("below", model.WATER_BELOW)),
+                                   0.01, 10.0, 0.05)
+            self.f_below.setToolTip(tr("How far the water is under the "
+                                       "excavation's edge"))
+            self.f_below.setKeyboardTracking(False)
+            self.l_below = QLabel(tr("Below the edge"))
+            # (his ask, 20/11: its transparency — 0 % opaque, as the glass)
+            self.f_seen = L.Measure(round(float(w.get(
+                "seen", model.WATER_SEEN)) * 100), 0, 100, 5, " %")
+            self.f_seen.field.setDecimals(0)
+            self.f_seen.setToolTip(tr(
+                "How much you see through the water. 0 % = opaque: it hides "
+                "the pool's floor and walls"))
+            self.l_seen = QLabel(tr("Transparency"))
+            form.addRow("", self.f_water)
+            form.addRow(self.l_below, self.f_below)
+            form.addRow(self.l_seen, self.f_seen)
+            self.f_water.setChecked(bool(w))
+            self.f_water.toggled.connect(self._on_water)
+            self.f_below.valueChanged.connect(self._on_water)
+            self.f_seen.valueChanged.connect(self._on_water)
+            self._water_shown()
 
         n = len(self.dig["corners"])
         self.table = QTableWidget(n, 7)
@@ -6091,6 +6318,8 @@ class DigDialog(QDialog):
             self.f_wall.append(wall)
             self.table.setCellWidget(i, 6, wall)
         lay.addWidget(self.table, 1)
+        if self._water_fold is not None:
+            lay.addWidget(self._water_fold)
 
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -6137,6 +6366,26 @@ class DigDialog(QDialog):
         else:
             self.dig["bottom"] = {"mode": "corners"}
         self._fill()
+
+    def _water_shown(self) -> None:
+        on = self.f_water.isChecked()
+        for x in (self.f_below, self.l_below, self.f_seen, self.l_seen):
+            x.setEnabled(on)
+        seen = round(self.f_seen.value())
+        self._water_fold.set_pick(
+            (tr("{d} below the edge", d=compat.fmt_len(self.f_below.value()))
+             + " · " + (tr("opaque") if seen == 0 else f"{seen} %"))
+            if on else tr("No water"))
+
+    def _on_water(self, *_a) -> None:
+        if self.f_water.isChecked():
+            self.dig["water"] = {"below": round(self.f_below.value(), 3),
+                                 "seen": round(self.f_seen.value() / 100, 2)}
+        else:
+            self.dig.pop("water", None)
+        self._water_shown()
+        if hasattr(self, "f_depth"):          # (built: say it)
+            self._fill()
 
     def _on_wall(self, i: int, v: float) -> None:
         self.dig["angles"][i] = round(v, 1)
@@ -6211,6 +6460,14 @@ class DigDialog(QDialog):
             text = (f"Floor <b>{compat.fmt_area(area, group=True)}</b>{foot}"
                     f"  ·  deepest {compat.fmt_len(deep)}  ·  earth taken out "
                     f"<b>{compat.fmt_volume(vol)}</b>")
+            if self.dig.get("water"):
+                zw = terrain.water_level(self.dig, trial)
+                text += "<br>" + (
+                    tr("Water at {z}", z=compat.fmt_level(zw))
+                    if zw is not None else
+                    "<span style='color:#d97706'>" + tr(
+                        "No water: its level is under the floor — less "
+                        "«below the edge», or a deeper floor") + "</span>")
         held = getattr(self, "_held", None)
         if held is not None:
             text += (f"<br><span style='color:#d97706'>Corner {held + 1}: "

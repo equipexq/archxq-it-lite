@@ -8,8 +8,8 @@ makes them at once — the user only hides what he does not want.
 
 For each excavation (cut, dug): a slab on every BASEMENT level it holds
 (its floor at or above the dig's bottom) and on the GROUND floor over
-them (the basements' roof) — the dig's outline, 1 cm in from its earth
-walls. Stored as ordinary slabs (window, Ctrl+Z, ramp / stair holes)
+them (the basements' roof) — the dig's outline exactly (1 cm in from its
+earth walls until 23/11/2026). Stored as ordinary slabs (window, Ctrl+Z, ramp / stair holes)
 with ``auto = {"dig": id}``; ``sync`` keeps them following their dig.
 
 - Deleted (the window, the Delete key): it stays away — its key goes to
@@ -21,7 +21,11 @@ from __future__ import annotations
 
 T = 0.20                 # m, a new automatic slab's thickness (now the
 #                          level's own «slab_t» — model.SLAB_T — see new_t)
-INSET = 0.01             # m in from the excavation's earth walls
+#: m in from the excavation's earth walls — 0 since 23/11/2026 (support
+#: #93, his rule of the exact measure: the slabs ARE the pit's outline; the
+#: 1 cm kept them off the earth faces, but a slab's edge there faces the
+#: earth, back to back with it, and the walls cover it anyway)
+INSET = 0.0
 
 
 def key(dig_id: str, level_id: str) -> str:
@@ -79,7 +83,7 @@ def _push_out(pts, plot, d: float):
 
 
 def _outline(corners, plot=None) -> list | None:
-    """The dig's outline 1 cm in (counter-clockwise), or None — but on the
+    """The dig's outline ``INSET`` in (counter-clockwise), or None — on the
     plot's boundary it reaches the boundary exactly (support #93,
     2026-11-11): no earth face stands there to keep clear of."""
     try:
@@ -225,3 +229,44 @@ def sync(doc: dict, elevations, create: bool = False) -> dict:
     if keep == st:
         return doc
     return dict(doc, structure=keep)
+
+
+#: how far (m) an automatic slab's corner may sit off the one its dig
+#: calls for before it counts as out of step (rounding never does)
+STEP_TOL = 1e-4
+
+
+def out_of_step(doc: dict, elevations) -> bool:
+    """(support #93, 23/11/2026) An automatic slab whose corners are not
+    the ones its excavation calls for — a file of 0.21–0.26 kept them 1 cm
+    short of the pit's inner sides (INSET 0.01), and they only followed
+    again when the pit was changed. True only when ``sync`` would keep the
+    very same slabs and just move corners: a slab it would add or take
+    away is never decided as a file opens."""
+    try:
+        new = sync(doc, elevations)
+    except Exception:  # noqa: BLE001 — the file opens as it was
+        return False
+    if new is doc:
+        return False
+    before = {e.get("id"): e for e in doc.get("structure") or []}
+    after = {e.get("id"): e for e in new.get("structure") or []}
+    if set(before) != set(after):
+        return False
+    moved = False
+    for i, a in after.items():
+        b = before[i]
+        if a is b or a == b:
+            continue
+        if {k: v for k, v in a.items() if k != "corners"} != \
+                {k: v for k, v in b.items() if k != "corners"}:
+            return False                      # more than its corners
+        pa, pb = a.get("corners") or [], b.get("corners") or []
+        if len(pa) != len(pb):
+            moved = True
+            continue
+        if any(abs(float(p[0]) - float(q[0])) > STEP_TOL
+               or abs(float(p[1]) - float(q[1])) > STEP_TOL
+               for p, q in zip(pa, pb)):
+            moved = True
+    return moved

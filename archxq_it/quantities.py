@@ -139,6 +139,9 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
     s = _Sum()
     walls = doc.get("walls") or []
     ops = doc.get("openings") or []
+    # a corner window: its two parts, each taken off its own wall
+    from . import cornerwin as CW
+    holed = CW.split(walls, ops)
 
     # ---- grid walls: the light (glass), the panels, the ventilation (what
     # opens) — a building code asks for the first and the last
@@ -177,8 +180,8 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
                 continue
             t = float(w["t"])
             L = W.drawn(w).L
-            holes = [f for f in (S.fitted(o, w, ops, top - li["z0"])
-                                 for o in ops if o["wall"] == w["id"])
+            holes = [f for f in (S.fitted(o, w, holed, top - li["z0"])
+                                 for o in holed if o["wall"] == w["id"])
                      if f is not None]
             a_ops = sum(float(o["w"]) * float(o["h"]) for o in holes)
             area = max(L * h - a_ops, 0.0)
@@ -236,8 +239,12 @@ def take_off(doc: dict, elevations=model.elevations, volumes=None) -> list:
         label = type_label(o["kind"], o) + " " \
             if o["kind"] in ("door", "window") else ""
         item = f"{label}{_m(o['w'])} × {_m(o['h'])}"
-        s.add(cat, item, w["level"], 1, 0.0,
-              float(o["w"]) * float(o["h"]), 0.0)
+        area = float(o["w"]) * float(o["h"])
+        two = CW.sizes(walls, o)
+        if two is not None:          # a corner window: both parts, outside
+            item = f"{label}{_m(two[0])} + {_m(two[1])} × {_m(o['h'])}"
+            area = (two[0] + two[1]) * float(o["h"])
+        s.add(cat, item, w["level"], 1, 0.0, area, 0.0)
 
     # ---- structure -------------------------------------------------------------------
     built_roofs = {}

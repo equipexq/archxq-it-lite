@@ -36,6 +36,15 @@ TOOL_NAME = "ArchXQ wall"          # ui knows the wall tools by this name
 #: a point this near a wall's end IS that end (his «S», 2026-11-01: the
 #: host's corner snap landed 0.7 mm off it — a joint off by a hair)
 END_SNAP_M = 0.002
+#: a centred wall's point this near (screen px) a wall's centre-line end
+#: IS that end (= plottools.GUIDE_CROSS_PX, the guides' crossing)
+AXIS_END_PX = 16.0
+#: …and a wall's centre LINE pulls only this near (screen px): zoomed in,
+#: the rest of the wall's thickness is free for its faces and its layers'
+#: lines (his screen, 2026-11-20: a slab's corner on a plaster line was
+#: pulled 8 cm away onto the centre); zoomed out, a wall is this thin and
+#: all of it pulls, as before
+AXIS_LINE_PX = 10.0
 #: a curve leaving a wall's end within ~25° of its way continues it
 CONTINUES_DOT = 0.9
 
@@ -97,7 +106,178 @@ def _turn(pts, closed: bool) -> float:
     return s / 2.0
 
 
-class _WallShape:
+class AxisPull:
+    """The pull onto a wall's CENTRE line, shared by the wall tools (a
+    centred wall) and the slab's outline (his ask, 2026-11-20: a slab's
+    edge could not be put on the walls' middle). The tool gives
+    ``existing()`` (the level's walls), ``viewport``, ``z``, ``hover``,
+    ``_align_sources()``."""
+    #: a REAL host snap (a face's corner / edge) keeps its point: a
+    #: slab's edge may lie on a face too (a wall's goes onto the line)
+    axis_keep_hard = False
+
+    def _axis_on(self) -> bool:
+        """Whether the pull works now (a wall: only centred)."""
+        return True
+
+    #: the tools whose points take the centre-line pull (point by point,
+    #: the rectangles) — not a curve's middle / centre
+    axis_pull = False
+    #: (wall, its centre Seg) whose centre line holds the cursor (drawn)
+    _axis_hit = None
+
+    def _axis_walls(self) -> list:
+        """The walls whose centre line pulls: this level's, then the GHOST
+        levels' (his ask, 2026-11-19: Level 2 traced right over Level 1's
+        walls — on the ghost only its faces pulled, never its centre).
+        Only seen: the wall drawn does not join a ghost level's."""
+        mine = getattr(self, "existing", None)
+        out = list(mine() if callable(mine) else ())
+        out += list(plottools.GHOST.get("walls") or ())
+        return out
+
+    def _axis_pull(self, ctx, p, snap):
+        """Over a wall already on the level, a CENTRED wall's point goes on
+        that wall's centre line (his ask, 2026-11-19: the host reports its
+        top as a face, the alignments stood aside there, and the new
+        wall's end landed on the other's face): within AXIS_END_PX of the
+        line's end, that end; else straight across onto the line — and,
+        along it, in line with a corner already placed / a wall's end
+        (red / green, as off the walls). A host snap on that wall's own
+        outline (its face's corner / middle) goes across onto the line
+        too; any other real snap (an end of a line of the drawing…) stays.
+        The GHOST levels' walls pull the same (``_axis_walls``).
+        → the point, or None (no wall under it)."""
+        self._axis_hit = None
+        if not self.axis_pull or self.viewport is None \
+                or getattr(self, "_guide_hit", None) \
+                or not self._axis_on():
+            return None
+        from .plottools import ALIGN_PX, HARD_SNAPS, _xy
+        raw = _xy(ctx)
+        here = _screen(self, ctx, raw)
+        if not here:
+            return None
+        kind = getattr(snap, "kind", "") or ""
+        hard = kind in HARD_SNAPS
+        if hard and self.axis_keep_hard:
+            return None                  # the host's snap (a face) stays
+        soft = kind in ("none", "ground", "axis", "")
+        walls = self._axis_walls()
+        # the wall under it: the cursor in its outline (or, the host on
+        # its top / edge, the point the host gives); nearest centre first
+        under = None
+        for w in walls:
+            try:
+                seg = W.centre(w)
+                h = float(w["t"]) / 2.0
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                continue
+            if seg.L < 1e-6 or h <= 0.0:
+                continue
+            ring = w.get("kind") == "circle"
+            reach = 0.0 if ring else h / seg.L
+            for at, edge in ((raw, False), (p, True)):
+                if edge and soft:
+                    continue
+                f, d = seg.project(at)
+                if ring:
+                    f = min(max(f, 0.0), 1.0)
+                if hard:                     # on ITS outline only
+                    ok = edge and abs(abs(d) - h) <= 1e-3 \
+                        and -reach - 1e-6 <= f <= 1.0 + reach + 1e-6
+                else:
+                    ok = abs(d) <= h + 1e-3 and 0.0 <= f <= 1.0
+                if ok:                       # near the line on screen only
+                    c = seg.at(min(max(f, 0.0), 1.0))
+                    cpx = compat.to_pixel(self.viewport, c[0], c[1], self.z)
+                    apx = compat.to_pixel(self.viewport, at[0], at[1],
+                                          self.z) if edge else here
+                    ok = bool(cpx and apx) \
+                        and math.dist(cpx, apx) <= AXIS_LINE_PX
+                if ok:
+                    if under is None or abs(d) / h < under[0]:
+                        under = (abs(d) / h, w, seg, min(max(f, 0.0), 1.0))
+                    break
+        # a centre line's end near the cursor (in the wall or just past it)
+        best = None
+        for w in walls:
+            if w.get("kind", "line") == "circle":
+                continue
+            try:
+                seg = W.centre(w)
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                continue
+            for f in (0.0, 1.0):
+                e = seg.at(f)
+                px = compat.to_pixel(self.viewport, e[0], e[1], self.z)
+                if px:
+                    dd = math.dist(here, px)
+                    if dd <= AXIS_END_PX and (best is None or dd < best[0]):
+                        best = (dd, w, seg, e)
+        if best is not None and (under is not None or not hard):
+            self._axis_hit = (best[1], best[2])
+            self._aligned = []
+            self._ghost_hit = None
+            self._guide_hit = "cross"
+            return [round(best[3][0], 4), round(best[3][1], 4)]
+        if under is None:
+            return None
+        _k, w, seg, f = under
+        q = seg.at(f)
+        self._aligned = []
+        if seg.kind == "line" and not hard:
+            # along the line: in line (red / green) with a corner placed or
+            # a wall's end, as the alignments do off the walls
+            qpx = compat.to_pixel(self.viewport, q[0], q[1], self.z)
+            near = None
+            for s in self._align_sources():
+                for coord, i in (("x", 0), ("y", 1)):
+                    if abs(seg.u[i]) < 1e-6:
+                        continue             # the line runs square to it
+                    t = (s[i] - seg.p0[i]) / seg.u[i]
+                    if not -1e-6 <= t <= seg.L + 1e-6:
+                        continue
+                    c = (seg.p0[0] + seg.u[0] * t, seg.p0[1] + seg.u[1] * t)
+                    cpx = compat.to_pixel(self.viewport, c[0], c[1], self.z)
+                    if qpx and cpx:
+                        dd = math.dist(qpx, cpx)
+                        if dd <= ALIGN_PX and (near is None or dd < near[0]):
+                            near = (dd, c, coord, s)
+            if near is not None:
+                q = near[1]
+                self._aligned = [(near[2], list(near[3]))]
+        self._axis_hit = (w, seg)
+        self._ghost_hit = None
+        self._guide_hit = "line"
+        return [round(q[0], 4), round(q[1], 4)]
+
+    def _draw_axis(self, viewport, painter) -> None:
+        """The centre line holding the cursor, dashed (``_axis_pull``)."""
+        hit = self._axis_hit
+        if not hit or self.hover is None:
+            return
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QPen
+        from .plottools import GUIDE_MARK
+        seg = hit[1]
+        n = 2 if seg.kind == "line" else 48
+        px = []
+        for k in range(n + 1):
+            q = seg.at(k / n)
+            px.append(compat.to_pixel(viewport, q[0], q[1], self.z))
+        painter.save()
+        painter.setRenderHint(painter.RenderHint.Antialiasing)
+        pen = QPen(QColor(GUIDE_MARK), 1.6)
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        for a, b in zip(px, px[1:]):
+            if a and b:
+                painter.drawLine(QPointF(*a), QPointF(*b))
+        painter.restore()
+
+
+class _WallShape(AxisPull):
     """What every wall tool shares: the options, the walls already on the
     level, the records it makes and the live drawing of them."""
     name = TOOL_NAME
@@ -169,10 +349,23 @@ class _WallShape:
 
     def _pick(self, ctx) -> list[float]:
         """The cursor; within END_SNAP_M of a wall's end (its line's, or a
-        face's corner there), that point exactly."""
+        face's corner there), that point exactly. A centred wall over a
+        wall already there: on that wall's centre line (``_axis_pull``)."""
         p = super()._pick(ctx)
+        q = self._axis_pull(ctx, p, getattr(ctx, "snap", None))
+        if q is not None:
+            return q
         got = _wall_at(self.existing, p, END_SNAP_M)
         return [round(got[4][0], 4), round(got[4][1], 4)] if got else p
+
+    def _axis_on(self) -> bool:
+        """Only a CENTRED wall, not one traced between a DXF's lines."""
+        if self.t_lane:
+            return False
+        try:
+            return self.opts().get("align") == "centre"
+        except Exception:  # noqa: BLE001 — no options bar: no pull
+            return False
 
     def _continue(self, rec: dict):
         """A curve starting or ending at a wall's end, along it, CONTINUES
@@ -256,6 +449,7 @@ class _WallShape:
     def draw_overlay(self, viewport, painter) -> None:
         self._draw_walls(viewport, painter)
         self._draw_lane(viewport, painter)
+        self._draw_axis(viewport, painter)
         super().draw_overlay(viewport, painter)
 
     def _draw_lane(self, viewport, painter) -> None:
@@ -306,6 +500,7 @@ class WallChainTool(_WallShape, _PlotTool):
     icon = "geopath"
     vcb_label = "Length"
     diagonal = True
+    axis_pull = True
 
     def __init__(self, on_done, on_cancelled, z: float, opts, existing):
         _PlotTool.__init__(self, on_done, on_cancelled)
@@ -484,6 +679,7 @@ class WallChainTool(_WallShape, _PlotTool):
 class _WallRect(_WallShape):
     """Mixed in before a plottools rectangle: what it finishes becomes
     four walls; what it shows becomes the walls, live."""
+    axis_pull = True
 
     def _finish(self, corners) -> None:
         self._done_records(self.line_records([list(c) for c in corners],

@@ -25,12 +25,17 @@ DEFAULTS = {"window": ("sliding", "casement", "fixed", "fixed_hinged", "sash",
                        "louvred3", "awning", "round_arch"),
             "door": ("swing", "panelled", "french", "double", "sliding",
                      "glass", "shop", "garage"),
+            # an empty Opening's shapes (László #117, 23/11/2026): 8 and
+            # «More» (the triangle and the trapezoid)
+            "void": ("v_rect", "v_round_arch", "v_round_top", "v_seg_arch",
+                     "v_pointed", "v_pentagon", "v_circle", "v_oval"),
             # (the big library of mouldings lives in «More», 06/11/2026)
             "profile": ("base_flat", "base_mould", "crown_cove", "crown_ogee",
                         "chair_rail", "cornice", "band", "casing_colonial"),
-            "column": ("rect", "round", "round_tuscan", "round_doric",
-                       "round_attic", "round_pedestal", "sq_tuscan",
-                       "sq_doric")}
+            # (one of each family in sight, the rest in «More» — the
+            # sections came 24/11/2026)
+            "column": ("rect", "round", "round_tuscan", "sq_tuscan",
+                       "cL", "cT", "cX", "cHEB200")}
 
 
 def N_(text: str) -> str:
@@ -47,7 +52,8 @@ CATS = {
                              "plank", "dutch", "transom", "arched")),
              (N_("Double"), ("double", "double_panelled", "french2",
                              "barn2")),
-             (N_("Sliding"), ("sliding", "sliding2", "barn", "glass")),
+             (N_("Sliding"), ("sliding", "sliding2", "pocket", "barn",
+                              "glass")),
              (N_("Shop & garage"), ("shop", "garage", "rollup", "tilt"))),
     "window": ((N_("Sliding"), ("sliding", "sliding3", "sliding4", "slide_top",
                                 "louvred3", "louvred6")),
@@ -77,7 +83,7 @@ CATS = {
     "slab": ((N_("Structure"), ("s12", "s15", "s20")),
              (N_("Floors"), ("tiles", "timber")),
              (N_("Roof"), ("roofslab",)),
-             (N_("Block & ceiling"), ("block", "ceiling")),
+             (N_("Ceiling"), ("ceiling",)),
              # (markets.py — floors on joists of the US, Europe; 4b)
              (N_("By market"), ("f_fus2x10", "f_feutimber", "f_fsteel",
                                 "f_fraised"))),
@@ -100,7 +106,10 @@ CATS = {
                                      "round_attic", "round_empire",
                                      "round_pedestal")),
                (N_("Square orders"), ("sq_tuscan", "sq_doric", "sq_attic",
-                                      "sq_deco", "sq_pedestal"))),
+                                      "sq_deco", "sq_pedestal")),
+               (N_("Concrete"), ("cL", "cT", "cX")),
+               (N_("Steel"), ("cIPE200", "cIPE300", "cHEA200", "cHEA300",
+                              "cHEB200", "cHEB300"))),
     "profile": ((N_("Baseboards"), ("base_flat", "base_mould")),
                 (N_("Crowns"), ("crown_cove", "crown_ogee")),
                 (N_("Wall & façade"), ("chair_rail", "cornice", "band"))),
